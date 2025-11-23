@@ -31,6 +31,8 @@ pip install -e .
 
 ### Basic Usage
 
+Download the example data: https://keeper.mpdl.mpg.de/f/1587c6531bf84155ad9a/?dl=1
+
 ```python
 import numpy as np
 from astropy.table import Table
