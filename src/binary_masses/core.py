@@ -195,7 +195,8 @@ class NonParametricPosteriorPlotter:
     models for the u parameter.
     """
 
-    def __init__(self, n_bins=10, absg_min=4.0, absg_max=12.0, uncertainty_model='rice'):
+    def __init__(self, n_bins=10, absg_min=4.0, absg_max=12.0, uncertainty_model='rice',
+                 f_outlier=0, outlier_u0=30, outlier_sigma=15):
         """
         Initialize the non-parametric plotter.
 
@@ -211,9 +212,12 @@ class NonParametricPosteriorPlotter:
             Uncertainty model to use: 'rice' or 'gaussian' (default: 'rice')
         """
         # Fixed parameters as specified
-        self.f_outlier = 0
+        self.f_outlier = f_outlier
+        self.f_good = 1 - self.f_outlier 
         self.p_epsilon = 1e-10
         self.m_epsilon = 1e-10
+        self.outlier_u0 = outlier_u0
+        self.outlier_sigma = outlier_sigma
 
         # Non-parametric bin settings
         self.n_bins = n_bins
@@ -446,7 +450,7 @@ class NonParametricPosteriorPlotter:
         if self.u_sigma_values is not None:
             n_integration_pts = int(int_umax / int_du)
             print(f"Integration grid: {n_integration_pts} points (int_du={int_du}, int_umax={int_umax})")
-            print(f"  → To speed up: increase int_du (e.g., 0.05-0.1) or reduce int_umax (e.g., 50-60)")
+            print(f"  → To speed up: increase int_du (e.g., 0.05-0.1)")
         print(f"Sampling: {num_chains} chain(s) × ({num_warmup} warmup + {num_samples} samples)")
 
         # Convert data to JAX arrays
@@ -461,7 +465,7 @@ class NonParametricPosteriorPlotter:
 
         norm_factor_jax = jnp.array(self.norm_factor)
         absg_bins_jax = jnp.array(self.absg_bins)
-
+        
         # Pre-compute integration grid if using uncertainties
         if self.u_sigma_values is not None:
             int_ulist_jax = jnp.arange(0., int_umax, int_du)
@@ -508,6 +512,16 @@ class NonParametricPosteriorPlotter:
 
             # Clamp to avoid numerical issues
             return jnp.maximum(rice_pdf, 1e-100)
+        
+        def outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma):
+
+            """
+            JAX version of outlier Gaussian distribution for negative u values.
+            """
+            sigma = jnp.maximum(outlier_sigma, 1e-10)
+            coeff = 1.0 / (sigma * jnp.sqrt(2 * jnp.pi))
+            exponent = -0.5 * ((tilde_u - outlier_u0) / sigma)**2
+            return coeff * jnp.exp(exponent)
 
         def likelihood_single_u_jax(u, sqrt_mtot, u_sigma=None, norm_factor=None):
             """
@@ -518,9 +532,11 @@ class NonParametricPosteriorPlotter:
 
             where ũ = u_true/sqrt(m_tot) is the integration variable.
             """
-            # Ensure positive values
-            u = jnp.maximum(u, 1e-10)
-            sqrt_mtot = jnp.maximum(sqrt_mtot, 1e-10)
+            # Check for positive u and sqrt_mtot, if not, remove contribution
+            valid = (u > 0) & (sqrt_mtot > 0)
+            
+            u = jnp.where(valid, u, 1e-10)
+            sqrt_mtot = jnp.where(valid, sqrt_mtot, 1e-10)
 
             tilde_u = u / sqrt_mtot
 
@@ -554,19 +570,21 @@ class NonParametricPosteriorPlotter:
                 # Ensure norm_factor is positive
                 norm_factor = jnp.maximum(norm_factor, 1e-10)
                 good_component = jnp.sum(integrand) / norm_factor + self.p_epsilon / (int_umax / int_du)
+                outlier_component = outlier_gaussian_jax(tilde_u, self.outlier_u0, self.outlier_sigma) / norm_factor
 
-            total_prob = good_component + self.p_epsilon
+            total_prob = self.f_good * good_component + self.f_outlier * outlier_component + self.p_epsilon
 
             # Clamp to reasonable range to avoid log(0)
             total_prob = jnp.clip(total_prob, 1e-100, 1e10)
             return total_prob
 
         # Define the NumPyro model with regularization
-        def model(u_values, u_sigma_values, absg1_values, absg2_values,
-                norm_factor, absg_bins, gamma=None):
-            ndim = self.n_bins
+        def model(u_values, u_sigma_values, absg1_values, absg2_values, norm_factor, 
+                  absg_bins, 
+                  gamma=None):
 
             # Prior: uniform for each mass bin
+            ndim = self.n_bins
             mass_bins = numpyro.sample('mass_bins',
                                       dist.Uniform(mass_min, mass_max).expand([ndim]))
 
@@ -578,29 +596,14 @@ class NonParametricPosteriorPlotter:
                 smoothness_penalty = -epsilon_reg * jnp.sum(second_diffs**2)
                 numpyro.factor('smoothness', smoothness_penalty)
 
-            # Vectorized likelihood calculation
+            # Predict masses for each star based on prior mass-absg relation
             m1 = jnp.interp(absg1_values, absg_bins, mass_bins)
             m2 = jnp.interp(absg2_values, absg_bins, mass_bins)
             mtot = m1 + m2
             sqrt_mtot = jnp.sqrt(mtot)
 
             # Calculate log likelihood for each data point
-            if u_sigma_values is None:
-                tilde_u = u_values / sqrt_mtot
-                pu = func_pu_8_jax(tilde_u)
-                good_component = (1.0 / sqrt_mtot) * pu
-                total_prob = good_component + self.p_epsilon
-                log_likelihood_vec = jnp.log(jnp.maximum(total_prob, 1e-100))
-            else:
-                def compute_single_likelihood(i):
-                    return jnp.log(likelihood_single_u_jax(
-                        u_values[i], sqrt_mtot[i],
-                        u_sigma_values[i], norm_factor[i]
-                    ))
-
-                log_likelihood_vec = jax.vmap(compute_single_likelihood)(
-                    jnp.arange(len(u_values))
-                )
+            log_likelihood_vec = jnp.log(likelihood_single_u_jax(u_values, sqrt_mtot, u_sigma_values, norm_factor=norm_factor))
 
             # Check for numerical issues and clamp
             log_likelihood_sum = jnp.sum(log_likelihood_vec)
@@ -753,7 +756,10 @@ class MultiMetallicityFitter:
     relations in different metallicity bins.
     """
 
-    def __init__(self, n_absg_bins=10, absg_min=4.0, absg_max=12.0, uncertainty_model='rice'):
+    def __init__(self, n_absg_bins=10, absg_min=4.0, absg_max=12.0, uncertainty_model='rice',
+                 f_outlier=0, outlier_u0=30, outlier_sigma=15
+                 ):
+        
         """
         Initialize the multi-metallicity fitter.
 
@@ -772,6 +778,11 @@ class MultiMetallicityFitter:
         self.absg_min = absg_min
         self.absg_max = absg_max
         self.uncertainty_model = uncertainty_model
+        self.f_outlier = f_outlier
+        self.f_good = 1 - f_outlier
+        self.outlier_u0 = outlier_u0
+        self.outlier_sigma = outlier_sigma
+        
         self.fitters = {}  # Dictionary to store fitters for each metallicity bin
         self.feh_bin_edges = None
         self.feh_bin_centers = None
@@ -875,7 +886,10 @@ class MultiMetallicityFitter:
                 n_bins=self.n_absg_bins,
                 absg_min=self.absg_min,
                 absg_max=self.absg_max,
-                uncertainty_model=self.uncertainty_model
+                uncertainty_model=self.uncertainty_model,
+                f_outlier=self.f_outlier,
+                outlier_u0=self.outlier_u0,
+                outlier_sigma=self.outlier_sigma
             )
 
             # Set data
@@ -901,7 +915,6 @@ class MultiMetallicityFitter:
                 mass_max=mass_max,
                 seed=seed
             )
-
             # Store fitter
             self.fitters[bin_idx] = fitter
 
