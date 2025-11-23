@@ -482,7 +482,7 @@ class NonParametricPosteriorPlotter:
             JAX version of Gaussian distribution:
             p(x | mu, sigma) = (1/(sigma*sqrt(2*pi))) * exp[-(x-mu)^2/(2*sigma^2)]
             """
-            sigma = jnp.maximum(sigma, 1e-10)
+            x, mu, sigma = jnp.broadcast_arrays(x, mu, jnp.maximum(sigma, 1e-10))
             coeff = 1.0 / (sigma * jnp.sqrt(2 * jnp.pi))
             exponent = -0.5 * ((x - mu) / sigma)**2
             return coeff * jnp.exp(exponent)
@@ -494,8 +494,10 @@ class NonParametricPosteriorPlotter:
 
             Uses log-space calculation for numerical stability when Bessel argument is large.
             """
-            sigma = jnp.maximum(sigma, 1e-10)
-            sigma_sq = sigma ** 2
+            u_obs, u_true, sigma = jnp.broadcast_arrays(
+                u_obs, u_true, jnp.maximum(sigma, 1e-10)
+            )
+            sigma_sq = sigma**2
 
             bessel_arg = u_obs * u_true / sigma_sq
 
@@ -547,29 +549,38 @@ class NonParametricPosteriorPlotter:
                 # Ensure positive sigma
                 u_sigma = jnp.maximum(u_sigma, 1e-10)
 
+                # Expand dimensions to broadcast across integration grid
+                u_obs_grid = (u / sqrt_mtot)[:, None]  # shape (N, 1)
+                sigma_grid = (u_sigma / sqrt_mtot)[:, None]  # shape (N, 1)
+                integration_grid = int_ulist_jax[None, :]  # shape (1, M)
+
                 # With uncertainty: integrate over the distribution
                 if self.uncertainty_model == 'rice':
                     # Rice distribution: p(u_obs | u_true, sigma)
                     uncertainty_dist = rice_distribution_jax(
-                        (u / sqrt_mtot),  # u_obs (fixed observed value)
-                        int_ulist_jax,    # ũ (integration variable, true values)
-                        (u_sigma / sqrt_mtot)  # σ
+                        u_obs_grid,        # u_obs (fixed observed value)
+                        integration_grid,  # ũ (integration variable, true values)
+                        sigma_grid         # σ
                     )
                 elif self.uncertainty_model == 'gaussian':
                     # Gaussian distribution: p(u_obs | u_true, sigma) = N(u_obs; u_true, sigma)
                     uncertainty_dist = gaussian_jax(
-                        (u / sqrt_mtot),  # u_obs (fixed observed value)
-                        int_ulist_jax,    # μ = ũ (integration variable, mean = true values)
-                        (u_sigma / sqrt_mtot)  # σ
+                        u_obs_grid,        # u_obs (fixed observed value)
+                        integration_grid,  # μ = ũ (integration variable, mean = true values)
+                        sigma_grid         # σ
                     )
 
                 # Integrand: (1/sqrt(m_tot)) * p(ũ) * P(u_obs | ũ, σ)
-                integrand = ((1.0 / sqrt_mtot) * func_pu_8_jax(int_ulist_jax) *
-                           uncertainty_dist) * int_du
+                integrand = (
+                    (1.0 / sqrt_mtot[:, None])
+                    * func_pu_8_jax(int_ulist_jax)[None, :]
+                    * uncertainty_dist
+                    * int_du
+                )
 
                 # Ensure norm_factor is positive
                 norm_factor = jnp.maximum(norm_factor, 1e-10)
-                good_component = jnp.sum(integrand) / norm_factor + self.p_epsilon / (int_umax / int_du)
+                good_component = jnp.sum(integrand, axis=1) / norm_factor + self.p_epsilon / (int_umax / int_du)
                 outlier_component = outlier_gaussian_jax(tilde_u, self.outlier_u0, self.outlier_sigma) / norm_factor
 
             total_prob = self.f_good * good_component + self.f_outlier * outlier_component + self.p_epsilon
@@ -746,6 +757,716 @@ class NonParametricPosteriorPlotter:
         plt.tight_layout()
         plt.savefig(f'{output_dir}/nonparametric_fit_{self.n_bins}bins_{self.uncertainty_model}{output_suffix}.png', dpi=300)
         plt.close(fig)
+
+
+class BrokenPowerLawMLR:
+    """
+    Parametric Bayesian inference for mass-luminosity relations using broken power-law.
+
+    The mass-luminosity relation is parameterized as:
+        M_G = a_i + b_i * log10(M/M_sun)  for M_{i-1} < M < M_i
+
+    where the break points are fixed at specified mass values (e.g., 0.1, 0.3, 0.5, 1.0 M_sun).
+
+    Uses NumPyro with NUTS sampler for posterior inference.
+    """
+
+    # Default break points in solar masses
+    DEFAULT_BREAK_POINTS = np.array([0.2, 0.4, 0.6, 1.2])
+    DEFAULT_MASS_MIN = 0.05
+    DEFAULT_MASS_MAX = 3.0
+
+    def __init__(self, break_points=None, uncertainty_model='rice',
+                 f_outlier=0, outlier_u0=30, outlier_sigma=15):
+        """
+        Initialize the broken power-law MLR fitter.
+
+        Parameters
+        ----------
+        break_points : array_like, optional
+            Mass values (in M_sun) where the power-law breaks.
+            Default: [0.1, 0.3, 0.5, 1.0]
+        uncertainty_model : str
+            Uncertainty model: 'rice' or 'gaussian' (default: 'rice')
+        f_outlier : float
+            Fraction of outliers (default: 0)
+        outlier_u0 : float
+            Outlier distribution center
+        outlier_sigma : float
+            Outlier distribution width
+        """
+        if break_points is None:
+            break_points = self.DEFAULT_BREAK_POINTS.copy()
+        self.break_points = np.array(break_points)
+        self.n_segments = len(self.break_points) + 1  # Number of power-law segments
+
+        # Uncertainty model selection
+        if uncertainty_model not in ['rice', 'gaussian']:
+            raise ValueError("uncertainty_model must be 'rice' or 'gaussian'")
+        self.uncertainty_model = uncertainty_model
+
+        # Outlier model parameters
+        self.f_outlier = f_outlier
+        self.f_good = 1 - f_outlier
+        self.p_epsilon = 1e-10
+        self.outlier_u0 = outlier_u0
+        self.outlier_sigma = outlier_sigma
+        self.mass_min = self.DEFAULT_MASS_MIN
+        self.mass_max = self.DEFAULT_MASS_MAX
+
+        # Data storage
+        self.u_values = None
+        self.u_sigma_values = None
+        self.absg1_values = None
+        self.absg2_values = None
+        self.norm_factor = None
+
+        # Results storage
+        self.sampler = None
+        self.samples = None
+        self.results = None
+
+        # Parameter names for each segment: a_i, b_i
+        self.param_names = []
+        for i in range(self.n_segments):
+            self.param_names.extend([f'a_{i}', f'b_{i}'])
+
+    def _compute_continuous_intercepts(self, mag_at_bp0, slopes, break_points):
+        """
+        Enforce continuity at each break by deriving intercepts from slopes.
+
+        Parameters
+        ----------
+        mag_at_bp0 : float
+            M_G value at the first break point (break_points[0])
+        slopes : array
+            Slope for each segment
+        break_points : array
+            Mass values at break points
+
+        The intercept a_i is defined such that M_G = a_i + b_i * log10(M).
+        We first compute a_0 from mag_at_bp0, then propagate continuity.
+        """
+        log_bp = np.log10(break_points)
+
+        # Compute a_0: at break_points[0], M_G = a_0 + b_0 * log10(bp[0]) = mag_at_bp0
+        a_0 = mag_at_bp0 - slopes[0] * log_bp[0]
+        intercepts = [a_0]
+
+        # Continuity: a_{i-1} + b_{i-1} * log10(bp[i-1]) = a_i + b_i * log10(bp[i-1])
+        for i in range(1, len(slopes)):
+            prev_a = intercepts[i - 1]
+            prev_b = slopes[i - 1]
+            a_i = prev_a + prev_b * log_bp[i - 1] - slopes[i] * log_bp[i - 1]
+            intercepts.append(a_i)
+        return np.array(intercepts)
+
+    @staticmethod
+    def _compute_continuous_intercepts_jax(mag_at_bp0, slopes, break_points):
+        """
+        JAX version of continuous intercept computation.
+
+        Parameters
+        ----------
+        mag_at_bp0 : float
+            M_G value at the first break point
+        slopes : jax array
+            Slope for each segment
+        break_points : jax array
+            Mass values at break points
+        """
+        import jax.numpy as jnp
+
+        log_bp = jnp.log10(break_points)
+
+        # Compute a_0 from mag_at_bp0
+        a_0 = mag_at_bp0 - slopes[0] * log_bp[0]
+        intercepts = [a_0]
+
+        # Propagate continuity
+        for i in range(1, len(slopes)):
+            prev_a = intercepts[i - 1]
+            prev_b = slopes[i - 1]
+            a_i = prev_a + prev_b * log_bp[i - 1] - slopes[i] * log_bp[i - 1]
+            intercepts.append(a_i)
+        return jnp.stack(intercepts)
+
+    def _split_params(self, params):
+        """Split flattened [a0.., b0..] into intercept and slope arrays."""
+        intercepts = params[0::2]
+        slopes = params[1::2]
+        return intercepts, slopes
+
+    def absg_from_mass(self, mass, params):
+        """
+        Compute absolute G magnitude from mass using broken power-law.
+
+        M_G = a_i + b_i * log10(M/M_sun) for segment i
+
+        Parameters
+        ----------
+        mass : array_like
+            Mass values in solar masses
+        params : array_like
+            Flattened parameters [a_0, b_0, a_1, b_1, ...]
+
+        Returns
+        -------
+        absg : array_like
+            Absolute G magnitudes
+        """
+        mass = np.atleast_1d(mass)
+        mass = np.clip(mass, self.mass_min, self.mass_max)
+        absg = np.zeros_like(mass)
+        log_mass = np.log10(mass)
+        intercepts, slopes = self._split_params(params)
+
+        # Build segment boundaries: [mass_min, break_points, mass_max]
+        boundaries = np.concatenate([[self.mass_min], self.break_points, [self.mass_max]])
+
+        for i in range(self.n_segments):
+            a_i = intercepts[i]
+            b_i = slopes[i]
+            # Use <= for the last segment to include mass_max
+            if i == self.n_segments - 1:
+                mask = (mass >= boundaries[i]) & (mass <= boundaries[i+1])
+            else:
+                mask = (mass >= boundaries[i]) & (mass < boundaries[i+1])
+            absg[mask] = a_i + b_i * log_mass[mask]
+
+        return absg
+
+    def mass_from_absg(self, absg, params):
+        """
+        Compute mass from absolute G magnitude using broken power-law.
+
+        M = 10^((M_G - a_i) / b_i) for segment i
+
+        This requires iterative solving since we don't know which segment
+        a given M_G falls into until we know the mass.
+
+        Parameters
+        ----------
+        absg : array_like
+            Absolute G magnitude values
+        params : array_like
+            Flattened parameters [a_0, b_0, a_1, b_1, ...]
+
+        Returns
+        -------
+        mass : array_like
+            Mass values in solar masses
+        """
+        absg = np.atleast_1d(absg)
+        mass = np.zeros_like(absg)
+        intercepts, slopes = self._split_params(params)
+
+        # Build segment boundaries
+        boundaries = np.concatenate([[self.mass_min], self.break_points, [self.mass_max]])
+
+        # For each segment, compute mass and check if it falls in valid range
+        for i in range(self.n_segments):
+            a_i = intercepts[i]
+            b_i = slopes[i]
+
+            # Compute mass for this segment: M = 10^((M_G - a) / b)
+            mass_candidate = 10**((absg - a_i) / b_i)
+
+            # Check if mass falls within this segment's boundaries
+            # Use <= for upper bound to include edge values
+            mask = (mass_candidate >= boundaries[i]) & (mass_candidate <= boundaries[i+1])
+            mass[mask] = mass_candidate[mask]
+
+        return np.clip(mass, self.mass_min, self.mass_max)
+
+    def mass_from_absg_jax(self, absg, params, break_points):
+        """
+        JAX-compatible version of mass_from_absg for use in NumPyro model.
+
+        Parameters
+        ----------
+        absg : jax array
+            Absolute G magnitude values
+        params : jax array
+            Flattened parameters [a_0, b_0, a_1, b_1, ...]
+        break_points : jax array
+            Break point masses
+
+        Returns
+        -------
+        mass : jax array
+            Mass values in solar masses
+        """
+        import jax.numpy as jnp
+
+        intercepts, slopes = self._split_params(params)
+        n_segments = len(break_points) + 1
+
+        # Initialize with zeros
+        mass = jnp.zeros_like(absg)
+
+        # Build segment boundaries
+        boundaries_low = jnp.concatenate([jnp.array([self.mass_min]), break_points])
+        boundaries_high = jnp.concatenate([break_points, jnp.array([self.mass_max])])
+
+        # For each segment, compute mass and check if it falls in range
+        for i in range(n_segments):
+            a_i = intercepts[i]
+            b_i = slopes[i]
+
+            # Compute mass for this segment: M = 10^((M_G - a) / b)
+            mass_candidate = jnp.power(10.0, (absg - a_i) / b_i)
+
+            # Check if mass falls within this segment's boundaries
+            in_segment = (mass_candidate >= boundaries_low[i]) & (mass_candidate < boundaries_high[i])
+
+            # Update mass where this segment applies
+            mass = jnp.where(in_segment, mass_candidate, mass)
+
+        # Clamp to reasonable range
+        mass = jnp.clip(mass, self.mass_min, self.mass_max)
+
+        return mass
+
+    def func_pu_8(self, tilde_u, A=4.95e-3, B=2.24e-3, C=3.85, u0=36.09):
+        """
+        The probability distribution for the normalized parameter ũ = u/√mtot
+        """
+        return A * tilde_u * np.exp(-1 * (
+            B * tilde_u**2 + np.exp((tilde_u - u0) / C)
+        ))
+
+    def set_data(self, u_values, u_sigma_values, absg1_values, absg2_values):
+        """
+        Set the data for fitting.
+
+        Parameters
+        ----------
+        u_values : array_like
+            Observed u values
+        u_sigma_values : array_like
+            Uncertainties in u values
+        absg1_values : array_like
+            Primary star absolute G magnitudes
+        absg2_values : array_like
+            Secondary star absolute G magnitudes
+        """
+        self.u_values = np.array(u_values)
+        self.u_sigma_values = np.array(u_sigma_values)
+        self.absg1_values = np.array(absg1_values)
+        self.absg2_values = np.array(absg2_values)
+
+        # Pre-compute normalization factor
+        int_umax = 100
+        int_du = 0.02
+        int_ulist = np.arange(0.01, int_umax, int_du)
+        self.norm_factor = np.sum(self.func_pu_8(int_ulist) * int_du)
+
+    def run_numpyro(self, num_warmup=1000, num_samples=2000, num_chains=4,
+                    mass_min=None, mass_max=None, seed=None,
+                    int_umax=100, int_du=0.02, use_dense_mass=False,
+                    a_prior_range=None, b_prior_range=None,
+                    a_prior_mu_sigma=(12.0, 3.0), b_prior_mu_sigma=(-6.0, 4.0),
+                    b_prior_bounds=(-20.0, 5.0),
+                    anchor_mass=0.2, anchor_absg=12.0, anchor_sigma=0.3, anchor_weight=1.0,
+                    **kwargs):
+        """
+        Run NumPyro MCMC inference for broken power-law parameters.
+
+        Parameters
+        ----------
+        num_warmup : int
+            Number of warmup samples
+        num_samples : int
+            Number of posterior samples
+        num_chains : int
+            Number of MCMC chains
+            mass_min, mass_max : float
+            Mass bounds for clamping
+        seed : int, optional
+            Random seed
+        int_umax : float
+            Upper limit for u integration
+        int_du : float
+            Integration step size
+        use_dense_mass : bool
+            Use dense mass matrix in NUTS
+        a_prior_range : tuple or None
+            Optional Uniform(low, high) prior range for M_G at the first break point.
+            If None (default), use a weakly-informative Normal with mean/sigma given
+            by a_prior_mu_sigma.
+        b_prior_range : tuple or None
+            Optional Uniform(low, high) prior range for slopes. If None (default),
+            use a truncated Normal with mean/sigma given by b_prior_mu_sigma and
+            hard bounds b_prior_bounds.
+        a_prior_mu_sigma : tuple
+            Mean and sigma for the Normal prior on mag_at_bp0 when a_prior_range is None.
+        b_prior_mu_sigma : tuple
+            Mean and sigma for the (truncated) Normal prior on slopes when b_prior_range is None.
+        b_prior_bounds : tuple
+            Low/high bounds for the truncated Normal slope prior.
+        anchor_mass : float
+            Anchor mass (in M_sun) to pin the zero-point of the MLR.
+        anchor_absg : float
+            Expected M_G at anchor_mass.
+        anchor_sigma : float
+            Uncertainty for the anchor prior (set to None to disable).
+        anchor_weight : float
+            Weight multiplier for the anchor likelihood term.
+        **kwargs : dict
+            Additional arguments passed to NUTS
+
+        Returns
+        -------
+        mcmc : numpyro.infer.MCMC
+            MCMC object with results
+        """
+        import jax
+        import jax.numpy as jnp
+        import numpyro
+        import numpyro.distributions as dist
+        from numpyro.infer import MCMC, NUTS
+        from scipy.special import i0 as bessel_i0
+
+        if self.u_values is None:
+            raise ValueError("Data not set. Call set_data() first.")
+
+        # Update mass bounds (default to class constants) and validate break points
+        self.mass_min = self.DEFAULT_MASS_MIN if mass_min is None else mass_min
+        self.mass_max = self.DEFAULT_MASS_MAX if mass_max is None else mass_max
+        valid_bp = self.break_points[(self.break_points > self.mass_min) & (self.break_points < self.mass_max)]
+        if len(valid_bp) != len(self.break_points):
+            print("Warning: Removing break points outside (mass_min, mass_max).")
+        if len(valid_bp) == 0:
+            raise ValueError("At least one break point is required within (mass_min, mass_max).")
+        self.break_points = valid_bp
+        self.n_segments = len(self.break_points) + 1
+        self.param_names = []
+        for i in range(self.n_segments):
+            self.param_names.extend([f'a_{i}', f'b_{i}'])
+
+        # Convert data to JAX arrays
+        u_values_jax = jnp.array(self.u_values)
+        u_sigma_values_jax = jnp.array(self.u_sigma_values)
+        absg1_values_jax = jnp.array(self.absg1_values)
+        absg2_values_jax = jnp.array(self.absg2_values)
+        norm_factor_jax = jnp.array(self.norm_factor)
+        break_points_jax = jnp.array(self.break_points)
+
+        # Integration grid
+        int_ulist_jax = jnp.arange(0.01, int_umax, int_du)
+
+        # Define JAX-compatible functions
+        def func_pu_8_jax(tilde_u, A=4.95e-3, B=2.24e-3, C=3.85, u0=36.09):
+            return A * tilde_u * jnp.exp(-1 * (
+                B * tilde_u**2 + jnp.exp((tilde_u - u0) / C)
+            ))
+
+        def rice_distribution_jax(x, nu, sigma):
+            """Rice distribution PDF using JAX."""
+            sigma2 = sigma**2
+            x_safe = jnp.maximum(x, 1e-10)
+            nu_safe = jnp.maximum(nu, 1e-10)
+            sigma_safe = jnp.maximum(sigma, 1e-10)
+            sigma2_safe = sigma_safe**2
+
+            bessel_arg = x_safe * nu_safe / sigma2_safe
+            bessel_arg_clipped = jnp.minimum(bessel_arg, 700)
+            log_i0 = bessel_arg_clipped
+
+            log_pdf = (jnp.log(x_safe) - 2*jnp.log(sigma_safe)
+                      - (x_safe**2 + nu_safe**2)/(2*sigma2_safe) + log_i0)
+            return jnp.exp(log_pdf)
+
+        def gaussian_jax(x, mu, sigma):
+            """Gaussian distribution PDF using JAX."""
+            return jnp.exp(-0.5 * ((x - mu) / sigma)**2) / (sigma * jnp.sqrt(2 * jnp.pi))
+
+        def outlier_gaussian_jax(x, mu, sigma):
+            """Outlier Gaussian distribution."""
+            return jnp.exp(-0.5 * ((x - mu) / sigma)**2) / (sigma * jnp.sqrt(2 * jnp.pi))
+
+        def mass_from_absg_jax_inner(absg, intercepts, slopes, break_points_inner):
+            """Compute mass from M_G using broken power-law with enforced continuity.
+
+            For each M_G value, compute mass from each segment's equation and
+            select the one that falls within that segment's valid mass range.
+            """
+            absg_2d = absg[:, None]  # (N, 1)
+            a_2d = intercepts[None, :]  # (1, n_seg)
+            b_2d = slopes[None, :]  # (1, n_seg)
+
+            # Mass from each segment's equation: M = 10^((M_G - a) / b)
+            mass_all = jnp.power(10.0, (absg_2d - a_2d) / b_2d)  # (N, n_seg)
+
+            # Segment boundaries in mass space
+            boundaries_low = jnp.concatenate([jnp.array([self.mass_min]), break_points_inner])
+            boundaries_high = jnp.concatenate([break_points_inner, jnp.array([self.mass_max])])
+
+            # Check if computed mass falls in segment's valid range
+            in_segment = (mass_all >= boundaries_low[None, :]) & (mass_all <= boundaries_high[None, :])
+
+            # Select valid mass (sum works since only one should be valid due to continuity)
+            mass = jnp.sum(mass_all * in_segment, axis=1)
+
+            # Fallback for edge cases where no segment matched
+            mass = jnp.where(mass > 0, mass, self.mass_min)
+            return jnp.clip(mass, self.mass_min, self.mass_max)
+
+        def likelihood_single_u_jax(u_obs, sqrt_mtot, u_sigma, norm_factor):
+            """Compute likelihood for observed u values."""
+            tilde_u = u_obs / sqrt_mtot
+
+            integration_grid = int_ulist_jax[None, :] * sqrt_mtot[:, None]
+            u_obs_grid = u_obs[:, None] * jnp.ones((1, len(int_ulist_jax)))
+            sigma_grid = u_sigma[:, None] * jnp.ones((1, len(int_ulist_jax)))
+
+            if self.uncertainty_model == 'rice':
+                uncertainty_dist = rice_distribution_jax(u_obs_grid, integration_grid, sigma_grid)
+            else:
+                uncertainty_dist = gaussian_jax(u_obs_grid, integration_grid, sigma_grid)
+
+            integrand = (
+                (1.0 / sqrt_mtot[:, None])
+                * func_pu_8_jax(int_ulist_jax)[None, :]
+                * uncertainty_dist
+                * int_du
+            )
+
+            norm_factor = jnp.maximum(norm_factor, 1e-10)
+            good_component = jnp.sum(integrand, axis=1) / norm_factor + self.p_epsilon / (int_umax / int_du)
+            outlier_component = outlier_gaussian_jax(tilde_u, self.outlier_u0, self.outlier_sigma) / norm_factor
+
+            total_prob = self.f_good * good_component + self.f_outlier * outlier_component + self.p_epsilon
+            total_prob = jnp.clip(total_prob, 1e-100, 1e10)
+            return total_prob
+
+        # Define the NumPyro model
+        def model(u_values, u_sigma_values, absg1_values, absg2_values,
+                  norm_factor, break_points_inner):
+
+            n_segments = len(break_points_inner) + 1
+
+            # Sample M_G at first break point and independent slopes; derive intercepts to enforce continuity
+            if a_prior_range is not None:
+                mag_at_bp0 = numpyro.sample('mag_at_bp0', dist.Uniform(a_prior_range[0], a_prior_range[1]))
+            else:
+                mag_mu, mag_sigma = a_prior_mu_sigma
+                mag_at_bp0 = numpyro.sample('mag_at_bp0', dist.Normal(mag_mu, mag_sigma))
+
+            slopes = []
+            if b_prior_range is not None:
+                for i in range(n_segments):
+                    slopes.append(numpyro.sample(f'b_{i}', dist.Uniform(b_prior_range[0], b_prior_range[1])))
+            else:
+                b_mu, b_sigma = b_prior_mu_sigma
+                b_low, b_high = b_prior_bounds
+                for i in range(n_segments):
+                    slopes.append(
+                        numpyro.sample(
+                            f'b_{i}',
+                            dist.TruncatedNormal(loc=b_mu, scale=b_sigma, low=b_low, high=b_high)
+                        )
+                    )
+            slopes = jnp.stack(slopes)
+            intercepts = BrokenPowerLawMLR._compute_continuous_intercepts_jax(mag_at_bp0, slopes, break_points_inner)
+            params = jnp.ravel(jnp.stack([intercepts, slopes], axis=1))
+
+            # Anchor prior on M_G at a reference mass to reduce global zero-point shift
+            if anchor_sigma is not None and anchor_weight > 0:
+                anchor_mass_jax = jnp.clip(jnp.array(anchor_mass), self.mass_min, self.mass_max)
+                log_m_anchor = jnp.log10(anchor_mass_jax)
+                boundaries_low = jnp.concatenate([jnp.array([self.mass_min]), break_points_inner])
+                boundaries_high = jnp.concatenate([break_points_inner, jnp.array([self.mass_max])])
+                anchor_mask = (anchor_mass_jax >= boundaries_low) & (anchor_mass_jax < boundaries_high)
+                anchor_absg_pred = jnp.sum((intercepts + slopes * log_m_anchor) * anchor_mask)
+                anchor_logprob = dist.Normal(anchor_absg, anchor_sigma).log_prob(anchor_absg_pred)
+                numpyro.factor('anchor', anchor_weight * anchor_logprob)
+
+            # Compute masses from magnitudes
+            m1 = mass_from_absg_jax_inner(absg1_values, intercepts, slopes, break_points_inner)
+            m2 = mass_from_absg_jax_inner(absg2_values, intercepts, slopes, break_points_inner)
+            mtot = m1 + m2
+            sqrt_mtot = jnp.sqrt(mtot)
+
+            # Calculate log likelihood
+            log_likelihood_vec = jnp.log(likelihood_single_u_jax(
+                u_values, sqrt_mtot, u_sigma_values, norm_factor
+            ))
+
+            log_likelihood_sum = jnp.sum(log_likelihood_vec)
+            log_likelihood_sum = jnp.where(
+                jnp.isfinite(log_likelihood_sum),
+                log_likelihood_sum,
+                -1e10
+            )
+
+            numpyro.factor('obs', log_likelihood_sum)
+
+        # Run MCMC
+        nuts_kernel = NUTS(model, dense_mass=use_dense_mass, **kwargs)
+        mcmc = MCMC(
+            nuts_kernel,
+            num_warmup=num_warmup,
+            num_samples=num_samples,
+            num_chains=num_chains,
+            progress_bar=True
+        )
+
+        rng_key = jax.random.PRNGKey(seed if seed is not None else 42)
+        mcmc.run(rng_key, u_values_jax, u_sigma_values_jax,
+                 absg1_values_jax, absg2_values_jax,
+                 norm_factor_jax, break_points_jax)
+
+        # Store results
+        self.sampler = mcmc
+        samples_dict = mcmc.get_samples()
+
+        # Reconstruct samples as array [n_samples, 2 * n_segments] with continuous intercepts
+        mag_at_bp0_samples = np.array(samples_dict['mag_at_bp0'])
+        slope_samples = np.column_stack([np.array(samples_dict[f'b_{i}']) for i in range(self.n_segments)])
+        n_samples_total = len(mag_at_bp0_samples)
+        intercept_samples = np.zeros_like(slope_samples)
+        for idx in range(n_samples_total):
+            intercept_samples[idx] = self._compute_continuous_intercepts(
+                mag_at_bp0_samples[idx], slope_samples[idx], self.break_points
+            )
+
+        self.samples = np.zeros((n_samples_total, 2 * self.n_segments))
+        for i in range(self.n_segments):
+            self.samples[:, 2*i] = intercept_samples[:, i]
+            self.samples[:, 2*i + 1] = slope_samples[:, i]
+
+        self.results = type('obj', (object,), {
+            'samples': self.samples,
+            'logz': None,
+            'logzerr': None
+        })()
+
+        mcmc.print_summary()
+
+        return mcmc
+
+    def get_mass_luminosity_curve(self, params, mass_range=(0.05, 2.0), n_points=200):
+        """
+        Get the mass-luminosity curve for given parameters.
+
+        Parameters
+        ----------
+        params : array_like
+            Flattened parameters [a_0, b_0, a_1, b_1, ...]
+        mass_range : tuple
+            Range of masses to evaluate
+        n_points : int
+            Number of points
+
+        Returns
+        -------
+        masses : array
+            Mass values
+        absg : array
+            Corresponding M_G values
+        """
+        masses = np.logspace(np.log10(mass_range[0]), np.log10(mass_range[1]), n_points)
+        absg = self.absg_from_mass(masses, params)
+        return masses, absg
+
+    def plot_results(self, output_dir='', output_suffix='', truths=None):
+        """
+        Plot corner plot of posterior samples.
+
+        Parameters
+        ----------
+        output_dir : str
+            Output directory
+        output_suffix : str
+            Suffix for filename
+        truths : array_like, optional
+            True parameter values
+        """
+        if self.samples is None:
+            print("No samples available. Run inference first.")
+            return
+
+        try:
+            import corner
+            fig = corner.corner(
+                self.samples,
+                labels=self.param_names,
+                truths=truths,
+                truth_color='salmon',
+                show_titles=True
+            )
+            plt.tight_layout()
+            os.makedirs(output_dir, exist_ok=True) if output_dir else None
+            plt.savefig(f'{output_dir}/corner_broken_powerlaw_{output_suffix}.png', dpi=300)
+            plt.close(fig)
+            print(f"Saved corner plot to {output_dir}/corner_broken_powerlaw_{output_suffix}.png")
+        except ImportError:
+            print("corner package not installed.")
+
+    def plot_mass_luminosity(self, output_dir='', output_suffix='',
+                              mass_range=(0.05, 2.0), true_params=None):
+        """
+        Plot the fitted mass-luminosity relation with credible intervals.
+
+        Parameters
+        ----------
+        output_dir : str
+            Output directory
+        output_suffix : str
+            Suffix for filename
+        mass_range : tuple
+            Mass range to plot
+        true_params : array_like, optional
+            True parameters for comparison
+        """
+        if self.samples is None:
+            print("No samples available. Run inference first.")
+            return
+
+        # Sample masses for plotting
+        masses = np.logspace(np.log10(mass_range[0]), np.log10(mass_range[1]), 200)
+
+        # Compute M_G for each posterior sample
+        n_samples = min(500, len(self.samples))
+        indices = np.random.choice(len(self.samples), size=n_samples, replace=False)
+
+        absg_samples = np.zeros((n_samples, len(masses)))
+        for j, idx in enumerate(indices):
+            absg_samples[j] = self.absg_from_mass(masses, self.samples[idx])
+
+        # Compute percentiles
+        median = np.median(absg_samples, axis=0)
+        lower = np.percentile(absg_samples, 16, axis=0)
+        upper = np.percentile(absg_samples, 84, axis=0)
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        ax.fill_between(masses, lower, upper, alpha=0.3, color='blue', label='68% CI')
+        ax.plot(masses, median, 'b-', linewidth=2, label='Median fit')
+
+        # Mark break points
+        for bp in self.break_points:
+            ax.axvline(bp, color='gray', linestyle='--', alpha=0.5, label=f'Break: {bp} M$_\\odot$')
+
+        if true_params is not None:
+            true_absg = self.absg_from_mass(masses, true_params)
+            ax.plot(masses, true_absg, 'r--', linewidth=2, label='True relation')
+
+        ax.set_xscale('log')
+        ax.set_xlabel('Mass [$M_\\odot$]', fontsize=12)
+        ax.set_ylabel('$M_G$ [mag]', fontsize=12)
+        ax.invert_yaxis()  # Brighter = lower M_G
+        ax.legend(fontsize=10, loc='best')
+        ax.set_title(f'Broken Power-Law MLR ({self.n_segments} segments)', fontsize=14)
+
+        plt.tight_layout()
+        os.makedirs(output_dir, exist_ok=True) if output_dir else None
+        plt.savefig(f'{output_dir}/broken_powerlaw_mlr_{output_suffix}.png', dpi=300)
+        plt.close(fig)
+        print(f"Saved MLR plot to {output_dir}/broken_powerlaw_mlr_{output_suffix}.png")
 
 
 class MultiMetallicityFitter:
