@@ -29,7 +29,7 @@ def main():
     # Import data
     print("\n1. Importing data with metallicity...")
     tag = 'efuncu_unifm_mh_Jsu_n10k_obserr'
-    data_path = '/Volumes/WANG/postgraduate/4.2/Dyn/mock_data_'+tag+'.fits'
+    data_path = 'bayesian-binary-masses/data/mock_data_'+tag+'.fits'
     data = Table.read(data_path)
 
     # Prepare data subset
