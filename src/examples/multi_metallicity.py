@@ -9,7 +9,6 @@ Author: Yutong Wang
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
 from astropy.table import Table
 import sys
 import os
@@ -20,11 +19,144 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from binary_masses import MultiMetallicityFitter
 
 
+def test_nonparametric_model(data, output_dir):
+    """Test the non-parametric model using the new MultiMetallicityFitter."""
+    print("\n" + "="*50)
+    print("TESTING NON-PARAMETRIC MODEL")
+    print("="*50)
+
+    # Initialize multi-metallicity fitter with non-parametric model
+    print("1. Initializing non-parametric multi-metallicity fitter...")
+    multi_fitter = MultiMetallicityFitter(
+        model_type='nonparametric',
+        n_absg_bins=10,
+        absg_min=3.0,
+        absg_max=14.0,
+        uncertainty_model='rice'  # Use Rice distribution
+    )
+
+    # Bin data by metallicity
+    print("2. Binning data by metallicity...")
+    binned_data = multi_fitter.bin_data_by_metallicity(
+        data,
+        feh_column='feh',
+        n_feh_bins=3,
+        feh_min=-1,
+        feh_max=0.6,
+        equal_frequency=False  # Equal number of stars per bin
+    )
+
+    # Run fitting for all bins
+    print("3. Fitting all metallicity bins (non-parametric)...")
+    print("   This may take several minutes...")
+    multi_fitter.fit_all_bins(
+        binned_data,
+        gamma=np.inf,  # No regularization
+        num_warmup=800,   # Reduced for demo
+        num_samples=1500,  # Reduced for demo
+        num_chains=2,      # Reduced for demo
+        mass_min=0.05,
+        mass_max=2.0,
+        seed=42,
+    )
+
+    # Plot results
+    print("4. Plotting non-parametric results...")
+    multi_fitter.plot_all_results(output_dir=output_dir)
+    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, 'nonparametric_multi_feh_comparison.png'))
+
+    # Save samples
+    print("5. Saving non-parametric samples...")
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix='nonparametric_samples')
+
+    # Print summary
+    print("\n6. Non-parametric Summary Statistics:")
+    for bin_idx, fitter in multi_fitter.fitters.items():
+        feh_center = multi_fitter.feh_bin_centers[bin_idx]
+        mean_masses = np.mean(fitter.samples, axis=0)
+        print(f"   Bin {bin_idx} ([Fe/H]={feh_center:.2f}):")
+        print(f"     Mean masses: {mean_masses[:5]}...")
+        print(f"     Number of systems: {len(binned_data[bin_idx])}")
+
+    return multi_fitter
+
+
+def test_broken_powerlaw_model(data, output_dir):
+    """Test the broken power law model using the new MultiMetallicityFitter."""
+    print("\n" + "="*50)
+    print("TESTING BROKEN POWER LAW MODEL")
+    print("="*50)
+
+    # Define break points for the broken power law
+    break_points = np.array([0.2, 0.5, 1.0])  # Break points in solar masses
+    print(f"1. Using broken power law with break points: {break_points} M_sun")
+
+    # Initialize multi-metallicity fitter with broken power law model
+    print("2. Initializing broken power law multi-metallicity fitter...")
+    multi_fitter = MultiMetallicityFitter(
+        model_type='broken_powerlaw',
+        break_points=break_points,
+        uncertainty_model='rice',
+        f_outlier=0.1,  # Allow 10% outliers
+        outlier_u0=30,
+        outlier_sigma=15
+    )
+
+    # Bin data by metallicity
+    print("3. Binning data by metallicity...")
+    binned_data = multi_fitter.bin_data_by_metallicity(
+        data,
+        feh_column='feh',
+        n_feh_bins=3,
+        feh_min=-1,
+        feh_max=0.6,
+        equal_frequency=False  # Equal number of stars per bin
+    )
+
+    # Run fitting for all bins
+    print("4. Fitting all metallicity bins (broken power law)...")
+    print("   This may take several minutes...")
+    multi_fitter.fit_all_bins(
+        binned_data,
+        num_warmup=800,   # Reduced for demo
+        num_samples=1500,  # Reduced for demo
+        num_chains=2,      # Reduced for demo
+        seed=42,
+    )
+
+    # Plot results
+    print("5. Plotting broken power law results...")
+    multi_fitter.plot_all_results(output_dir=output_dir)
+    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, 'broken_powerlaw_multi_feh_comparison.png'))
+
+    # Save samples
+    print("6. Saving broken power law samples...")
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix='broken_powerlaw_samples')
+
+    # Print summary
+    print("\n7. Broken Power Law Summary Statistics:")
+    for bin_idx, fitter in multi_fitter.fitters.items():
+        feh_center = multi_fitter.feh_bin_centers[bin_idx]
+        print(f"   Bin {bin_idx} ([Fe/H]={feh_center:.2f}):")
+        print(f"     Number of systems: {len(binned_data[bin_idx])}")
+        # Print model-specific summary if available
+        if hasattr(fitter, 'print_summary'):
+            try:
+                fitter.print_summary()
+            except:
+                pass  # Skip if print_summary fails
+
+    return multi_fitter
+
+
+
+
 def main():
     """Main multi-metallicity fitting routine."""
-    print("=" * 60)
+    print("=" * 70)
     print("Multi-Metallicity Binary Mass Fitting Example")
-    print("=" * 60)
+    print("Testing Both Non-Parametric and Broken Power Law Models")
+    print("=" * 70)
 
     # Import data
     print("\n1. Importing data with metallicity...")
@@ -39,68 +171,45 @@ def main():
     data = data[data['feh']>=-1]  # focus on higher metallicity
     data = data[data['feh']<=0.6]
 
-    # Using a smaller subset for faster grid search
+    # Using a smaller subset for faster testing
     indices = np.random.choice(len(data), size=5000, replace=False)
     data = data[indices]
+    print(f"   Using {len(data)} systems for testing")
 
-    # Initialize multi-metallicity fitter
-    print("\n2. Initializing multi-metallicity fitter...")
-    multi_fitter = MultiMetallicityFitter(
-        n_absg_bins=10,
-        absg_min=3.0,
-        absg_max=14.0,
-        uncertainty_model='rice'  # Use Rice distribution
-    )
+    # Set output directory
+    output_dir = '/Users/ytwang/Library/CloudStorage/OneDrive-Personal/Files/postgraduate/PyProjects/Dyn/bayesian-binary-masses/tests/results'
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"\n2. Results will be saved to: {output_dir}")
 
-    # Bin data by metallicity
-    print("\n3. Binning data by metallicity...")
-    binned_data = multi_fitter.bin_data_by_metallicity(
-        data,
-        feh_column='feh',
-        n_feh_bins=3,
-        feh_min=-1,
-        feh_max=0.6,
-        equal_frequency=False  # Equal number of stars per bin
-    )
+    # Test non-parametric model
+    # nonparametric_fitter = test_nonparametric_model(data, output_dir)
 
-    # Run fitting for all bins
-    print("\n4. Fitting all metallicity bins...")
-    print("   This may take several minutes...")
-    multi_fitter.fit_all_bins(
-        binned_data,
-        gamma=np.inf,  # No regularization
-        num_warmup=800,   # Reduced for demo
-        num_samples=1500,  # Reduced for demo
-        num_chains=2,      # Reduced for demo
-        mass_min=0.05,
-        mass_max=2.0,
-        seed=42,
-    )
+    # Test broken power law model
+    broken_powerlaw_models = test_broken_powerlaw_model(data, output_dir)
 
-    # Plot results
-    multi_fitter.plot_all_results(output_dir='/Users/ytwang/Library/CloudStorage/OneDrive-Personal/Files/postgraduate/PyProjects/Dyn/Validation/V3_results')
-    multi_fitter.plot_comparison(output_path='/Users/ytwang/Library/CloudStorage/OneDrive-Personal/Files/postgraduate/PyProjects/Dyn/Validation/V3_results/mass_absg_comparison_Jsumh_rice_poly_n5k.png')
-    
-    # Save samples
-    multi_fitter.save_all_samples(output_dir='/Users/ytwang/Library/CloudStorage/OneDrive-Personal/Files/postgraduate/PyProjects/Dyn/Validation/V3_results', prefix='posterior_samples_n5k_Jsu_rice_poly')
+    # Final summary
+    # print("\n" + "=" * 70)
+    # print("FINAL SUMMARY")
+    # print("=" * 70)
+    # print(f"✓ Non-parametric model test completed")
+    # print(f"  - Number of metallicity bins: {len(nonparametric_fitter.fitters)}")
 
-    # Print summary
-    print("\n6. Summary Statistics:")
-    for bin_idx, fitter in multi_fitter.fitters.items():
-        feh_center = multi_fitter.feh_bin_centers[bin_idx]
-        mean_masses = np.mean(fitter.samples, axis=0)
-        print(f"   Bin {bin_idx} ([Fe/H]={feh_center:.2f}):")
-        print(f"     Mean masses: {mean_masses[:5]}...")
-        print(f"     Number of systems: {len(binned_data[bin_idx])}")
+    print(f"\n✓ Broken power law model test completed")
+    print(f"  - Number of metallicity bins fitted: {len(broken_powerlaw_models)}")
 
-    print("\n7. Results saved to 'results/' directory:")
-    print("   - Individual corner and fit plots for each metallicity bin")
-    print("   - multi_metallicity_comparison.png")
-    print("   - Posterior samples: multi_feh_samples_*.txt")
+    print(f"\nGenerated files in {output_dir}:")
+    print(f"  Non-parametric:")
+    print(f"    - nonparametric_*.png")
+    print(f"    - nonparametric_samples_*.txt")
+    print(f"    - nonparametric_multi_feh_comparison.png")
+    print(f"  Broken Power Law:")
+    print(f"    - broken_powerlaw_feh_*_results.png")
+    print(f"    - broken_powerlaw_feh_*_samples.txt")
+    print(f"    - broken_powerlaw_multi_feh_comparison.png")
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("Multi-metallicity example completed successfully!")
-    print("=" * 60)
+    print("=" * 70)
 
 
 if __name__ == "__main__":

@@ -186,7 +186,7 @@ class PU8Sampler:
             raise ValueError("Method must be 'rejection' or 'inverse_transform'")
 
 
-class NonParametricPosteriorPlotter:
+class NonParametricMLR:
     """
     Non-parametric Bayesian inference for mass-luminosity relations.
 
@@ -772,9 +772,9 @@ class BrokenPowerLawMLR:
     """
 
     # Default break points in solar masses
-    DEFAULT_BREAK_POINTS = np.array([0.2, 0.4, 0.6, 1.2])
-    DEFAULT_MASS_MIN = 0.05
-    DEFAULT_MASS_MAX = 3.0
+    DEFAULT_BREAK_POINTS = np.array([0.4])
+    DEFAULT_MASS_MIN = 0.08
+    DEFAULT_MASS_MAX = 2.0
 
     def __init__(self, break_points=None, uncertainty_model='rice',
                  f_outlier=0, outlier_u0=30, outlier_sigma=15):
@@ -916,7 +916,7 @@ class BrokenPowerLawMLR:
             Absolute G magnitudes
         """
         mass = np.atleast_1d(mass)
-        mass = np.clip(mass, self.mass_min, self.mass_max)
+        mass = np.clip(mass, self.mass_min, self.mass_max)  # Clip (limit) the values in an array.
         absg = np.zeros_like(mass)
         log_mass = np.log10(mass)
         intercepts, slopes = self._split_params(params)
@@ -1164,7 +1164,6 @@ class BrokenPowerLawMLR:
 
         def rice_distribution_jax(x, nu, sigma):
             """Rice distribution PDF using JAX."""
-            sigma2 = sigma**2
             x_safe = jnp.maximum(x, 1e-10)
             nu_safe = jnp.maximum(nu, 1e-10)
             sigma_safe = jnp.maximum(sigma, 1e-10)
@@ -1272,7 +1271,7 @@ class BrokenPowerLawMLR:
             intercepts = BrokenPowerLawMLR._compute_continuous_intercepts_jax(mag_at_bp0, slopes, break_points_inner)
             params = jnp.ravel(jnp.stack([intercepts, slopes], axis=1))
 
-            # Anchor prior on M_G at a reference mass to reduce global zero-point shift
+            # Anchor prior on (M_G at a reference mass) to reduce global zero-point shift
             if anchor_sigma is not None and anchor_weight > 0:
                 anchor_mass_jax = jnp.clip(jnp.array(anchor_mass), self.mass_min, self.mass_max)
                 log_m_anchor = jnp.log10(anchor_mass_jax)
@@ -1474,27 +1473,42 @@ class MultiMetallicityFitter:
     Wrapper class to fit multiple metallicity bins.
 
     This class provides a convenient interface for fitting mass-luminosity
-    relations in different metallicity bins.
+    relations in different metallicity bins using either non-parametric
+    or broken power-law parameterizations.
     """
 
-    def __init__(self, n_absg_bins=10, absg_min=4.0, absg_max=12.0, uncertainty_model='rice',
-                 f_outlier=0, outlier_u0=30, outlier_sigma=15
-                 ):
-        
+    def __init__(self, model_type='nonparametric', n_absg_bins=10, absg_min=4.0, absg_max=12.0,
+                 uncertainty_model='rice', f_outlier=0, outlier_u0=30, outlier_sigma=15,
+                 break_points=None):
+
         """
         Initialize the multi-metallicity fitter.
 
         Parameters
         ----------
+        model_type : str
+            Type of model to use: 'nonparametric' or 'broken_powerlaw' (default: 'nonparametric')
         n_absg_bins : int
-            Number of bins to split the absg range into
+            Number of bins to split the absg range into (only for nonparametric model)
         absg_min : float
-            Minimum absg value
+            Minimum absg value (only for nonparametric model)
         absg_max : float
-            Maximum absg value
+            Maximum absg value (only for nonparametric model)
         uncertainty_model : str
             Uncertainty model to use: 'rice' or 'gaussian' (default: 'rice')
+        f_outlier : float
+            Fraction of outliers (default: 0)
+        outlier_u0 : float
+            Outlier distribution center (default: 30)
+        outlier_sigma : float
+            Outlier distribution width (default: 15)
+        break_points : array_like, optional
+            Mass break points for broken power law model (default: [0.2, 0.5, 1.0])
         """
+        self.model_type = model_type.lower()
+        if self.model_type not in ['nonparametric', 'broken_powerlaw']:
+            raise ValueError("model_type must be 'nonparametric' or 'broken_powerlaw'")
+
         self.n_absg_bins = n_absg_bins
         self.absg_min = absg_min
         self.absg_max = absg_max
@@ -1503,7 +1517,13 @@ class MultiMetallicityFitter:
         self.f_good = 1 - f_outlier
         self.outlier_u0 = outlier_u0
         self.outlier_sigma = outlier_sigma
-        
+
+        # Set default break points for broken power law
+        if break_points is None:
+            self.break_points = np.array([0.2, 0.5, 1.0])
+        else:
+            self.break_points = np.array(break_points)
+
         self.fitters = {}  # Dictionary to store fitters for each metallicity bin
         self.feh_bin_edges = None
         self.feh_bin_centers = None
@@ -1583,7 +1603,7 @@ class MultiMetallicityFitter:
         u_column, u_sigma_column, absg1_column, absg2_column : str
             Column names in the data
         gamma : float
-            Regularization parameter
+            Regularization parameter (only for nonparametric model)
         mass_min, mass_max : float
             Mass bounds
         num_warmup, num_samples, num_chains : int
@@ -1597,45 +1617,74 @@ class MultiMetallicityFitter:
                 continue
 
             print(f"\n{'='*60}")
-            print(f"Fitting metallicity bin {bin_idx}")
+            print(f"Fitting metallicity bin {bin_idx} using {self.model_type} model")
             print(f"[Fe/H] range: [{self.feh_bin_edges[bin_idx]:.2f}, {self.feh_bin_edges[bin_idx+1]:.2f}]")
             print(f"Number of stars: {len(data)}")
             print(f"{'='*60}\n")
 
-            # Create fitter for this bin
-            fitter = NonParametricPosteriorPlotter(
-                n_bins=self.n_absg_bins,
-                absg_min=self.absg_min,
-                absg_max=self.absg_max,
-                uncertainty_model=self.uncertainty_model,
-                f_outlier=self.f_outlier,
-                outlier_u0=self.outlier_u0,
-                outlier_sigma=self.outlier_sigma
-            )
-
-            # Set data
+            # Extract data
             u_values = data[u_column].data
             u_sigma_values = data[u_sigma_column].data if u_sigma_column in data.colnames else None
             absg1_values = data[absg1_column].data
             absg2_values = data[absg2_column].data
 
-            fitter.set_data(
-                u_values=u_values,
-                u_sigma_values=u_sigma_values,
-                absg1_values=absg1_values,
-                absg2_values=absg2_values,
-                gamma=gamma
-            )
+            if self.model_type == 'nonparametric':
+                # Create non-parametric fitter for this bin
+                fitter = NonParametricMLR(
+                    n_bins=self.n_absg_bins,
+                    absg_min=self.absg_min,
+                    absg_max=self.absg_max,
+                    uncertainty_model=self.uncertainty_model,
+                    f_outlier=self.f_outlier,
+                    outlier_u0=self.outlier_u0,
+                    outlier_sigma=self.outlier_sigma
+                )
 
-            # Run fitting
-            fitter.run_numpyro(
-                num_warmup=num_warmup,
-                num_samples=num_samples,
-                num_chains=num_chains,
-                mass_min=mass_min,
-                mass_max=mass_max,
-                seed=seed
-            )
+                # Set data
+                fitter.set_data(
+                    u_values=u_values,
+                    u_sigma_values=u_sigma_values,
+                    absg1_values=absg1_values,
+                    absg2_values=absg2_values,
+                    gamma=gamma
+                )
+
+                # Run fitting
+                fitter.run_numpyro(
+                    num_warmup=num_warmup,
+                    num_samples=num_samples,
+                    num_chains=num_chains,
+                    mass_min=mass_min,
+                    mass_max=mass_max,
+                    seed=seed
+                )
+
+            elif self.model_type == 'broken_powerlaw':
+                # Create broken power-law fitter for this bin
+                fitter = BrokenPowerLawMLR(
+                    break_points=self.break_points,
+                    uncertainty_model=self.uncertainty_model,
+                    f_outlier=self.f_outlier,
+                    outlier_u0=self.outlier_u0,
+                    outlier_sigma=self.outlier_sigma
+                )
+
+                # Set data
+                fitter.prepare_data(
+                    u_values=u_values,
+                    u_sigma_values=u_sigma_values,
+                    absg1_values=absg1_values,
+                    absg2_values=absg2_values
+                )
+
+                # Run fitting
+                fitter.sample(
+                    num_warmup=num_warmup,
+                    num_samples=num_samples,
+                    num_chains=num_chains,
+                    seed=seed
+                )
+
             # Store fitter
             self.fitters[bin_idx] = fitter
 
@@ -1652,13 +1701,21 @@ class MultiMetallicityFitter:
 
         for bin_idx, fitter in self.fitters.items():
             suffix = f'_fehbin{bin_idx}'
-            fitter.plot_results(output_dir=output_dir, output_suffix=suffix)
-            fitter.plot_fitting_results(output_dir=output_dir, output_suffix=suffix)
+
+            if self.model_type == 'nonparametric':
+                # Non-parametric model plotting
+                fitter.plot_results(output_dir=output_dir, output_suffix=suffix)
+                fitter.plot_fitting_results(output_dir=output_dir, output_suffix=suffix)
+
+            elif self.model_type == 'broken_powerlaw':
+                # Broken power law model plotting
+                plot_path = os.path.join(output_dir, f'broken_powerlaw_mlr{suffix}.png')
+                fitter.plot_results(output_path=plot_path, show_data=True, show_median=True, show_credible_regions=True)
 
     def plot_comparison(self, output_path='mass_absg_comparison.png',
                        true_mass_funcs=None):
         """
-        Plot comparison of mass-absg relations across all metallicity bins.
+        Plot comparison of mass-luminosity relations across all metallicity bins.
 
         Parameters
         ----------
@@ -1676,44 +1733,88 @@ class MultiMetallicityFitter:
         # Color map for different metallicity bins
         colors = cm.viridis(np.linspace(0, 1, len(self.fitters)))
 
-        absg_range = np.linspace(self.absg_min, self.absg_max, 1000)
-
         for (bin_idx, fitter), color in zip(self.fitters.items(), colors):
-            # Get median and credible intervals
-            num_samples = min(1000, len(fitter.samples))
-            indices = np.random.choice(len(fitter.samples), size=num_samples, replace=False)
-            resampled_data = fitter.samples[indices]
 
-            fitted_mass_samples = np.array([
-                np.interp(absg_range, fitter.absg_bins, mass_bins)
-                for mass_bins in resampled_data
-            ])
+            if self.model_type == 'nonparametric':
+                # Non-parametric model: plot mass vs magnitude
+                absg_range = np.linspace(self.absg_min, self.absg_max, 1000)
 
-            percentiles = np.percentile(fitted_mass_samples, [16, 50, 84], axis=0)
-            lower, median, upper = percentiles[0], percentiles[1], percentiles[2]
+                num_samples = min(1000, len(fitter.samples))
+                indices = np.random.choice(len(fitter.samples), size=num_samples, replace=False)
+                resampled_data = fitter.samples[indices]
 
-            # Plot
-            label = f'[Fe/H]=[{self.feh_bin_edges[bin_idx]:.2f}, {self.feh_bin_edges[bin_idx+1]:.2f}]'
-            ax.fill_between(absg_range, lower, upper, color=color, alpha=0.2)
-            ax.plot(absg_range, median, color=color, label=label, linewidth=2)
+                fitted_mass_samples = np.array([
+                    np.interp(absg_range, fitter.absg_bins, mass_bins)
+                    for mass_bins in resampled_data
+                ])
 
-            # Plot true relation if provided
-            if true_mass_funcs is not None:
-                if callable(true_mass_funcs):
-                    true_func = true_mass_funcs
-                else:
-                    true_func = true_mass_funcs.get(bin_idx)
+                percentiles = np.percentile(fitted_mass_samples, [16, 50, 84], axis=0)
+                lower, median, upper = percentiles[0], percentiles[1], percentiles[2]
 
-                if true_func is not None:
-                    true_mass = true_func(absg_range)
-                    ax.plot(absg_range, true_mass, color=color,
-                           linestyle='--', linewidth=1.5, alpha=0.7)
+                # Plot
+                label = f'[Fe/H]=[{self.feh_bin_edges[bin_idx]:.2f}, {self.feh_bin_edges[bin_idx+1]:.2f}]'
+                ax.fill_between(absg_range, lower, upper, color=color, alpha=0.2)
+                ax.plot(absg_range, median, color=color, label=label, linewidth=2)
 
-        ax.set_xlim(self.absg_min, self.absg_max)
-        ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
-        ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=14)
+                # Plot true relation if provided
+                if true_mass_funcs is not None:
+                    if callable(true_mass_funcs):
+                        true_func = true_mass_funcs
+                    else:
+                        true_func = true_mass_funcs.get(bin_idx)
+
+                    if true_func is not None:
+                        true_mass = true_func(absg_range)
+                        ax.plot(absg_range, true_mass, color=color,
+                               linestyle='--', linewidth=1.5, alpha=0.7)
+
+                ax.set_xlim(self.absg_min, self.absg_max)
+                ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
+                ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=14)
+
+            elif self.model_type == 'broken_powerlaw':
+                # Broken power law model: plot magnitude vs mass
+                mass_range = np.logspace(np.log10(0.08), np.log10(2.0), 200)
+
+                # Get posterior predictions
+                try:
+                    median_mags, lower_mags, upper_mags = fitter.get_posterior_predictions(mass_range)
+                except:
+                    # Fallback: use sample-based calculation if method not available
+                    num_samples = min(1000, len(fitter.samples))
+                    indices = np.random.choice(len(fitter.samples), size=num_samples, replace=False)
+
+                    all_mags = []
+                    for idx in indices:
+                        sample = fitter.samples[idx]
+                        mags = fitter._predict_magnitudes(mass_range, sample)
+                        all_mags.append(mags)
+
+                    all_mags = np.array(all_mags)
+                    lower_mags, median_mags, upper_mags = np.percentile(all_mags, [16, 50, 84], axis=0)
+
+                # Plot
+                label = f'[Fe/H]=[{self.feh_bin_edges[bin_idx]:.2f}, {self.feh_bin_edges[bin_idx+1]:.2f}]'
+                ax.fill_between(mass_range, lower_mags, upper_mags, color=color, alpha=0.2)
+                ax.plot(mass_range, median_mags, color=color, label=label, linewidth=2)
+
+                # Add vertical lines for break points
+                for bp in self.break_points:
+                    ax.axvline(x=bp, color='gray', linestyle='--', alpha=0.5)
+
+                ax.set_xscale('log')
+                ax.set_xlim(0.08, 2.0)
+                ax.set_xlabel('Mass [$M_{\\odot}$]', fontsize=14)
+                ax.set_ylabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
+                ax.invert_yaxis()  # Astronomical magnitude convention
+
+        # Title and legend
         ax.legend(fontsize=10, loc='best')
-        ax.set_title(f'Mass-Absg Relations for Different Metallicities ({self.uncertainty_model.capitalize()} Distribution)', fontsize=16)
+        if self.model_type == 'nonparametric':
+            ax.set_title(f'Mass-Absg Relations for Different Metallicities ({self.uncertainty_model.capitalize()} Distribution)', fontsize=16)
+        else:
+            ax.set_title(f'Broken Power Law MLR for Different Metallicities ({self.uncertainty_model.capitalize()} Distribution)', fontsize=16)
+
         plt.tight_layout()
         plt.savefig(output_path, dpi=300)
         plt.close(fig)
