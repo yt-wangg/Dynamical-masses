@@ -1784,8 +1784,8 @@ class MultiMetallicityFitter:
 
         for bin_idx, fitter in self.fitters.items():
             suffix = f'_fehbin{bin_idx}'
+            data = binned_data[bin_idx] if binned_data is not None else None
 
-        for bin_idx, data in binned_data.items():
             if len(data) == 0:
                 print(f"Skipping metallicity bin {bin_idx} (no data)")
                 continue
@@ -1835,30 +1835,6 @@ class MultiMetallicityFitter:
                 ax.fill_between(fitter.absg_bins, lower, upper, color=color, alpha=0.2, step='mid')
                 ax.step(fitter.absg_bins, median, color=color, label=label, linewidth=2, where='mid')
 
-                # Plot data scatter points for this metallicity bin
-                if data is not None:
-                    bin_data = data[bin_idx]
-                    try:
-                        # Extract data columns
-                        if hasattr(bin_data, 'colnames'):  # astropy.Table
-                            m1 = np.array(bin_data['m1'])
-                            m2 = np.array(bin_data['m2'])
-                            absg1 = np.array(bin_data['absg1'])
-                            absg2 = np.array(bin_data['absg2'])
-                        elif isinstance(bin_data, dict):  # dict
-                            m1 = np.array(bin_data['m1'])
-                            m2 = np.array(bin_data['m2'])
-                            absg1 = np.array(bin_data['absg1'])
-                            absg2 = np.array(bin_data['absg2'])
-                        else:
-                            raise ValueError("data must be astropy.Table or dict")
-
-                        # Plot both primary and secondary masses with low opacity
-                        ax.scatter(absg1, m1, color=color, s=1, alpha=0.2, zorder=0)
-                        ax.scatter(absg2, m2, color=color, s=1, alpha=0.15, zorder=0)
-                    except (KeyError, AttributeError) as e:
-                        print(f"Could not extract masses from data for bin {bin_idx}: {e}")
-
             elif self.model_type == 'broken_powerlaw':
                 # Broken power law model: plot magnitude vs mass
                 absg_range = np.linspace(fitter.absg_min, fitter.absg_max, 1000)  # absg range?
@@ -1879,9 +1855,29 @@ class MultiMetallicityFitter:
                 for bp in self.break_points:
                     ax.axhline(y=bp, color='gray', linestyle='--', alpha=0.5)
 
-            # Truth
-            ax.scatter(data['absg1'], data['m1'], color=color, s=1, alpha=1, label='Truth', zorder=0)
-            ax.scatter(data['absg2'], data['m2'], color=color, s=1, alpha=1, zorder=0)
+            # Plot data scatter points for this metallicity bin
+            if data is not None:
+                bin_data = data[bin_idx]
+                try:
+                    # Extract data columns
+                    if hasattr(bin_data, 'colnames'):  # astropy.Table
+                        m1 = np.array(bin_data['m1'])
+                        m2 = np.array(bin_data['m2'])
+                        absg1 = np.array(bin_data['absg1'])
+                        absg2 = np.array(bin_data['absg2'])
+                    elif isinstance(bin_data, dict):  # dict
+                        m1 = np.array(bin_data['m1'])
+                        m2 = np.array(bin_data['m2'])
+                        absg1 = np.array(bin_data['absg1'])
+                        absg2 = np.array(bin_data['absg2'])
+                    else:
+                        raise ValueError("data must be astropy.Table or dict")
+
+                    # Plot both primary and secondary masses with low opacity
+                    ax.scatter(absg1, m1, color=color, s=1, alpha=0.2, zorder=0)
+                    ax.scatter(absg2, m2, color=color, s=1, alpha=0.15, zorder=0)
+                except (KeyError, AttributeError) as e:
+                    print(f"Could not extract masses from data for bin {bin_idx}: {e}")
 
 
         ax.set_yscale('log')
