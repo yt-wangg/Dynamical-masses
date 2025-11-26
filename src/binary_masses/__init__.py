@@ -8,14 +8,14 @@ Authors: Yutong Wang and collaborators
 License: MIT
 """
 
-from .core import NonParametricPosteriorPlotter, MultiMetallicityFitter, PU8Sampler, BrokenPowerLawMLR
+from .core import NonParametricMLR, MultiMetallicityFitter, PU8Sampler, BrokenPowerLawMLR
 from .sampling import BinarySystem, BinaryPopulation
 
 __version__ = "1.0.0"
 __author__ = "Yutong Wang"
 
 __all__ = [
-    "NonParametricPosteriorPlotter",
+    "NonParametricMLR",
     "MultiMetallicityFitter",
     "BrokenPowerLawMLR",
     "PU8Sampler",

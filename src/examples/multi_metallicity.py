@@ -15,11 +15,15 @@ import os
 
 # Add the package to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from src.binary_masses import MultiMetallicityFitter
 
-from binary_masses import MultiMetallicityFitter
 
-
-def test_nonparametric_model(data, output_dir):
+def test_nonparametric_model(data, output_dir,
+                             n_absg_bins=10, absg_min=3.0, absg_max=14.0,
+                             uncertainty_model='rice',
+                             feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                             gamma=np.inf, num_warmup=800, num_samples=1500, num_chains=2,
+                             mass_min=0.08, mass_max=1.5, seed=42):
     """Test the non-parametric model using the new MultiMetallicityFitter."""
     print("\n" + "="*50)
     print("TESTING NON-PARAMETRIC MODEL")
@@ -29,21 +33,24 @@ def test_nonparametric_model(data, output_dir):
     print("1. Initializing non-parametric multi-metallicity fitter...")
     multi_fitter = MultiMetallicityFitter(
         model_type='nonparametric',
-        n_absg_bins=10,
-        absg_min=3.0,
-        absg_max=14.0,
-        uncertainty_model='rice'  # Use Rice distribution
+        n_absg_bins=n_absg_bins,
+        absg_min=absg_min,
+        absg_max=absg_max,
+        uncertainty_model=uncertainty_model,  # Use Rice distribution
+        f_outlier=0,  # No outliers
+        outlier_u0=30,
+        outlier_sigma=15
     )
 
     # Bin data by metallicity
     print("2. Binning data by metallicity...")
     binned_data = multi_fitter.bin_data_by_metallicity(
         data,
-        feh_column='feh',
-        n_feh_bins=3,
-        feh_min=-1,
-        feh_max=0.6,
-        equal_frequency=False  # Equal number of stars per bin
+        feh_column=feh_column,
+        n_feh_bins=n_feh_bins,
+        feh_min=feh_min,
+        feh_max=feh_max,
+        equal_frequency=equal_frequency  # Equal number of stars per bin
     )
 
     # Run fitting for all bins
@@ -51,23 +58,23 @@ def test_nonparametric_model(data, output_dir):
     print("   This may take several minutes...")
     multi_fitter.fit_all_bins(
         binned_data,
-        gamma=np.inf,  # No regularization
-        num_warmup=800,   # Reduced for demo
-        num_samples=1500,  # Reduced for demo
-        num_chains=2,      # Reduced for demo
-        mass_min=0.05,
-        mass_max=2.0,
-        seed=42,
+        gamma=gamma,  # No regularization
+        num_warmup=num_warmup,   # Reduced for demo
+        num_samples=num_samples,  # Reduced for demo
+        num_chains=num_chains,      # Reduced for demo
+        mass_min=mass_min,
+        mass_max=mass_max,
+        seed=seed,
     )
 
-    # Plot results
-    print("4. Plotting non-parametric results...")
-    multi_fitter.plot_all_results(output_dir=output_dir)
-    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, 'nonparametric_multi_feh_comparison.png'))
-
     # Save samples
-    print("5. Saving non-parametric samples...")
+    print("4. Saving non-parametric samples...")
     multi_fitter.save_all_samples(output_dir=output_dir, prefix='nonparametric_samples')
+
+    # Plot results
+    print("5. Plotting non-parametric results...")
+    multi_fitter.plot_all_results(binned_data=binned_data, output_dir=output_dir)
+    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, 'nonparametric_multi_feh_comparison.png'))
 
     # Print summary
     print("\n6. Non-parametric Summary Statistics:")
@@ -81,14 +88,18 @@ def test_nonparametric_model(data, output_dir):
     return multi_fitter
 
 
-def test_broken_powerlaw_model(data, output_dir):
+def test_broken_powerlaw_model(data, output_dir,
+                               break_points=np.array([0.5]),
+                               uncertainty_model='rice',
+                               feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                               num_warmup=800, num_samples=2500, num_chains=2,
+                               seed=40):
     """Test the broken power law model using the new MultiMetallicityFitter."""
     print("\n" + "="*50)
     print("TESTING BROKEN POWER LAW MODEL")
     print("="*50)
 
     # Define break points for the broken power law
-    break_points = np.array([0.2, 0.5, 1.0])  # Break points in solar masses
     print(f"1. Using broken power law with break points: {break_points} M_sun")
 
     # Initialize multi-metallicity fitter with broken power law model
@@ -96,8 +107,8 @@ def test_broken_powerlaw_model(data, output_dir):
     multi_fitter = MultiMetallicityFitter(
         model_type='broken_powerlaw',
         break_points=break_points,
-        uncertainty_model='rice',
-        f_outlier=0.1,  # Allow 10% outliers
+        uncertainty_model=uncertainty_model,
+        f_outlier=0,  # Allow 10% outliers
         outlier_u0=30,
         outlier_sigma=15
     )
@@ -106,11 +117,11 @@ def test_broken_powerlaw_model(data, output_dir):
     print("3. Binning data by metallicity...")
     binned_data = multi_fitter.bin_data_by_metallicity(
         data,
-        feh_column='feh',
-        n_feh_bins=3,
-        feh_min=-1,
-        feh_max=0.6,
-        equal_frequency=False  # Equal number of stars per bin
+        feh_column=feh_column,
+        n_feh_bins=n_feh_bins,
+        feh_min=feh_min,
+        feh_max=feh_max,
+        equal_frequency=equal_frequency  # Equal number of stars per bin
     )
 
     # Run fitting for all bins
@@ -118,20 +129,22 @@ def test_broken_powerlaw_model(data, output_dir):
     print("   This may take several minutes...")
     multi_fitter.fit_all_bins(
         binned_data,
-        num_warmup=800,   # Reduced for demo
-        num_samples=1500,  # Reduced for demo
-        num_chains=2,      # Reduced for demo
-        seed=42,
+        num_warmup=num_warmup,   # Reduced for demo
+        num_samples=num_samples,  # Reduced for demo
+        num_chains=num_chains,      # Reduced for demo
+        seed=seed,
+        a_prior_range=(-20,10), b_prior_range=(-100,5),
+        mass_min=0.08, mass_max=1.2,
     )
 
-    # Plot results
-    print("5. Plotting broken power law results...")
-    multi_fitter.plot_all_results(output_dir=output_dir)
-    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, 'broken_powerlaw_multi_feh_comparison.png'))
-
     # Save samples
-    print("6. Saving broken power law samples...")
+    print("5. Saving broken power law samples...")
     multi_fitter.save_all_samples(output_dir=output_dir, prefix='broken_powerlaw_samples')
+
+    # Plot results
+    print("6. Plotting broken power law results...")
+    multi_fitter.plot_all_results(binned_data=binned_data, output_dir=output_dir)
+    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, 'broken_powerlaw_multi_feh_comparison.png'))
 
     # Print summary
     print("\n7. Broken Power Law Summary Statistics:")
@@ -161,7 +174,7 @@ def main():
     # Import data
     print("\n1. Importing data with metallicity...")
     tag = 'efuncu_unifm_mh_Jsu_n10k_obserr'
-    data_path = 'bayesian-binary-masses/data/mock_data_'+tag+'.fits'
+    data_path = 'data/mock_data_'+tag+'.fits'
     data = Table.read(data_path)
 
     # Prepare data subset
@@ -172,12 +185,12 @@ def main():
     data = data[data['feh']<=0.6]
 
     # Using a smaller subset for faster testing
-    indices = np.random.choice(len(data), size=5000, replace=False)
+    indices = np.random.choice(len(data), size=2000, replace=False)
     data = data[indices]
     print(f"   Using {len(data)} systems for testing")
 
     # Set output directory
-    output_dir = '/Users/ytwang/Library/CloudStorage/OneDrive-Personal/Files/postgraduate/PyProjects/Dyn/bayesian-binary-masses/tests/results'
+    output_dir = 'results/multi_metallicity'
     os.makedirs(output_dir, exist_ok=True)
     print(f"\n2. Results will be saved to: {output_dir}")
 
@@ -185,7 +198,12 @@ def main():
     # nonparametric_fitter = test_nonparametric_model(data, output_dir)
 
     # Test broken power law model
-    broken_powerlaw_models = test_broken_powerlaw_model(data, output_dir)
+    broken_powerlaw_models = test_broken_powerlaw_model(data, output_dir,
+                                                        break_points=np.array([0.4]),
+                                                        uncertainty_model='gaussian',
+                                                        feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                                                        num_warmup=500, num_samples=3000, num_chains=2,
+                                                        seed=40)
 
     # Final summary
     # print("\n" + "=" * 70)
@@ -195,7 +213,7 @@ def main():
     # print(f"  - Number of metallicity bins: {len(nonparametric_fitter.fitters)}")
 
     print(f"\n✓ Broken power law model test completed")
-    print(f"  - Number of metallicity bins fitted: {len(broken_powerlaw_models)}")
+    # print(f"  - Number of metallicity bins fitted: {len(broken_powerlaw_models)}")
 
     print(f"\nGenerated files in {output_dir}:")
     print(f"  Non-parametric:")

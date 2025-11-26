@@ -684,12 +684,14 @@ class NonParametricMLR:
         except ImportError:
             print("corner package not installed. Install it with: pip install corner")
 
-    def plot_fitting_results(self, truths=None, true_mass_func=None, output_dir='', output_suffix=''):
+    def plot_fitting_results(self, data=None, output_dir='', output_suffix=''):
         """
         Plot the fitting results with credible region.
 
         Parameters
         ----------
+        data : astropy.Table or dict, optional
+            Input data containing 'm1', 'm2', 'absg1', 'absg2' columns for true mass scatter points
         truths : array_like, optional
             True mass values for bins
         true_mass_func : callable, optional
@@ -707,10 +709,12 @@ class NonParametricMLR:
         indices = np.random.choice(len(self.samples), size=num_samples, replace=False)
         resampled_data = self.samples[indices]
 
-        absg_range = np.linspace(self.absg_min, self.absg_max, 1000)
+        # Create absg bin edges for step plotting
+        bin_edges = np.concatenate([[self.absg_min], self.absg_bins, [self.absg_max]])
 
+        # Extend mass bins to include edges for step plotting
         fitted_mass_samples = np.array([
-            np.interp(absg_range, self.absg_bins, mass_bins)
+            np.concatenate([[mass_bins[0]], mass_bins, [mass_bins[-1]]])
             for mass_bins in resampled_data
         ])
 
@@ -719,38 +723,55 @@ class NonParametricMLR:
 
         fig, ax = plt.subplots(figsize=(10, 6))
 
-        # Plot sample fits
+        # Plot sample fits as step functions
         for i in range(min(400, len(resampled_data))):
-            ax.plot(absg_range,
-                   np.interp(absg_range, self.absg_bins, resampled_data[i]),
-                   color='gray', alpha=0.1, linewidth=1, zorder=1)
+            sample_mass = np.concatenate([[resampled_data[i][0]], resampled_data[i], [resampled_data[i][-1]]])
+            ax.step(bin_edges, sample_mass, color='gray', alpha=0.1, linewidth=1, zorder=1)
 
-        # Plot credible region
-        ax.fill_between(absg_range, lower, upper, color='orange',
-                       alpha=0.3, label='1 sigma', zorder=2)
+        # Plot credible region as step function
+        ax.fill_between(bin_edges, lower, upper, color='orange',
+                       alpha=0.3, label='1 sigma', step='post', zorder=2)
 
-        # Plot median fit
-        ax.plot(absg_range, median, color='orange',
-               label=f'Median Fit ({self.uncertainty_model.capitalize()})', ls='-', linewidth=2, zorder=3)
+        # Plot median fit as step function
+        ax.step(bin_edges, median, color='orange',
+               label=f'Median ({self.uncertainty_model.capitalize()})', linewidth=2, zorder=3)
 
         # Plot bin centers
         median_masses = np.median(resampled_data, axis=0)
         ax.scatter(self.absg_bins, median_masses, color='red', s=50,
                   zorder=4, label='Bin centers')
 
-        # Plot true relation if provided
-        if true_mass_func is not None:
-            true_mass = true_mass_func(absg_range)
-            ax.plot(absg_range, true_mass, color='k', linestyle='--',
-                   label='True relation', linewidth=2, zorder=5)
-        elif truths is not None:
-            ax.scatter(self.absg_bins, truths, color='green',
-                      s=100, marker='x', linewidth=3,
-                      label='True bin values', zorder=5)
+        # Plot true masses from data if provided
+        if data is not None:
+            try:
+                # Extract data columns
+                if hasattr(data, 'colnames'):  # astropy.Table
+                    m1 = np.array(data['m1'])
+                    m2 = np.array(data['m2'])
+                    absg1 = np.array(data['absg1'])
+                    absg2 = np.array(data['absg2'])
+                elif isinstance(data, dict):  # dict
+                    m1 = np.array(data['m1'])
+                    m2 = np.array(data['m2'])
+                    absg1 = np.array(data['absg1'])
+                    absg2 = np.array(data['absg2'])
+                else:
+                    raise ValueError("data must be astropy.Table or dict with 'm1', 'm2', 'absg1', 'absg2' columns")
+
+                # Plot both primary and secondary masses
+                ax.scatter(absg1, m1, color='black', s=1, alpha=0.3,
+                          label='Truth', zorder=0)
+                ax.scatter(absg2, m2, color='gray', s=1, alpha=0.3,
+                          zorder=0)
+            except (KeyError, AttributeError) as e:
+                print(f"Could not extract true masses from data: {e}")
+
 
         ax.set_xlim(self.absg_min, self.absg_max)
         ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=12)
         ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=12)
+        ax.set_yscale('log')
+        ax.invert_yaxis()
         ax.legend(fontsize=10)
         title = f'Non-parametric fit with {self.uncertainty_model.capitalize()} distribution ({self.n_bins} bins)'
         plt.title(title, fontsize=14)
@@ -773,10 +794,9 @@ class BrokenPowerLawMLR:
 
     # Default break points in solar masses
     DEFAULT_BREAK_POINTS = np.array([0.4])
-    DEFAULT_MASS_MIN = 0.08
-    DEFAULT_MASS_MAX = 2.0
 
-    def __init__(self, break_points=None, uncertainty_model='rice',
+    def __init__(self, break_points=None, mass_min=0.08, mass_max=1.0, absg_min=4.0, absg_max=12.0,
+                 uncertainty_model='rice',
                  f_outlier=0, outlier_u0=30, outlier_sigma=15):
         """
         Initialize the broken power-law MLR fitter.
@@ -796,7 +816,7 @@ class BrokenPowerLawMLR:
             Outlier distribution width
         """
         if break_points is None:
-            break_points = self.DEFAULT_BREAK_POINTS.copy()
+            break_points = self.DEFAULT_BREAK_POINTS
         self.break_points = np.array(break_points)
         self.n_segments = len(self.break_points) + 1  # Number of power-law segments
 
@@ -811,8 +831,10 @@ class BrokenPowerLawMLR:
         self.p_epsilon = 1e-10
         self.outlier_u0 = outlier_u0
         self.outlier_sigma = outlier_sigma
-        self.mass_min = self.DEFAULT_MASS_MIN
-        self.mass_max = self.DEFAULT_MASS_MAX
+        self.mass_min = mass_min
+        self.mass_max = mass_max
+        self.absg_min = absg_min
+        self.absg_max = absg_max
 
         # Data storage
         self.u_values = None
@@ -909,32 +931,55 @@ class BrokenPowerLawMLR:
             Mass values in solar masses
         params : array_like
             Flattened parameters [a_0, b_0, a_1, b_1, ...]
+            Can be 1D (single parameter set) or 2D (multiple parameter sets)
 
         Returns
         -------
         absg : array_like
             Absolute G magnitudes
+            If params is 2D, returns shape (n_params, len(mass))
+            If params is 1D, returns shape (len(mass),)
         """
         mass = np.atleast_1d(mass)
         mass = np.clip(mass, self.mass_min, self.mass_max)  # Clip (limit) the values in an array.
-        absg = np.zeros_like(mass)
         log_mass = np.log10(mass)
-        intercepts, slopes = self._split_params(params)
+
+        # Handle both 1D and 2D parameter arrays
+        if params.ndim == 1:
+            # Single parameter set
+            params = params.reshape(1, -1)
+            single_param_set = True
+        else:
+            single_param_set = False
+
+        n_param_sets = params.shape[0]
+        absg_values = np.zeros((n_param_sets, len(mass)))
 
         # Build segment boundaries: [mass_min, break_points, mass_max]
         boundaries = np.concatenate([[self.mass_min], self.break_points, [self.mass_max]])
 
-        for i in range(self.n_segments):
-            a_i = intercepts[i]
-            b_i = slopes[i]
-            # Use <= for the last segment to include mass_max
-            if i == self.n_segments - 1:
-                mask = (mass >= boundaries[i]) & (mass <= boundaries[i+1])
-            else:
-                mask = (mass >= boundaries[i]) & (mass < boundaries[i+1])
-            absg[mask] = a_i + b_i * log_mass[mask]
+        # Process each parameter set
+        for param_idx in range(n_param_sets):
+            intercepts, slopes = self._split_params(params[param_idx])
+            absg = np.zeros_like(mass)
 
-        return absg
+            for i in range(self.n_segments):
+                a_i = intercepts[i]
+                b_i = slopes[i]
+                # Use <= for the last segment to include mass_max
+                if i == self.n_segments - 1:
+                    mask = (mass >= boundaries[i]) & (mass <= boundaries[i+1])
+                else:
+                    mask = (mass >= boundaries[i]) & (mass < boundaries[i+1])
+                absg[mask] = a_i + b_i * log_mass[mask]
+
+            absg_values[param_idx] = absg
+
+        # Return appropriate shape based on input
+        if single_param_set:
+            return absg_values[0]  # Return 1D array for single parameter set
+        else:
+            return absg_values  # Return 2D array for multiple parameter sets
 
     def mass_from_absg(self, absg, params):
         """
@@ -951,33 +996,56 @@ class BrokenPowerLawMLR:
             Absolute G magnitude values
         params : array_like
             Flattened parameters [a_0, b_0, a_1, b_1, ...]
+            Can be 1D (single parameter set) or 2D (multiple parameter sets)
 
         Returns
         -------
         mass : array_like
             Mass values in solar masses
+            If params is 2D, returns shape (n_params, len(absg))
+            If params is 1D, returns shape (len(absg),)
         """
         absg = np.atleast_1d(absg)
-        mass = np.zeros_like(absg)
-        intercepts, slopes = self._split_params(params)
+
+        # Handle both 1D and 2D parameter arrays
+        if params.ndim == 1:
+            # Single parameter set
+            params = params.reshape(1, -1)
+            single_param_set = True
+        else:
+            single_param_set = False
+
+        n_param_sets = params.shape[0]
+        masses = np.zeros((n_param_sets, len(absg)))
 
         # Build segment boundaries
         boundaries = np.concatenate([[self.mass_min], self.break_points, [self.mass_max]])
 
-        # For each segment, compute mass and check if it falls in valid range
-        for i in range(self.n_segments):
-            a_i = intercepts[i]
-            b_i = slopes[i]
+        # Process each parameter set
+        for param_idx in range(n_param_sets):
+            intercepts, slopes = self._split_params(params[param_idx])
+            mass = np.zeros_like(absg)
 
-            # Compute mass for this segment: M = 10^((M_G - a) / b)
-            mass_candidate = 10**((absg - a_i) / b_i)
+            # For each segment, compute mass and check if it falls in valid range
+            for i in range(self.n_segments):
+                a_i = intercepts[i]
+                b_i = slopes[i]
 
-            # Check if mass falls within this segment's boundaries
-            # Use <= for upper bound to include edge values
-            mask = (mass_candidate >= boundaries[i]) & (mass_candidate <= boundaries[i+1])
-            mass[mask] = mass_candidate[mask]
+                # Compute mass for this segment: M = 10^((M_G - a) / b)
+                mass_candidate = 10**((absg - a_i) / b_i)
 
-        return np.clip(mass, self.mass_min, self.mass_max)
+                # Check if mass falls within this segment's boundaries
+                # Use <= for upper bound to include edge values
+                mask = (mass_candidate >= boundaries[i]) & (mass_candidate <= boundaries[i+1])
+                mass[mask] = mass_candidate[mask]
+
+            masses[param_idx] = np.clip(mass, self.mass_min, self.mass_max)
+
+        # Return appropriate shape based on input
+        if single_param_set:
+            return masses[0]  # Return 1D array for single parameter set
+        else:
+            return masses  # Return 2D array for multiple parameter sets
 
     def mass_from_absg_jax(self, absg, params, break_points):
         """
@@ -1063,12 +1131,12 @@ class BrokenPowerLawMLR:
         self.norm_factor = np.sum(self.func_pu_8(int_ulist) * int_du)
 
     def run_numpyro(self, num_warmup=1000, num_samples=2000, num_chains=4,
-                    mass_min=None, mass_max=None, seed=None,
-                    int_umax=100, int_du=0.02, use_dense_mass=False,
+                    seed=None,
+                    int_umax=80, int_du=0.02, use_dense_mass=False,
                     a_prior_range=None, b_prior_range=None,
                     a_prior_mu_sigma=(12.0, 3.0), b_prior_mu_sigma=(-6.0, 4.0),
                     b_prior_bounds=(-20.0, 5.0),
-                    anchor_mass=0.2, anchor_absg=12.0, anchor_sigma=0.3, anchor_weight=1.0,
+                    anchor_mass=0.2, anchor_absg=12.0, anchor_sigma=None, anchor_weight=1.0,
                     **kwargs):
         """
         Run NumPyro MCMC inference for broken power-law parameters.
@@ -1131,9 +1199,6 @@ class BrokenPowerLawMLR:
         if self.u_values is None:
             raise ValueError("Data not set. Call set_data() first.")
 
-        # Update mass bounds (default to class constants) and validate break points
-        self.mass_min = self.DEFAULT_MASS_MIN if mass_min is None else mass_min
-        self.mass_max = self.DEFAULT_MASS_MAX if mass_max is None else mass_max
         valid_bp = self.break_points[(self.break_points > self.mass_min) & (self.break_points < self.mass_max)]
         if len(valid_bp) != len(self.break_points):
             print("Warning: Removing break points outside (mass_min, mass_max).")
@@ -1346,126 +1411,129 @@ class BrokenPowerLawMLR:
 
         return mcmc
 
-    def get_mass_luminosity_curve(self, params, mass_range=(0.05, 2.0), n_points=200):
+    def plot_results(self, labels=None, truths=None, output_dir='', output_suffix=''):
         """
-        Get the mass-luminosity curve for given parameters.
+        Plot sampling results using corner plot.
 
         Parameters
         ----------
-        params : array_like
-            Flattened parameters [a_0, b_0, a_1, b_1, ...]
-        mass_range : tuple
-            Range of masses to evaluate
-        n_points : int
-            Number of points
-
-        Returns
-        -------
-        masses : array
-            Mass values
-        absg : array
-            Corresponding M_G values
-        """
-        masses = np.logspace(np.log10(mass_range[0]), np.log10(mass_range[1]), n_points)
-        absg = self.absg_from_mass(masses, params)
-        return masses, absg
-
-    def plot_results(self, output_dir='', output_suffix='', truths=None):
-        """
-        Plot corner plot of posterior samples.
-
-        Parameters
-        ----------
+        labels : list, optional
+            Labels for each parameter
+        truths : list, optional
+            True values for comparison
         output_dir : str
-            Output directory
+            Output directory for plots
         output_suffix : str
-            Suffix for filename
-        truths : array_like, optional
-            True parameter values
+            Suffix for output filenames
         """
         if self.samples is None:
             print("No samples available. Run inference first.")
             return
+
+        if labels is None:
+            labels = self.param_names
 
         try:
             import corner
-            fig = corner.corner(
-                self.samples,
-                labels=self.param_names,
-                truths=truths,
-                truth_color='salmon',
-                show_titles=True
-            )
+            fig = corner.corner(self.samples, labels=labels, truths=truths,
+                               truth_color='salmon', show_titles=True)
             plt.tight_layout()
             os.makedirs(output_dir, exist_ok=True) if output_dir else None
-            plt.savefig(f'{output_dir}/corner_broken_powerlaw_{output_suffix}.png', dpi=300)
+            plt.savefig(f'{output_dir}/corner_plot_{output_suffix}.png', dpi=300)
             plt.close(fig)
-            print(f"Saved corner plot to {output_dir}/corner_broken_powerlaw_{output_suffix}.png")
         except ImportError:
-            print("corner package not installed.")
+            print("corner package not installed. Install it with: pip install corner")
 
-    def plot_mass_luminosity(self, output_dir='', output_suffix='',
-                              mass_range=(0.05, 2.0), true_params=None):
+    def plot_fitting_results(self, data=None, output_dir='', output_suffix=''):
         """
-        Plot the fitted mass-luminosity relation with credible intervals.
+        Plot the fitting results with credible region.
 
         Parameters
         ----------
+        data : astropy.Table or dict, optional
+            Input data containing 'm1', 'm2', 'absg1', 'absg2' columns for true mass scatter points
+        truths : array_like, optional
+            True mass values for comparison (not applicable for parametric model)
+        true_mass_func : callable, optional
+            True mass-luminosity relation function
         output_dir : str
-            Output directory
+            Output directory for plots
         output_suffix : str
-            Suffix for filename
-        mass_range : tuple
-            Mass range to plot
-        true_params : array_like, optional
-            True parameters for comparison
+            Suffix for output filenames
         """
-        if self.samples is None:
-            print("No samples available. Run inference first.")
+        if self.samples is None or self.samples.size == 0:
+            print("No samples available for plotting fitting results.")
             return
 
-        # Sample masses for plotting
-        masses = np.logspace(np.log10(mass_range[0]), np.log10(mass_range[1]), 200)
+        # Convert masses to M_G values for the plot (we'll invert later)
+        num_samples = min(1000, len(self.samples))
+        indices = np.random.choice(len(self.samples), size=num_samples, replace=False)
+        subsamples = self.samples[indices]
+
+        # Sample masses for plotting (use M_G range similar to non-parametric)
+        absg_range = np.linspace(self.absg_min, self.absg_max, 1000)
 
         # Compute M_G for each posterior sample
-        n_samples = min(500, len(self.samples))
-        indices = np.random.choice(len(self.samples), size=n_samples, replace=False)
+        all_masses = self.mass_from_absg(absg_range, self.samples)
+        lower_masses, median_masses, upper_masses = np.percentile(all_masses, [16, 50, 84], axis=0)
 
-        absg_samples = np.zeros((n_samples, len(masses)))
-        for j, idx in enumerate(indices):
-            absg_samples[j] = self.absg_from_mass(masses, self.samples[idx])
+        # Best-fit line
+        median_params = np.median(self.samples, axis=0)
+        best_fit_masses = self.mass_from_absg(absg_range, median_params)
 
-        # Compute percentiles
-        median = np.median(absg_samples, axis=0)
-        lower = np.percentile(absg_samples, 16, axis=0)
-        upper = np.percentile(absg_samples, 84, axis=0)
+        # Create plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        # Plot sample fits
+        for subsample in subsamples:
+            ax.plot(absg_range, self.mass_from_absg(absg_range, subsample), color='gray', alpha=0.1, linewidth=1, zorder=1)
 
-        # Plot
-        fig, ax = plt.subplots(figsize=(10, 8))
+        # Plot credible region
+        ax.fill_between(absg_range, lower_masses, upper_masses, color='orange',
+                       alpha=0.3, label='1 sigma', zorder=2)
+        ax.plot(absg_range, median_masses, color='orange',
+               label='Median', ls='-', linewidth=1, alpha=0.5, zorder=3)    
 
-        ax.fill_between(masses, lower, upper, alpha=0.3, color='blue', label='68% CI')
-        ax.plot(masses, median, 'b-', linewidth=2, label='Median fit')
+        # Plot best fit
+        ax.plot(absg_range, best_fit_masses, color='#148dde',
+               label=f'Best Fit ({self.uncertainty_model.capitalize()})', ls='-.', linewidth=3, zorder=3)
 
-        # Mark break points
-        for bp in self.break_points:
-            ax.axvline(bp, color='gray', linestyle='--', alpha=0.5, label=f'Break: {bp} M$_\\odot$')
+        # Plot true masses from data if provided
+        if data is not None:
+            try:
+                # Extract data columns
+                if hasattr(data, 'colnames'):  # astropy.Table
+                    m1 = np.array(data['m1'])
+                    m2 = np.array(data['m2'])
+                    absg1 = np.array(data['absg1'])
+                    absg2 = np.array(data['absg2'])
+                elif isinstance(data, dict):  # dict
+                    m1 = np.array(data['m1'])
+                    m2 = np.array(data['m2'])
+                    absg1 = np.array(data['absg1'])
+                    absg2 = np.array(data['absg2'])
+                else:
+                    raise ValueError("data must be astropy.Table or dict with 'm1', 'm2', 'absg1', 'absg2' columns")
 
-        if true_params is not None:
-            true_absg = self.absg_from_mass(masses, true_params)
-            ax.plot(masses, true_absg, 'r--', linewidth=2, label='True relation')
+                # Plot both primary and secondary masses
+                ax.scatter(absg1, m1, color='black', s=1, alpha=0.3,
+                          label='Truth', zorder=0)
+                ax.scatter(absg2, m2, color='gray', s=1, alpha=0.3,
+                            zorder=0)
+            except (KeyError, AttributeError) as e:
+                print(f"Could not extract true masses from data: {e}")
 
-        ax.set_xscale('log')
-        ax.set_xlabel('Mass [$M_\\odot$]', fontsize=12)
-        ax.set_ylabel('$M_G$ [mag]', fontsize=12)
-        ax.invert_yaxis()  # Brighter = lower M_G
-        ax.legend(fontsize=10, loc='best')
-        ax.set_title(f'Broken Power-Law MLR ({self.n_segments} segments)', fontsize=14)
-
+        ax.set_xlabel('Absolute Magnitude $M_{\\mathrm{G}}$ [mag]', fontsize=12)
+        ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=12)
+        ax.set_xlim(self.absg_min, self.absg_max)
+        ax.set_yscale('log')
+        ax.legend(fontsize=10)
+        title = f'Broken Power-Law fit with {self.uncertainty_model.capitalize()} distribution ({self.n_segments} segments)'
+        plt.title(title, fontsize=14)
+        plt.gca().invert_xaxis()
         plt.tight_layout()
         os.makedirs(output_dir, exist_ok=True) if output_dir else None
-        plt.savefig(f'{output_dir}/broken_powerlaw_mlr_{output_suffix}.png', dpi=300)
+        plt.savefig(f'{output_dir}/broken_powerlaw_fit_{self.n_segments}segments_{self.uncertainty_model}{output_suffix}.png', dpi=300)
         plt.close(fig)
-        print(f"Saved MLR plot to {output_dir}/broken_powerlaw_mlr_{output_suffix}.png")
 
 
 class MultiMetallicityFitter:
@@ -1551,7 +1619,15 @@ class MultiMetallicityFitter:
         binned_data : dict
             Dictionary with keys as bin indices and values as data subsets
         """
-        feh_values = data[feh_column]
+        # Extract feh values based on data type
+        if hasattr(data, 'colnames'):  # astropy.Table
+            feh_values = data[feh_column]
+            is_table = True
+        elif isinstance(data, dict):  # dict
+            feh_values = np.array(data[feh_column])
+            is_table = False
+        else:
+            raise ValueError("data must be astropy.Table or dict")
 
         if feh_min is None:
             feh_min = np.min(feh_values)
@@ -1584,14 +1660,21 @@ class MultiMetallicityFitter:
             if i == n_feh_bins - 1:  # Include upper edge in last bin
                 mask = (feh_values >= self.feh_bin_edges[i]) & (feh_values <= self.feh_bin_edges[i+1])
 
-            binned_data[i] = data[mask]
-            print(f"Metallicity bin {i} ([{self.feh_bin_edges[i]:.2f}, {self.feh_bin_edges[i+1]:.2f}]): {len(binned_data[i])} stars")
+            # Handle both Table and dict data types
+            if is_table:
+                binned_data[i] = data[mask]
+            else:
+                binned_data[i] = {key: values[mask] if isinstance(values, np.ndarray) else np.array(values)[mask]
+                                 for key, values in data.items()}
+
+            star_count = len(binned_data[i]) if is_table else len(binned_data[i]['feh'])
+            print(f"Metallicity bin {i} ([{self.feh_bin_edges[i]:.2f}, {self.feh_bin_edges[i+1]:.2f}]): {star_count} stars")
 
         return binned_data
 
     def fit_all_bins(self, binned_data, u_column='u', u_sigma_column='u_sigma',
                     absg1_column='absg1', absg2_column='absg2',
-                    gamma=np.inf, mass_min=0.01, mass_max=2,
+                    a_prior_range=(-1,20), b_prior_range=(-50,5), gamma=np.inf, mass_min=0.01, mass_max=2,
                     num_warmup=1000, num_samples=2000, num_chains=4, seed=None):
         """
         Fit all metallicity bins.
@@ -1670,7 +1753,7 @@ class MultiMetallicityFitter:
                 )
 
                 # Set data
-                fitter.prepare_data(
+                fitter.set_data(
                     u_values=u_values,
                     u_sigma_values=u_sigma_values,
                     absg1_values=absg1_values,
@@ -1678,17 +1761,19 @@ class MultiMetallicityFitter:
                 )
 
                 # Run fitting
-                fitter.sample(
+                fitter.run_numpyro(
                     num_warmup=num_warmup,
                     num_samples=num_samples,
                     num_chains=num_chains,
-                    seed=seed
+                    seed=seed,
+                    a_prior_range=a_prior_range, b_prior_range=b_prior_range,
+                    anchor_sigma=None, # No anchor prior by default
                 )
 
             # Store fitter
             self.fitters[bin_idx] = fitter
 
-    def plot_all_results(self, output_dir='.'):
+    def plot_all_results(self, binned_data, output_dir='.', data=None):
         """
         Plot results for all metallicity bins.
 
@@ -1696,24 +1781,32 @@ class MultiMetallicityFitter:
         ----------
         output_dir : str
             Output directory for plots
+        data : astropy.Table or dict, optional
+            Input data containing 'm1', 'm2', 'absg1', 'absg2' columns for true mass scatter points
+            If provided, will filter data by metallicity bin for each plot
         """
         os.makedirs(output_dir, exist_ok=True)
 
         for bin_idx, fitter in self.fitters.items():
             suffix = f'_fehbin{bin_idx}'
 
+        for bin_idx, data in binned_data.items():
+            if len(data) == 0:
+                print(f"Skipping metallicity bin {bin_idx} (no data)")
+                continue
+
             if self.model_type == 'nonparametric':
                 # Non-parametric model plotting
                 fitter.plot_results(output_dir=output_dir, output_suffix=suffix)
-                fitter.plot_fitting_results(output_dir=output_dir, output_suffix=suffix)
+                fitter.plot_fitting_results(data=data, output_dir=output_dir, output_suffix=suffix)
 
             elif self.model_type == 'broken_powerlaw':
                 # Broken power law model plotting
-                plot_path = os.path.join(output_dir, f'broken_powerlaw_mlr{suffix}.png')
-                fitter.plot_results(output_path=plot_path, show_data=True, show_median=True, show_credible_regions=True)
+                fitter.plot_results(output_dir=output_dir, output_suffix=suffix)
+                fitter.plot_fitting_results(data=data, output_dir=output_dir, output_suffix=suffix)
 
     def plot_comparison(self, output_path='mass_absg_comparison.png',
-                       true_mass_funcs=None):
+                       data=None):
         """
         Plot comparison of mass-luminosity relations across all metallicity bins.
 
@@ -1721,6 +1814,7 @@ class MultiMetallicityFitter:
         ----------
         output_path : str
             Output file path
+        data : binned_data : dict
         true_mass_funcs : dict or callable
             True mass functions for each bin (for validation)
         """
@@ -1736,76 +1830,83 @@ class MultiMetallicityFitter:
         for (bin_idx, fitter), color in zip(self.fitters.items(), colors):
 
             if self.model_type == 'nonparametric':
-                # Non-parametric model: plot mass vs magnitude
-                absg_range = np.linspace(self.absg_min, self.absg_max, 1000)
+                # Non-parametric model: plot step-like mass vs magnitude
+                # Create absg bin edges for step plotting
+                bin_edges = np.concatenate([[self.absg_min], fitter.absg_bins, [self.absg_max]])
 
                 num_samples = min(1000, len(fitter.samples))
                 indices = np.random.choice(len(fitter.samples), size=num_samples, replace=False)
                 resampled_data = fitter.samples[indices]
 
+                # Extend mass bins to include edges for step plotting
                 fitted_mass_samples = np.array([
-                    np.interp(absg_range, fitter.absg_bins, mass_bins)
+                    np.concatenate([[mass_bins[0]], mass_bins, [mass_bins[-1]]])
                     for mass_bins in resampled_data
                 ])
 
                 percentiles = np.percentile(fitted_mass_samples, [16, 50, 84], axis=0)
                 lower, median, upper = percentiles[0], percentiles[1], percentiles[2]
 
-                # Plot
+                # Plot step-like function
                 label = f'[Fe/H]=[{self.feh_bin_edges[bin_idx]:.2f}, {self.feh_bin_edges[bin_idx+1]:.2f}]'
-                ax.fill_between(absg_range, lower, upper, color=color, alpha=0.2)
-                ax.plot(absg_range, median, color=color, label=label, linewidth=2)
+                ax.fill_between(bin_edges, lower, upper, color=color, alpha=0.2, step='post')
+                ax.step(bin_edges, median, color=color, label=label, linewidth=2)
 
-                # Plot true relation if provided
-                if true_mass_funcs is not None:
-                    if callable(true_mass_funcs):
-                        true_func = true_mass_funcs
-                    else:
-                        true_func = true_mass_funcs.get(bin_idx)
+                # Plot data scatter points for this metallicity bin
+                if data is not None:
+                    bin_data = data[bin_idx]
+                    try:
+                        # Extract data columns
+                        if hasattr(bin_data, 'colnames'):  # astropy.Table
+                            m1 = np.array(bin_data['m1'])
+                            m2 = np.array(bin_data['m2'])
+                            absg1 = np.array(bin_data['absg1'])
+                            absg2 = np.array(bin_data['absg2'])
+                        elif isinstance(bin_data, dict):  # dict
+                            m1 = np.array(bin_data['m1'])
+                            m2 = np.array(bin_data['m2'])
+                            absg1 = np.array(bin_data['absg1'])
+                            absg2 = np.array(bin_data['absg2'])
+                        else:
+                            raise ValueError("data must be astropy.Table or dict")
 
-                    if true_func is not None:
-                        true_mass = true_func(absg_range)
-                        ax.plot(absg_range, true_mass, color=color,
-                               linestyle='--', linewidth=1.5, alpha=0.7)
+                        # Plot both primary and secondary masses with low opacity
+                        ax.scatter(absg1, m1, color=color, s=1, alpha=0.2, zorder=0)
+                        ax.scatter(absg2, m2, color=color, s=1, alpha=0.15, zorder=0)
+                    except (KeyError, AttributeError) as e:
+                        print(f"Could not extract masses from data for bin {bin_idx}: {e}")
 
-                ax.set_xlim(self.absg_min, self.absg_max)
                 ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
                 ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=14)
+                ax.set_yscale('log')
 
             elif self.model_type == 'broken_powerlaw':
                 # Broken power law model: plot magnitude vs mass
-                mass_range = np.logspace(np.log10(0.08), np.log10(2.0), 200)
+                absg_range = np.linspace(fitter.absg_min, fitter.absg_max, 1000)  # absg range?
 
-                # Get posterior predictions
-                try:
-                    median_mags, lower_mags, upper_mags = fitter.get_posterior_predictions(mass_range)
-                except:
-                    # Fallback: use sample-based calculation if method not available
-                    num_samples = min(1000, len(fitter.samples))
-                    indices = np.random.choice(len(fitter.samples), size=num_samples, replace=False)
+                # Fallback: use sample-based calculation if method not available
+                num_samples = min(1000, len(fitter.samples))
+                indices = np.random.choice(len(fitter.samples), size=num_samples, replace=False)
+                
+                all_masses = fitter.mass_from_absg(absg_range, fitter.samples)
+                lower_mags, median_mags, upper_mags = np.percentile(all_masses, [16, 50, 84], axis=0)
 
-                    all_mags = []
-                    for idx in indices:
-                        sample = fitter.samples[idx]
-                        mags = fitter._predict_magnitudes(mass_range, sample)
-                        all_mags.append(mags)
-
-                    all_mags = np.array(all_mags)
-                    lower_mags, median_mags, upper_mags = np.percentile(all_mags, [16, 50, 84], axis=0)
+                # Best-fit line
+                median_params = np.median(fitter.samples, axis=0)
+                best_fit_mags = fitter.mass_from_absg(absg_range, median_params)
 
                 # Plot
                 label = f'[Fe/H]=[{self.feh_bin_edges[bin_idx]:.2f}, {self.feh_bin_edges[bin_idx+1]:.2f}]'
-                ax.fill_between(mass_range, lower_mags, upper_mags, color=color, alpha=0.2)
-                ax.plot(mass_range, median_mags, color=color, label=label, linewidth=2)
+                ax.fill_between(absg_range, lower_mags, upper_mags, color=color, alpha=0.2)
+                ax.plot(absg_range, best_fit_mags, color=color, linestyle='-.', linewidth=3, label=label)
 
                 # Add vertical lines for break points
                 for bp in self.break_points:
-                    ax.axvline(x=bp, color='gray', linestyle='--', alpha=0.5)
+                    ax.axhline(y=bp, color='gray', linestyle='--', alpha=0.5)
 
-                ax.set_xscale('log')
-                ax.set_xlim(0.08, 2.0)
-                ax.set_xlabel('Mass [$M_{\\odot}$]', fontsize=14)
-                ax.set_ylabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
+                ax.set_yscale('log')
+                ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
+                ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=14)
                 ax.invert_yaxis()  # Astronomical magnitude convention
 
         # Title and legend
@@ -1815,6 +1916,7 @@ class MultiMetallicityFitter:
         else:
             ax.set_title(f'Broken Power Law MLR for Different Metallicities ({self.uncertainty_model.capitalize()} Distribution)', fontsize=16)
 
+        ax.set_xlim(fitter.absg_min, fitter.absg_max)
         plt.tight_layout()
         plt.savefig(output_path, dpi=300)
         plt.close(fig)
@@ -1840,3 +1942,5 @@ class MultiMetallicityFitter:
             )
             np.savetxt(output_path, fitter.samples)
             print(f"Saved samples for bin {bin_idx} to {output_path}")
+
+        return
