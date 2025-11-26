@@ -1269,28 +1269,54 @@ class BrokenPowerLawMLR:
             mass = jnp.where(mass > 0, mass, self.mass_min)
             return jnp.clip(mass, self.mass_min, self.mass_max)
 
-        def likelihood_single_u_jax(u_obs, sqrt_mtot, u_sigma, norm_factor):
+        def likelihood_single_u_jax(u, sqrt_mtot, u_sigma, norm_factor):
             """Compute likelihood for observed u values."""
-            tilde_u = u_obs / sqrt_mtot
+            valid = (u > 0) & (sqrt_mtot > 0)
 
-            integration_grid = int_ulist_jax[None, :] * sqrt_mtot[:, None]
-            u_obs_grid = u_obs[:, None] * jnp.ones((1, len(int_ulist_jax)))
-            sigma_grid = u_sigma[:, None] * jnp.ones((1, len(int_ulist_jax)))
+            u = jnp.where(valid, u, 1e-10)
+            sqrt_mtot = jnp.where(valid, sqrt_mtot, 1e-10)
 
-            if self.uncertainty_model == 'rice':
-                uncertainty_dist = rice_distribution_jax(u_obs_grid, integration_grid, sigma_grid)
+            tilde_u = u / sqrt_mtot
+
+            if u_sigma is None:
+                # No uncertainty: direct evaluation
+                good_component = (1.0 / sqrt_mtot) * func_pu_8_jax(tilde_u)
             else:
-                uncertainty_dist = gaussian_jax(u_obs_grid, integration_grid, sigma_grid)
+                # Ensure positive sigma
+                u_sigma = jnp.maximum(u_sigma, 1e-10)
+                
+                u_obs_grid = (u / sqrt_mtot)[:, None]  # shape (N, 1)
+                sigma_grid = (u_sigma / sqrt_mtot)[:, None]  # shape (N, 1)
+                integration_grid = int_ulist_jax[None, :]  # shape (1, M)
 
-            integrand = (
-                (1.0 / sqrt_mtot[:, None])
-                * func_pu_8_jax(int_ulist_jax)[None, :]
-                * uncertainty_dist
-                * int_du
-            )
+                # With uncertainty: integrate over the distribution
+                if self.uncertainty_model == 'rice':
+                    # Rice distribution: p(u_obs | u_true, sigma)
+                    uncertainty_dist = rice_distribution_jax(
+                        u_obs_grid,        # u_obs (fixed observed value)
+                        integration_grid,  # ũ (integration variable, true values)
+                        sigma_grid         # σ
+                    )
+                elif self.uncertainty_model == 'gaussian':
+                    # Gaussian distribution: p(u_obs | u_true, sigma) = N(u_obs; u_true, sigma)
+                    uncertainty_dist = gaussian_jax(
+                        u_obs_grid,        # u_obs (fixed observed value)
+                        integration_grid,  # μ = ũ (integration variable, mean = true values)
+                        sigma_grid         # σ
+                    )
+                else:
+                    raise ValueError("Invalid uncertainty model.")
 
-            norm_factor = jnp.maximum(norm_factor, 1e-10)
-            good_component = jnp.sum(integrand, axis=1) / norm_factor + self.p_epsilon / (int_umax / int_du)
+                integrand = (
+                    (1.0 / sqrt_mtot[:, None])
+                    * func_pu_8_jax(int_ulist_jax)[None, :]
+                    * uncertainty_dist
+                    * int_du
+                )
+
+                norm_factor = jnp.maximum(norm_factor, 1e-10)
+                good_component = jnp.sum(integrand, axis=1) / norm_factor + self.p_epsilon / (int_umax / int_du)
+            
             outlier_component = outlier_gaussian_jax(tilde_u, self.outlier_u0, self.outlier_sigma) / norm_factor
 
             total_prob = self.f_good * good_component + self.f_outlier * outlier_component + self.p_epsilon
