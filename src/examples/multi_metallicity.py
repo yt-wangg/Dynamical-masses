@@ -69,12 +69,12 @@ def test_nonparametric_model(data, output_dir,
 
     # Save samples
     print("4. Saving non-parametric samples...")
-    multi_fitter.save_all_samples(output_dir=output_dir, prefix='nonparametric_samples')
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix=f'nonparametric_{uncertainty_model}_samples')
 
     # Plot results
     print("5. Plotting non-parametric results...")
     multi_fitter.plot_all_results(binned_data=binned_data, output_dir=output_dir)
-    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, 'nonparametric_multi_feh_comparison.png'))
+    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, f'nonparametric_{uncertainty_model}_uncertainty_{n_feh_bins}fehbins_comparison.png'), data=binned_data)
 
     # Print summary
     print("\n6. Non-parametric Summary Statistics:")
@@ -89,7 +89,7 @@ def test_nonparametric_model(data, output_dir,
 
 
 def test_broken_powerlaw_model(data, output_dir,
-                               break_points=np.array([0.5]),
+                               break_points=np.array([0.45]), absg_min=3.0, absg_max=14.0,
                                uncertainty_model='rice',
                                feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
                                num_warmup=800, num_samples=2500, num_chains=2,
@@ -106,6 +106,8 @@ def test_broken_powerlaw_model(data, output_dir,
     print("2. Initializing broken power law multi-metallicity fitter...")
     multi_fitter = MultiMetallicityFitter(
         model_type='broken_powerlaw',
+        absg_min=absg_min,
+        absg_max=absg_max,
         break_points=break_points,
         uncertainty_model=uncertainty_model,
         f_outlier=0,  # Allow 10% outliers
@@ -134,17 +136,16 @@ def test_broken_powerlaw_model(data, output_dir,
         num_chains=num_chains,      # Reduced for demo
         seed=seed,
         a_prior_range=(-20,10), b_prior_range=(-100,5),
-        mass_min=0.08, mass_max=1.2,
     )
 
     # Save samples
     print("5. Saving broken power law samples...")
-    multi_fitter.save_all_samples(output_dir=output_dir, prefix='broken_powerlaw_samples')
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix=f'broken_powerlaw_{uncertainty_model}_samples')
 
     # Plot results
     print("6. Plotting broken power law results...")
     multi_fitter.plot_all_results(binned_data=binned_data, output_dir=output_dir)
-    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, 'broken_powerlaw_multi_feh_comparison.png'))
+    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, f'broken_powerlaw_{uncertainty_model}_uncertainty_{n_feh_bins}fehbins_comparison.png'), data=binned_data)
 
     # Print summary
     print("\n7. Broken Power Law Summary Statistics:")
@@ -185,7 +186,7 @@ def main():
     data = data[data['feh']<=0.6]
 
     # Using a smaller subset for faster testing
-    indices = np.random.choice(len(data), size=2000, replace=False)
+    indices = np.random.choice(len(data), size=5000, replace=False)
     data = data[indices]
     print(f"   Using {len(data)} systems for testing")
 
@@ -195,15 +196,21 @@ def main():
     print(f"\n2. Results will be saved to: {output_dir}")
 
     # Test non-parametric model
-    # nonparametric_fitter = test_nonparametric_model(data, output_dir)
+    nonparametric_fitter = test_nonparametric_model(data, output_dir,
+                                                    n_absg_bins=10, absg_min=3.0, absg_max=14.0,
+                                                    uncertainty_model='gaussian',
+                                                    feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                                                    gamma=np.inf, num_warmup=500, num_samples=3000, num_chains=2,
+                                                    mass_min=0.01, mass_max=1.5, seed=4)
+    
 
     # Test broken power law model
     broken_powerlaw_models = test_broken_powerlaw_model(data, output_dir,
-                                                        break_points=np.array([0.4]),
+                                                        break_points=np.array([0.45]), absg_min=3.0, absg_max=14.0,
                                                         uncertainty_model='gaussian',
-                                                        feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                                                        feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
                                                         num_warmup=500, num_samples=3000, num_chains=2,
-                                                        seed=40)
+                                                        seed=8)
 
     # Final summary
     # print("\n" + "=" * 70)

@@ -380,11 +380,11 @@ class NonParametricMLR:
             if self.uncertainty_model == 'rice':
                 # Rice distribution is naturally defined for u >= 0, no truncation correction needed
                 self.norm_factor = np.ones(len(u_values))
-                print("Using RICE distribution (norm_factor = 1.0, no truncation correction)")
+                print("Using RICE uncertainty (norm_factor = 1.0, no truncation correction)")
             elif self.uncertainty_model == 'gaussian':
                 # Gaussian needs truncation correction for u >= 0
                 self.norm_factor = 1 - norm.cdf(0, loc=self.u_values, scale=self.u_sigma_values)
-                print(f"Using GAUSSIAN distribution (norm_factor computed for truncation at u=0)")
+                print(f"Using GAUSSIAN uncertainty (norm_factor computed for truncation at u=0)")
                 print(f"  Mean norm_factor: {np.mean(self.norm_factor):.4f}")
 
         # Set hyper-parameter for regularization
@@ -444,7 +444,7 @@ class NonParametricMLR:
             raise ValueError("No data set. Use set_data() first.")
 
         print(f"Running numpyro with {self.n_bins} bins, hyper-parameter for regularisation gamma={self.gamma}...")
-        print(f"*** USING {self.uncertainty_model.upper()} DISTRIBUTION for u_obs uncertainty ***")
+        print(f"*** USING {self.uncertainty_model.upper()} UNCERTAINTY for u_obs uncertainty ***")
 
         # Performance info
         if self.u_sigma_values is not None:
@@ -679,7 +679,7 @@ class NonParametricMLR:
             fig = corner.corner(self.samples, labels=labels, truths=truths,
                                truth_color='salmon', show_titles=True)
             plt.tight_layout()
-            plt.savefig(f'{output_dir}/corner_plot_{output_suffix}.png', dpi=300)
+            plt.savefig(f'{output_dir}/corner_plot_nonparam_{self.uncertainty_model}{output_suffix}.png', dpi=300)
             plt.close(fig)
         except ImportError:
             print("corner package not installed. Install it with: pip install corner")
@@ -709,37 +709,29 @@ class NonParametricMLR:
         indices = np.random.choice(len(self.samples), size=num_samples, replace=False)
         resampled_data = self.samples[indices]
 
-        # Create absg bin edges for step plotting
-        bin_edges = np.concatenate([[self.absg_min], self.absg_bins, [self.absg_max]])
-
-        # Extend mass bins to include edges for step plotting
-        fitted_mass_samples = np.array([
-            np.concatenate([[mass_bins[0]], mass_bins, [mass_bins[-1]]])
-            for mass_bins in resampled_data
-        ])
-
-        percentiles = np.percentile(fitted_mass_samples, [16, 50, 84], axis=0)
+        percentiles = np.percentile(self.samples, [16, 50, 84], axis=0)
         lower, median, upper = percentiles[0], percentiles[1], percentiles[2]
+
+        # Making fill_between like step function needs extra points
+        # bin_edges = np.concatenate(([self.absg_bins[0] - (self.absg_bins[1] - self.absg_bins[0]) / 2],
+        #                            self.absg_bins,
+        #                            [self.absg_bins[-1] + (self.absg_bins[-1] - self.absg_bins[-2]) / 2]))
+        # lower = np.concatenate(([lower[0]], lower, [lower[-1]]))
+        # upper = np.concatenate(([upper[0]], upper, [upper[-1]]))
 
         fig, ax = plt.subplots(figsize=(10, 6))
 
         # Plot sample fits as step functions
         for i in range(min(400, len(resampled_data))):
-            sample_mass = np.concatenate([[resampled_data[i][0]], resampled_data[i], [resampled_data[i][-1]]])
-            ax.step(bin_edges, sample_mass, color='gray', alpha=0.1, linewidth=1, zorder=1)
+            ax.step(self.absg_bins, resampled_data[i], color='gray', alpha=0.1, linewidth=1, zorder=1, where='mid')
 
         # Plot credible region as step function
-        ax.fill_between(bin_edges, lower, upper, color='orange',
-                       alpha=0.3, label='1 sigma', step='post', zorder=2)
+        ax.fill_between(self.absg_bins, lower, upper, color='orange', step='mid',
+                       alpha=0.3, label='1 sigma', zorder=2)
 
         # Plot median fit as step function
-        ax.step(bin_edges, median, color='orange',
-               label=f'Median ({self.uncertainty_model.capitalize()})', linewidth=2, zorder=3)
-
-        # Plot bin centers
-        median_masses = np.median(resampled_data, axis=0)
-        ax.scatter(self.absg_bins, median_masses, color='red', s=50,
-                  zorder=4, label='Bin centers')
+        ax.step(self.absg_bins, median, color='orange',
+               label=f'Median ({self.uncertainty_model.capitalize()})', linewidth=2, zorder=3, where='mid')
 
         # Plot true masses from data if provided
         if data is not None:
@@ -759,9 +751,9 @@ class NonParametricMLR:
                     raise ValueError("data must be astropy.Table or dict with 'm1', 'm2', 'absg1', 'absg2' columns")
 
                 # Plot both primary and secondary masses
-                ax.scatter(absg1, m1, color='black', s=1, alpha=0.3,
+                ax.scatter(absg1, m1, color='black', s=1, alpha=0.5,
                           label='Truth', zorder=0)
-                ax.scatter(absg2, m2, color='gray', s=1, alpha=0.3,
+                ax.scatter(absg2, m2, color='black', s=1, alpha=0.5,
                           zorder=0)
             except (KeyError, AttributeError) as e:
                 print(f"Could not extract true masses from data: {e}")
@@ -771,9 +763,9 @@ class NonParametricMLR:
         ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=12)
         ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=12)
         ax.set_yscale('log')
-        ax.invert_yaxis()
+        ax.invert_xaxis()
         ax.legend(fontsize=10)
-        title = f'Non-parametric fit with {self.uncertainty_model.capitalize()} distribution ({self.n_bins} bins)'
+        title = f'Non-parametric fit with {self.uncertainty_model.capitalize()} uncertainty ({self.n_bins} bins)'
         plt.title(title, fontsize=14)
         plt.tight_layout()
         plt.savefig(f'{output_dir}/nonparametric_fit_{self.n_bins}bins_{self.uncertainty_model}{output_suffix}.png', dpi=300)
@@ -1439,7 +1431,7 @@ class BrokenPowerLawMLR:
                                truth_color='salmon', show_titles=True)
             plt.tight_layout()
             os.makedirs(output_dir, exist_ok=True) if output_dir else None
-            plt.savefig(f'{output_dir}/corner_plot_{output_suffix}.png', dpi=300)
+            plt.savefig(f'{output_dir}/corner_plot_broken_powerlaw_{self.uncertainty_model}{output_suffix}.png', dpi=300)
             plt.close(fig)
         except ImportError:
             print("corner package not installed. Install it with: pip install corner")
@@ -1495,7 +1487,7 @@ class BrokenPowerLawMLR:
 
         # Plot best fit
         ax.plot(absg_range, best_fit_masses, color='#148dde',
-               label=f'Best Fit ({self.uncertainty_model.capitalize()})', ls='-.', linewidth=3, zorder=3)
+               label=f'Best-Fit params', ls='-.', linewidth=3, zorder=3)
 
         # Plot true masses from data if provided
         if data is not None:
@@ -1515,21 +1507,22 @@ class BrokenPowerLawMLR:
                     raise ValueError("data must be astropy.Table or dict with 'm1', 'm2', 'absg1', 'absg2' columns")
 
                 # Plot both primary and secondary masses
-                ax.scatter(absg1, m1, color='black', s=1, alpha=0.3,
+                ax.scatter(absg1, m1, color='black', s=1, alpha=0.5,
                           label='Truth', zorder=0)
-                ax.scatter(absg2, m2, color='gray', s=1, alpha=0.3,
+                ax.scatter(absg2, m2, color='black', s=1, alpha=0.5,
                             zorder=0)
             except (KeyError, AttributeError) as e:
                 print(f"Could not extract true masses from data: {e}")
 
-        ax.set_xlabel('Absolute Magnitude $M_{\\mathrm{G}}$ [mag]', fontsize=12)
+        ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=12)
         ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=12)
         ax.set_xlim(self.absg_min, self.absg_max)
         ax.set_yscale('log')
         ax.legend(fontsize=10)
-        title = f'Broken Power-Law fit with {self.uncertainty_model.capitalize()} distribution ({self.n_segments} segments)'
+        ax.invert_xaxis()
+        
+        title = f'Broken Power-Law fit with {self.uncertainty_model.capitalize()} uncertainty ({self.n_segments} segments)'
         plt.title(title, fontsize=14)
-        plt.gca().invert_xaxis()
         plt.tight_layout()
         os.makedirs(output_dir, exist_ok=True) if output_dir else None
         plt.savefig(f'{output_dir}/broken_powerlaw_fit_{self.n_segments}segments_{self.uncertainty_model}{output_suffix}.png', dpi=300)
@@ -1746,6 +1739,8 @@ class MultiMetallicityFitter:
                 # Create broken power-law fitter for this bin
                 fitter = BrokenPowerLawMLR(
                     break_points=self.break_points,
+                    absg_min=self.absg_min,
+                    absg_max=self.absg_max,
                     uncertainty_model=self.uncertainty_model,
                     f_outlier=self.f_outlier,
                     outlier_u0=self.outlier_u0,
@@ -1826,31 +1821,19 @@ class MultiMetallicityFitter:
 
         # Color map for different metallicity bins
         colors = cm.viridis(np.linspace(0, 1, len(self.fitters)))
-
+        
         for (bin_idx, fitter), color in zip(self.fitters.items(), colors):
 
             if self.model_type == 'nonparametric':
                 # Non-parametric model: plot step-like mass vs magnitude
                 # Create absg bin edges for step plotting
-                bin_edges = np.concatenate([[self.absg_min], fitter.absg_bins, [self.absg_max]])
-
-                num_samples = min(1000, len(fitter.samples))
-                indices = np.random.choice(len(fitter.samples), size=num_samples, replace=False)
-                resampled_data = fitter.samples[indices]
-
-                # Extend mass bins to include edges for step plotting
-                fitted_mass_samples = np.array([
-                    np.concatenate([[mass_bins[0]], mass_bins, [mass_bins[-1]]])
-                    for mass_bins in resampled_data
-                ])
-
-                percentiles = np.percentile(fitted_mass_samples, [16, 50, 84], axis=0)
+                percentiles = np.percentile(fitter.samples, [16, 50, 84], axis=0)
                 lower, median, upper = percentiles[0], percentiles[1], percentiles[2]
 
                 # Plot step-like function
                 label = f'[Fe/H]=[{self.feh_bin_edges[bin_idx]:.2f}, {self.feh_bin_edges[bin_idx+1]:.2f}]'
-                ax.fill_between(bin_edges, lower, upper, color=color, alpha=0.2, step='post')
-                ax.step(bin_edges, median, color=color, label=label, linewidth=2)
+                ax.fill_between(fitter.absg_bins, lower, upper, color=color, alpha=0.2, step='mid')
+                ax.step(fitter.absg_bins, median, color=color, label=label, linewidth=2, where='mid')
 
                 # Plot data scatter points for this metallicity bin
                 if data is not None:
@@ -1876,17 +1859,9 @@ class MultiMetallicityFitter:
                     except (KeyError, AttributeError) as e:
                         print(f"Could not extract masses from data for bin {bin_idx}: {e}")
 
-                ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
-                ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=14)
-                ax.set_yscale('log')
-
             elif self.model_type == 'broken_powerlaw':
                 # Broken power law model: plot magnitude vs mass
                 absg_range = np.linspace(fitter.absg_min, fitter.absg_max, 1000)  # absg range?
-
-                # Fallback: use sample-based calculation if method not available
-                num_samples = min(1000, len(fitter.samples))
-                indices = np.random.choice(len(fitter.samples), size=num_samples, replace=False)
                 
                 all_masses = fitter.mass_from_absg(absg_range, fitter.samples)
                 lower_mags, median_mags, upper_mags = np.percentile(all_masses, [16, 50, 84], axis=0)
@@ -1904,11 +1879,17 @@ class MultiMetallicityFitter:
                 for bp in self.break_points:
                     ax.axhline(y=bp, color='gray', linestyle='--', alpha=0.5)
 
-                ax.set_yscale('log')
-                ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
-                ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=14)
-                ax.invert_yaxis()  # Astronomical magnitude convention
+            # Truth
+            ax.scatter(data['absg1'], data['m1'], color=color, s=1, alpha=1, label='Truth', zorder=0)
+            ax.scatter(data['absg2'], data['m2'], color=color, s=1, alpha=1, zorder=0)
 
+
+        ax.set_yscale('log')
+        ax.set_xlim(fitter.absg_min, fitter.absg_max)
+        ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
+        ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=14)
+        ax.invert_xaxis()  # Astronomical magnitude convention
+        
         # Title and legend
         ax.legend(fontsize=10, loc='best')
         if self.model_type == 'nonparametric':
@@ -1916,7 +1897,6 @@ class MultiMetallicityFitter:
         else:
             ax.set_title(f'Broken Power Law MLR for Different Metallicities ({self.uncertainty_model.capitalize()} Distribution)', fontsize=16)
 
-        ax.set_xlim(fitter.absg_min, fitter.absg_max)
         plt.tight_layout()
         plt.savefig(output_path, dpi=300)
         plt.close(fig)
