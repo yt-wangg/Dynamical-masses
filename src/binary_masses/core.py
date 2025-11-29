@@ -1021,7 +1021,9 @@ class BrokenPowerLawMLR:
             mass = np.zeros_like(absg)
 
             # Compute break points (mass values where segments intersect)
-            break_points = 10**((intercepts[1:] - intercepts[:-1]) / (slopes[:-1] - slopes[1:]))
+            # At break point: a_i + b_i * log10(M) = a_{i+1} + b_{i+1} * log10(M)
+            # Solving: log10(M) = (a_i - a_{i+1}) / (b_{i+1} - b_i)
+            break_points = 10**((intercepts[:-1] - intercepts[1:]) / (slopes[1:] - slopes[:-1]))
 
             # Compute magnitude boundaries (where segments intersect in magnitude space)
             if len(break_points) > 0:
@@ -1085,7 +1087,9 @@ class BrokenPowerLawMLR:
         n_segments = self.n_segments
 
         # Compute break points (mass values where segments intersect)
-        break_points = jnp.array(10**((intercepts[1:] - intercepts[:-1]) / (slopes[:-1] - slopes[1:])))
+        # At break point: a_i + b_i * log10(M) = a_{i+1} + b_{i+1} * log10(M)
+        # Solving: log10(M) = (a_i - a_{i+1}) / (b_{i+1} - b_i)
+        break_points = jnp.array(10**((intercepts[:-1] - intercepts[1:]) / (slopes[1:] - slopes[:-1])))
 
         # Compute magnitude boundaries (where segments intersect in magnitude space)
         if len(break_points) > 0:
@@ -1380,11 +1384,11 @@ class BrokenPowerLawMLR:
             # Prior on b with physical constraints (slopes should be negative for stellar MLR)
             slopes = []
             if b_prior_range is not None:
+                # Ensure b_prior_range covers only negative slopes
+                b_low = max(b_prior_range[0], -80.0)
+                b_high = min(b_prior_range[1], 0.0)
                 for i in range(n_segments):
-                    slopes.append(numpyro.sample(f'b_{i}', dist.TruncatedDistribution(
-                        dist.Uniform(b_prior_range[0], b_prior_range[1]),
-                        low=-80.0, high=0.0  # Ensure negative slopes
-                    )))
+                    slopes.append(numpyro.sample(f'b_{i}', dist.Uniform(b_low, b_high)))
             else:
                 raise ValueError("Have to specify b_prior_range for slopes in broken power-law model.")
             slopes = jnp.stack(slopes)
@@ -1399,15 +1403,18 @@ class BrokenPowerLawMLR:
             intercepts = jnp.stack(intercepts)
 
             # Ensure physically valid break points (should be within mass range)
-            break_points = jnp.array(10**((intercepts[1:] - intercepts[:-1]) / (slopes[:-1] - slopes[1:])))
+            # At break point: a_i + b_i * log10(M) = a_{i+1} + b_{i+1} * log10(M)
+            # Solving: log10(M) = (a_i - a_{i+1}) / (b_{i+1} - b_i)
+            break_points = jnp.array(10**((intercepts[:-1] - intercepts[1:]) / (slopes[1:] - slopes[:-1])))
 
             # Add constraint to ensure break points are within valid range
             for i, break_point in enumerate(break_points):
                 numpyro.factor(f'break_point_{i}_valid',
                                jnp.where((break_point >= self.mass_min) & (break_point <= self.mass_max),
                                         0.0, -jnp.inf))
-            
-            break_points_inner = jnp.array(10**((intercepts[1:] - intercepts[:-1]) / (slopes[:-1] - slopes[1:])))
+
+            # Compute break points for mass_from_absg_jax_inner (same formula)
+            break_points_inner = jnp.array(10**((intercepts[:-1] - intercepts[1:]) / (slopes[1:] - slopes[:-1])))
 
             # Compute masses from magnitudes
             m1 = mass_from_absg_jax_inner(absg1_values, intercepts, slopes, break_points_inner)
@@ -1467,8 +1474,9 @@ class BrokenPowerLawMLR:
         # Compute break points from median parameters for plotting
         median_intercepts = np.median(intercept_samples, axis=0)
         median_slopes = np.median(slope_samples, axis=0)
-        self.break_points = 10**((median_intercepts[1:] - median_intercepts[:-1]) /
-                                (median_slopes[:-1] - median_slopes[1:]))
+        # Fixed formula: log10(M) = (a_i - a_{i+1}) / (b_{i+1} - b_i)
+        self.break_points = 10**((median_intercepts[:-1] - median_intercepts[1:]) /
+                                (median_slopes[1:] - median_slopes[:-1]))
 
         mcmc.print_summary()
 
