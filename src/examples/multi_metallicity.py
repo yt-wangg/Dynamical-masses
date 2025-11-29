@@ -89,7 +89,7 @@ def test_nonparametric_model(data, output_dir,
 
 
 def test_broken_powerlaw_model(data, output_dir,
-                               break_points=np.array([0.45]), absg_min=3.0, absg_max=14.0,
+                               n_segments=3, absg_min=3.0, absg_max=14.0,
                                uncertainty_model='rice',
                                feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
                                num_warmup=800, num_samples=2500, num_chains=2,
@@ -100,7 +100,7 @@ def test_broken_powerlaw_model(data, output_dir,
     print("="*50)
 
     # Define break points for the broken power law
-    print(f"1. Using broken power law with break points: {break_points} M_sun")
+    print(f"1. Using broken power law with : {n_segments} segments")
 
     # Initialize multi-metallicity fitter with broken power law model
     print("2. Initializing broken power law multi-metallicity fitter...")
@@ -108,7 +108,7 @@ def test_broken_powerlaw_model(data, output_dir,
         model_type='broken_powerlaw',
         absg_min=absg_min,
         absg_max=absg_max,
-        break_points=break_points,
+        n_segments=n_segments,
         uncertainty_model=uncertainty_model,
         f_outlier=0,  # Allow 10% outliers
         outlier_u0=30,
@@ -135,7 +135,7 @@ def test_broken_powerlaw_model(data, output_dir,
         num_samples=num_samples,  # Reduced for demo
         num_chains=num_chains,      # Reduced for demo
         seed=seed,
-        a_prior_range=(-20,10), b_prior_range=(-100,5),
+        a_prior_range=(-15,15), b_prior_range=(-80,5),
     )
 
     # Save samples
@@ -196,20 +196,20 @@ def main():
     print(f"\n2. Results will be saved to: {output_dir}")
 
     # Test non-parametric model
-    nonparametric_fitter = test_nonparametric_model(data, output_dir,
-                                                    n_absg_bins=10, absg_min=3.0, absg_max=14.0,
-                                                    uncertainty_model='gaussian',
-                                                    feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
-                                                    gamma=np.inf, num_warmup=500, num_samples=3000, num_chains=2,
-                                                    mass_min=0.01, mass_max=1.5, seed=4)
+    # nonparametric_fitter = test_nonparametric_model(data, output_dir,
+    #                                                 n_absg_bins=10, absg_min=3.0, absg_max=14.0,
+    #                                                 uncertainty_model='gaussian',
+    #                                                 feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
+    #                                                 gamma=np.inf, num_warmup=500, num_samples=3000, num_chains=2,
+    #                                                 mass_min=0.01, mass_max=1.5, seed=4)
     
 
     # Test broken power law model
     broken_powerlaw_models = test_broken_powerlaw_model(data, output_dir,
-                                                        break_points=np.array([0.45]), absg_min=3.0, absg_max=14.0,
+                                                        n_segments=2, absg_min=3.0, absg_max=14.0,
                                                         uncertainty_model='gaussian',
-                                                        feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
-                                                        num_warmup=500, num_samples=3000, num_chains=2,
+                                                        feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                                                        num_warmup=500, num_samples=2000, num_chains=2,
                                                         seed=8)
 
     # Final summary

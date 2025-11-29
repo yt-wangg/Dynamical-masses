@@ -751,9 +751,9 @@ class NonParametricMLR:
                     raise ValueError("data must be astropy.Table or dict with 'm1', 'm2', 'absg1', 'absg2' columns")
 
                 # Plot both primary and secondary masses
-                ax.scatter(absg1, m1, color='black', s=1, alpha=0.5,
+                ax.scatter(absg1, m1, color='black', s=5, alpha=0.5,
                           label='Truth', zorder=0)
-                ax.scatter(absg2, m2, color='black', s=1, alpha=0.5,
+                ax.scatter(absg2, m2, color='black', s=5, alpha=0.5,
                           zorder=0)
             except (KeyError, AttributeError) as e:
                 print(f"Could not extract true masses from data: {e}")
@@ -777,17 +777,19 @@ class BrokenPowerLawMLR:
     Parametric Bayesian inference for mass-luminosity relations using broken power-law.
 
     The mass-luminosity relation is parameterized as:
-        M_G = a_i + b_i * log10(M/M_sun)  for M_{i-1} < M < M_i
+        log10(M/M_sun) = alpha_0 + beta_0 * (M_G - M_G0)  for M_G <= M_break_1
+        log10(M/M_sun) = alpha_1 + beta_1 * (M_G - M_break_1)  for M_break_1 < M_G <= M_break_2
+        ...
 
-    where the break points are fixed at specified mass values (e.g., 0.1, 0.3, 0.5, 1.0 M_sun).
+    Continuity is enforced at break points:
+        alpha_{i+1} = alpha_i + (beta_i - beta_{i+1}) * (M_break_i - M_G0)
+
+    where break magnitudes are sampled with physical constraints.
 
     Uses NumPyro with NUTS sampler for posterior inference.
     """
 
-    # Default break points in solar masses
-    DEFAULT_BREAK_POINTS = np.array([0.4])
-
-    def __init__(self, break_points=None, mass_min=0.08, mass_max=1.0, absg_min=4.0, absg_max=12.0,
+    def __init__(self, n_segments=3, mass_min=0.08, mass_max=1.0, absg_min=4.0, absg_max=12.0,
                  uncertainty_model='rice',
                  f_outlier=0, outlier_u0=30, outlier_sigma=15):
         """
@@ -795,9 +797,8 @@ class BrokenPowerLawMLR:
 
         Parameters
         ----------
-        break_points : array_like, optional
-            Mass values (in M_sun) where the power-law breaks.
-            Default: [0.1, 0.3, 0.5, 1.0]
+        n_segments : int, optional
+            Number of power-law segments (default: 3)
         uncertainty_model : str
             Uncertainty model: 'rice' or 'gaussian' (default: 'rice')
         f_outlier : float
@@ -807,10 +808,8 @@ class BrokenPowerLawMLR:
         outlier_sigma : float
             Outlier distribution width
         """
-        if break_points is None:
-            break_points = self.DEFAULT_BREAK_POINTS
-        self.break_points = np.array(break_points)
-        self.n_segments = len(self.break_points) + 1  # Number of power-law segments
+
+        self.n_segments = n_segments  # Number of power-law segments
 
         # Uncertainty model selection
         if uncertainty_model not in ['rice', 'gaussian']:
@@ -840,76 +839,77 @@ class BrokenPowerLawMLR:
         self.samples = None
         self.results = None
 
-        # Parameter names for each segment: a_i, b_i
+        # Parameter names: a_i, b_i for each segment (intercepts and slopes)
+        # Break points are calculated from intersections: M_break_i = (a_i - a_{i+1}) / (b_{i+1} - b_i)
         self.param_names = []
         for i in range(self.n_segments):
             self.param_names.extend([f'a_{i}', f'b_{i}'])
 
-    def _compute_continuous_intercepts(self, mag_at_bp0, slopes, break_points):
-        """
-        Enforce continuity at each break by deriving intercepts from slopes.
-
-        Parameters
-        ----------
-        mag_at_bp0 : float
-            M_G value at the first break point (break_points[0])
-        slopes : array
-            Slope for each segment
-        break_points : array
-            Mass values at break points
-
-        The intercept a_i is defined such that M_G = a_i + b_i * log10(M).
-        We first compute a_0 from mag_at_bp0, then propagate continuity.
-        """
-        log_bp = np.log10(break_points)
-
-        # Compute a_0: at break_points[0], M_G = a_0 + b_0 * log10(bp[0]) = mag_at_bp0
-        a_0 = mag_at_bp0 - slopes[0] * log_bp[0]
-        intercepts = [a_0]
-
-        # Continuity: a_{i-1} + b_{i-1} * log10(bp[i-1]) = a_i + b_i * log10(bp[i-1])
-        for i in range(1, len(slopes)):
-            prev_a = intercepts[i - 1]
-            prev_b = slopes[i - 1]
-            a_i = prev_a + prev_b * log_bp[i - 1] - slopes[i] * log_bp[i - 1]
-            intercepts.append(a_i)
-        return np.array(intercepts)
-
-    @staticmethod
-    def _compute_continuous_intercepts_jax(mag_at_bp0, slopes, break_points):
-        """
-        JAX version of continuous intercept computation.
-
-        Parameters
-        ----------
-        mag_at_bp0 : float
-            M_G value at the first break point
-        slopes : jax array
-            Slope for each segment
-        break_points : jax array
-            Mass values at break points
-        """
-        import jax.numpy as jnp
-
-        log_bp = jnp.log10(break_points)
-
-        # Compute a_0 from mag_at_bp0
-        a_0 = mag_at_bp0 - slopes[0] * log_bp[0]
-        intercepts = [a_0]
-
-        # Propagate continuity
-        for i in range(1, len(slopes)):
-            prev_a = intercepts[i - 1]
-            prev_b = slopes[i - 1]
-            a_i = prev_a + prev_b * log_bp[i - 1] - slopes[i] * log_bp[i - 1]
-            intercepts.append(a_i)
-        return jnp.stack(intercepts)
-
     def _split_params(self, params):
         """Split flattened [a0.., b0..] into intercept and slope arrays."""
+        params = np.atleast_1d(params)
         intercepts = params[0::2]
         slopes = params[1::2]
         return intercepts, slopes
+
+    def _compute_break_points(self, intercepts, slopes):
+        """
+        Compute break points from segment intersections.
+        Ensures continuity by construction.
+
+        Parameters
+        ----------
+        intercepts : array_like
+            Intercepts a_i for each segment [a_0, a_1, ..., a_{K-1}]
+        slopes : array_like
+            Slopes b_i for each segment [b_0, b_1, ..., b_{K-1}]
+
+        Returns
+        -------
+        break_mags : array_like
+            Break magnitudes where segments intersect [M_break_1, ..., M_break_{K-1}]
+            Length = n_segments - 1
+        """
+        break_mags = []
+        for i in range(len(intercepts) - 1):
+            # Intersection point: a_i + b_i * log10(M) = a_{i+1} + b_{i+1} * log10(M)
+            # Solve for M: log10(M) = (a_i - a_{i+1}) / (b_{i+1} - b_i)
+            log10_mass_break = (intercepts[i] - intercepts[i+1]) / (slopes[i+1] - slopes[i])
+
+            # Convert to magnitude using the first segment equation
+            break_mag = intercepts[i] + slopes[i] * log10_mass_break
+            break_mags.append(break_mag)
+
+        return np.array(break_mags)
+
+    def _validate_continuity(self, params):
+        """
+        Validate that the broken power-law is continuous at break points.
+
+        Parameters
+        ----------
+        params : array_like
+            Flattened parameters [a_0, b_0, a_1, b_1, ...]
+
+        Returns
+        -------
+        is_continuous : bool
+            True if continuous within tolerance
+        """
+        intercepts, slopes = self._split_params(params)
+        break_mags = self._compute_break_points(intercepts, slopes)
+
+        # Check continuity at each break point
+        tolerance = 1e-10
+        for i, break_mag in enumerate(break_mags):
+            # Compute log10(mass) from both adjacent segments at break point
+            log10_mass_1 = (break_mag - intercepts[i]) / slopes[i]
+            log10_mass_2 = (break_mag - intercepts[i+1]) / slopes[i+1]
+
+            if abs(log10_mass_1 - log10_mass_2) > tolerance:
+                return False
+
+        return True
 
     def absg_from_mass(self, mass, params):
         """
@@ -948,12 +948,14 @@ class BrokenPowerLawMLR:
         absg_values = np.zeros((n_param_sets, len(mass)))
 
         # Build segment boundaries: [mass_min, break_points, mass_max]
-        boundaries = np.concatenate([[self.mass_min], self.break_points, [self.mass_max]])
+        # boundaries = np.concatenate([[self.mass_min], self.break_points, [self.mass_max]])
 
         # Process each parameter set
         for param_idx in range(n_param_sets):
             intercepts, slopes = self._split_params(params[param_idx])
             absg = np.zeros_like(mass)
+            break_points = 10**((intercepts[1:] - intercepts[:-1]) / (slopes[:-1] - slopes[1:]))
+            boundaries = np.concatenate([[self.mass_min], break_points, [self.mass_max]])
 
             for i in range(self.n_segments):
                 a_i = intercepts[i]
@@ -1011,14 +1013,31 @@ class BrokenPowerLawMLR:
         masses = np.zeros((n_param_sets, len(absg)))
 
         # Build segment boundaries
-        boundaries = np.concatenate([[self.mass_min], self.break_points, [self.mass_max]])
+        # boundaries = np.concatenate([[self.mass_min], self.break_points, [self.mass_max]])
 
         # Process each parameter set
         for param_idx in range(n_param_sets):
             intercepts, slopes = self._split_params(params[param_idx])
             mass = np.zeros_like(absg)
 
-            # For each segment, compute mass and check if it falls in valid range
+            # Compute break points (mass values where segments intersect)
+            break_points = 10**((intercepts[1:] - intercepts[:-1]) / (slopes[:-1] - slopes[1:]))
+
+            # Compute magnitude boundaries (where segments intersect in magnitude space)
+            if len(break_points) > 0:
+                mag_boundaries = []
+                for i, break_point in enumerate(break_points):
+                    # Magnitude at break point using segment i
+                    mag_break = intercepts[i] + slopes[i] * np.log10(break_point)
+                    mag_boundaries.append(mag_break)
+                mag_boundaries = np.array(mag_boundaries)
+            else:
+                mag_boundaries = np.array([])
+
+            # Build magnitude boundaries for segment selection: [absg_min, break_mags, absg_max]
+            mag_boundaries_full = np.concatenate([[self.absg_min], mag_boundaries, [self.absg_max]])
+
+            # For each segment, compute mass and check if magnitude falls in this segment's range
             for i in range(self.n_segments):
                 a_i = intercepts[i]
                 b_i = slopes[i]
@@ -1026,9 +1045,12 @@ class BrokenPowerLawMLR:
                 # Compute mass for this segment: M = 10^((M_G - a) / b)
                 mass_candidate = 10**((absg - a_i) / b_i)
 
-                # Check if mass falls within this segment's boundaries
+                # Check if magnitude falls within this segment's magnitude range
                 # Use <= for upper bound to include edge values
-                mask = (mass_candidate >= boundaries[i]) & (mass_candidate <= boundaries[i+1])
+                if i == self.n_segments - 1:
+                    mask = (absg >= mag_boundaries_full[i]) & (absg <= mag_boundaries_full[i+1])
+                else:
+                    mask = (absg >= mag_boundaries_full[i]) & (absg < mag_boundaries_full[i+1])
                 mass[mask] = mass_candidate[mask]
 
             masses[param_idx] = np.clip(mass, self.mass_min, self.mass_max)
@@ -1039,7 +1061,7 @@ class BrokenPowerLawMLR:
         else:
             return masses  # Return 2D array for multiple parameter sets
 
-    def mass_from_absg_jax(self, absg, params, break_points):
+    def mass_from_absg_jax(self, absg, params):
         """
         JAX-compatible version of mass_from_absg for use in NumPyro model.
 
@@ -1060,16 +1082,31 @@ class BrokenPowerLawMLR:
         import jax.numpy as jnp
 
         intercepts, slopes = self._split_params(params)
-        n_segments = len(break_points) + 1
+        n_segments = self.n_segments
+
+        # Compute break points (mass values where segments intersect)
+        break_points = jnp.array(10**((intercepts[1:] - intercepts[:-1]) / (slopes[:-1] - slopes[1:])))
+
+        # Compute magnitude boundaries (where segments intersect in magnitude space)
+        if len(break_points) > 0:
+            mag_boundaries = jnp.array([
+                intercepts[i] + slopes[i] * jnp.log10(break_points[i])
+                for i in range(len(break_points))
+            ])
+        else:
+            mag_boundaries = jnp.array([])
+
+        # Build magnitude boundaries for segment selection: [absg_min, break_mags, absg_max]
+        mag_boundaries_full = jnp.concatenate([
+            jnp.array([self.absg_min]),
+            mag_boundaries,
+            jnp.array([self.absg_max])
+        ])
 
         # Initialize with zeros
         mass = jnp.zeros_like(absg)
 
-        # Build segment boundaries
-        boundaries_low = jnp.concatenate([jnp.array([self.mass_min]), break_points])
-        boundaries_high = jnp.concatenate([break_points, jnp.array([self.mass_max])])
-
-        # For each segment, compute mass and check if it falls in range
+        # For each segment, compute mass and check if magnitude falls in this segment's range
         for i in range(n_segments):
             a_i = intercepts[i]
             b_i = slopes[i]
@@ -1077,8 +1114,13 @@ class BrokenPowerLawMLR:
             # Compute mass for this segment: M = 10^((M_G - a) / b)
             mass_candidate = jnp.power(10.0, (absg - a_i) / b_i)
 
-            # Check if mass falls within this segment's boundaries
-            in_segment = (mass_candidate >= boundaries_low[i]) & (mass_candidate < boundaries_high[i])
+            # Check if magnitude falls within this segment's magnitude range
+            if i == n_segments - 1:
+                # Last segment includes upper bound
+                in_segment = (absg >= mag_boundaries_full[i]) & (absg <= mag_boundaries_full[i+1])
+            else:
+                # Other segments use exclusive upper bound
+                in_segment = (absg >= mag_boundaries_full[i]) & (absg < mag_boundaries_full[i+1])
 
             # Update mass where this segment applies
             mass = jnp.where(in_segment, mass_candidate, mass)
@@ -1126,9 +1168,6 @@ class BrokenPowerLawMLR:
                     seed=None,
                     int_umax=80, int_du=0.02, use_dense_mass=False,
                     a_prior_range=None, b_prior_range=None,
-                    a_prior_mu_sigma=(12.0, 3.0), b_prior_mu_sigma=(-6.0, 4.0),
-                    b_prior_bounds=(-20.0, 5.0),
-                    anchor_mass=0.2, anchor_absg=12.0, anchor_sigma=None, anchor_weight=1.0,
                     **kwargs):
         """
         Run NumPyro MCMC inference for broken power-law parameters.
@@ -1165,14 +1204,6 @@ class BrokenPowerLawMLR:
             Mean and sigma for the (truncated) Normal prior on slopes when b_prior_range is None.
         b_prior_bounds : tuple
             Low/high bounds for the truncated Normal slope prior.
-        anchor_mass : float
-            Anchor mass (in M_sun) to pin the zero-point of the MLR.
-        anchor_absg : float
-            Expected M_G at anchor_mass.
-        anchor_sigma : float
-            Uncertainty for the anchor prior (set to None to disable).
-        anchor_weight : float
-            Weight multiplier for the anchor likelihood term.
         **kwargs : dict
             Additional arguments passed to NUTS
 
@@ -1191,13 +1222,6 @@ class BrokenPowerLawMLR:
         if self.u_values is None:
             raise ValueError("Data not set. Call set_data() first.")
 
-        valid_bp = self.break_points[(self.break_points > self.mass_min) & (self.break_points < self.mass_max)]
-        if len(valid_bp) != len(self.break_points):
-            print("Warning: Removing break points outside (mass_min, mass_max).")
-        if len(valid_bp) == 0:
-            raise ValueError("At least one break point is required within (mass_min, mass_max).")
-        self.break_points = valid_bp
-        self.n_segments = len(self.break_points) + 1
         self.param_names = []
         for i in range(self.n_segments):
             self.param_names.extend([f'a_{i}', f'b_{i}'])
@@ -1208,7 +1232,6 @@ class BrokenPowerLawMLR:
         absg1_values_jax = jnp.array(self.absg1_values)
         absg2_values_jax = jnp.array(self.absg2_values)
         norm_factor_jax = jnp.array(self.norm_factor)
-        break_points_jax = jnp.array(self.break_points)
 
         # Integration grid
         int_ulist_jax = jnp.arange(0.01, int_umax, int_du)
@@ -1246,7 +1269,7 @@ class BrokenPowerLawMLR:
             """Compute mass from M_G using broken power-law with enforced continuity.
 
             For each M_G value, compute mass from each segment's equation and
-            select the one that falls within that segment's valid mass range.
+            select the one where the M_G falls in that segment's magnitude range.
             """
             absg_2d = absg[:, None]  # (N, 1)
             a_2d = intercepts[None, :]  # (1, n_seg)
@@ -1255,12 +1278,37 @@ class BrokenPowerLawMLR:
             # Mass from each segment's equation: M = 10^((M_G - a) / b)
             mass_all = jnp.power(10.0, (absg_2d - a_2d) / b_2d)  # (N, n_seg)
 
-            # Segment boundaries in mass space
-            boundaries_low = jnp.concatenate([jnp.array([self.mass_min]), break_points_inner])
-            boundaries_high = jnp.concatenate([break_points_inner, jnp.array([self.mass_max])])
+            # Compute magnitude boundaries (where segments intersect in magnitude space)
+            if len(break_points_inner) > 0:
+                mag_boundaries = jnp.array([
+                    intercepts[i] + slopes[i] * jnp.log10(break_points_inner[i])
+                    for i in range(len(break_points_inner))
+                ])
+            else:
+                mag_boundaries = jnp.array([])
 
-            # Check if computed mass falls in segment's valid range
-            in_segment = (mass_all >= boundaries_low[None, :]) & (mass_all <= boundaries_high[None, :])
+            # Build magnitude boundaries for segment selection: [absg_min, break_mags, absg_max]
+            mag_boundaries_full = jnp.concatenate([
+                jnp.array([self.absg_min]),
+                mag_boundaries,
+                jnp.array([self.absg_max])
+            ])
+
+            # Check if M_G falls in each segment's magnitude range
+            absg_expanded = absg_2d  # (N, 1)
+            mag_low = mag_boundaries_full[:-1][None, :]  # (1, n_seg)
+            mag_high = mag_boundaries_full[1:][None, :]   # (1, n_seg)
+
+            # Last segment includes upper bound, others use exclusive
+            if len(intercepts) == 1:
+                # Single segment case
+                in_segment = (absg_expanded >= mag_low) & (absg_expanded <= mag_high)
+            else:
+                # Multiple segments: last segment inclusive, others exclusive
+                in_segment_all = (absg_expanded >= mag_low) & (absg_expanded < mag_high)
+                # Fix last segment to include upper bound
+                in_segment_last = (absg_expanded >= mag_low[:, -1:]) & (absg_expanded <= mag_high[:, -1:])
+                in_segment = jnp.concatenate([in_segment_all[:, :-1], in_segment_last], axis=1)
 
             # Select valid mass (sum works since only one should be valid due to continuity)
             mass = jnp.sum(mass_all * in_segment, axis=1)
@@ -1325,45 +1373,41 @@ class BrokenPowerLawMLR:
 
         # Define the NumPyro model
         def model(u_values, u_sigma_values, absg1_values, absg2_values,
-                  norm_factor, break_points_inner):
+                  norm_factor):
 
-            n_segments = len(break_points_inner) + 1
+            n_segments = self.n_segments
 
-            # Sample M_G at first break point and independent slopes; derive intercepts to enforce continuity
-            if a_prior_range is not None:
-                mag_at_bp0 = numpyro.sample('mag_at_bp0', dist.Uniform(a_prior_range[0], a_prior_range[1]))
-            else:
-                mag_mu, mag_sigma = a_prior_mu_sigma
-                mag_at_bp0 = numpyro.sample('mag_at_bp0', dist.Normal(mag_mu, mag_sigma))
-
+            # Prior on b with physical constraints (slopes should be negative for stellar MLR)
             slopes = []
             if b_prior_range is not None:
                 for i in range(n_segments):
-                    slopes.append(numpyro.sample(f'b_{i}', dist.Uniform(b_prior_range[0], b_prior_range[1])))
+                    slopes.append(numpyro.sample(f'b_{i}', dist.TruncatedDistribution(
+                        dist.Uniform(b_prior_range[0], b_prior_range[1]),
+                        low=-80.0, high=0.0  # Ensure negative slopes
+                    )))
             else:
-                b_mu, b_sigma = b_prior_mu_sigma
-                b_low, b_high = b_prior_bounds
-                for i in range(n_segments):
-                    slopes.append(
-                        numpyro.sample(
-                            f'b_{i}',
-                            dist.TruncatedNormal(loc=b_mu, scale=b_sigma, low=b_low, high=b_high)
-                        )
-                    )
+                raise ValueError("Have to specify b_prior_range for slopes in broken power-law model.")
             slopes = jnp.stack(slopes)
-            intercepts = BrokenPowerLawMLR._compute_continuous_intercepts_jax(mag_at_bp0, slopes, break_points_inner)
-            params = jnp.ravel(jnp.stack([intercepts, slopes], axis=1))
 
-            # Anchor prior on (M_G at a reference mass) to reduce global zero-point shift
-            if anchor_sigma is not None and anchor_weight > 0:
-                anchor_mass_jax = jnp.clip(jnp.array(anchor_mass), self.mass_min, self.mass_max)
-                log_m_anchor = jnp.log10(anchor_mass_jax)
-                boundaries_low = jnp.concatenate([jnp.array([self.mass_min]), break_points_inner])
-                boundaries_high = jnp.concatenate([break_points_inner, jnp.array([self.mass_max])])
-                anchor_mask = (anchor_mass_jax >= boundaries_low) & (anchor_mass_jax < boundaries_high)
-                anchor_absg_pred = jnp.sum((intercepts + slopes * log_m_anchor) * anchor_mask)
-                anchor_logprob = dist.Normal(anchor_absg, anchor_sigma).log_prob(anchor_absg_pred)
-                numpyro.factor('anchor', anchor_weight * anchor_logprob)
+            # Prior on a with reasonable ranges
+            intercepts = []
+            if a_prior_range is not None:
+                for i in range(n_segments):
+                    intercepts.append(numpyro.sample(f'a_{i}', dist.Uniform(a_prior_range[0], a_prior_range[1])))
+            else:
+                raise ValueError("Have to specify a_prior_range for intercepts in broken power-law model.")
+            intercepts = jnp.stack(intercepts)
+
+            # Ensure physically valid break points (should be within mass range)
+            break_points = jnp.array(10**((intercepts[1:] - intercepts[:-1]) / (slopes[:-1] - slopes[1:])))
+
+            # Add constraint to ensure break points are within valid range
+            for i, break_point in enumerate(break_points):
+                numpyro.factor(f'break_point_{i}_valid',
+                               jnp.where((break_point >= self.mass_min) & (break_point <= self.mass_max),
+                                        0.0, -jnp.inf))
+            
+            break_points_inner = jnp.array(10**((intercepts[1:] - intercepts[:-1]) / (slopes[:-1] - slopes[1:])))
 
             # Compute masses from magnitudes
             m1 = mass_from_absg_jax_inner(absg1_values, intercepts, slopes, break_points_inner)
@@ -1398,21 +1442,16 @@ class BrokenPowerLawMLR:
         rng_key = jax.random.PRNGKey(seed if seed is not None else 42)
         mcmc.run(rng_key, u_values_jax, u_sigma_values_jax,
                  absg1_values_jax, absg2_values_jax,
-                 norm_factor_jax, break_points_jax)
+                 norm_factor_jax)
 
         # Store results
         self.sampler = mcmc
         samples_dict = mcmc.get_samples()
 
         # Reconstruct samples as array [n_samples, 2 * n_segments] with continuous intercepts
-        mag_at_bp0_samples = np.array(samples_dict['mag_at_bp0'])
         slope_samples = np.column_stack([np.array(samples_dict[f'b_{i}']) for i in range(self.n_segments)])
-        n_samples_total = len(mag_at_bp0_samples)
-        intercept_samples = np.zeros_like(slope_samples)
-        for idx in range(n_samples_total):
-            intercept_samples[idx] = self._compute_continuous_intercepts(
-                mag_at_bp0_samples[idx], slope_samples[idx], self.break_points
-            )
+        n_samples_total = len(slope_samples)
+        intercept_samples = np.column_stack([np.array(samples_dict[f'a_{i}']) for i in range(self.n_segments)])
 
         self.samples = np.zeros((n_samples_total, 2 * self.n_segments))
         for i in range(self.n_segments):
@@ -1424,6 +1463,12 @@ class BrokenPowerLawMLR:
             'logz': None,
             'logzerr': None
         })()
+
+        # Compute break points from median parameters for plotting
+        median_intercepts = np.median(intercept_samples, axis=0)
+        median_slopes = np.median(slope_samples, axis=0)
+        self.break_points = 10**((median_intercepts[1:] - median_intercepts[:-1]) /
+                                (median_slopes[:-1] - median_slopes[1:]))
 
         mcmc.print_summary()
 
@@ -1509,11 +1554,11 @@ class BrokenPowerLawMLR:
         ax.fill_between(absg_range, lower_masses, upper_masses, color='orange',
                        alpha=0.3, label='1 sigma', zorder=2)
         ax.plot(absg_range, median_masses, color='orange',
-               label='Median', ls='-', linewidth=1, alpha=0.5, zorder=3)    
+               label='Median', ls='-', linewidth=1, alpha=0.5, zorder=3)
 
         # Plot best fit
         ax.plot(absg_range, best_fit_masses, color='#148dde',
-               label=f'Best-Fit params', ls='-.', linewidth=3, zorder=3)
+               label='Best-Fit params', ls='-.', linewidth=3, zorder=3)
 
         # Plot true masses from data if provided
         if data is not None:
@@ -1533,9 +1578,9 @@ class BrokenPowerLawMLR:
                     raise ValueError("data must be astropy.Table or dict with 'm1', 'm2', 'absg1', 'absg2' columns")
 
                 # Plot both primary and secondary masses
-                ax.scatter(absg1, m1, color='black', s=1, alpha=0.5,
+                ax.scatter(absg1, m1, color='black', s=5, alpha=0.5,
                           label='Truth', zorder=0)
-                ax.scatter(absg2, m2, color='black', s=1, alpha=0.5,
+                ax.scatter(absg2, m2, color='black', s=5, alpha=0.5,
                             zorder=0)
             except (KeyError, AttributeError) as e:
                 print(f"Could not extract true masses from data: {e}")
@@ -1566,7 +1611,7 @@ class MultiMetallicityFitter:
 
     def __init__(self, model_type='nonparametric', n_absg_bins=10, absg_min=4.0, absg_max=12.0,
                  uncertainty_model='rice', f_outlier=0, outlier_u0=30, outlier_sigma=15,
-                 break_points=None):
+                 n_segments=3):
 
         """
         Initialize the multi-metallicity fitter.
@@ -1589,8 +1634,8 @@ class MultiMetallicityFitter:
             Outlier distribution center (default: 30)
         outlier_sigma : float
             Outlier distribution width (default: 15)
-        break_points : array_like, optional
-            Mass break points for broken power law model (default: [0.2, 0.5, 1.0])
+        n_segments : int
+            Number of segments for broken power law model (default: 3)
         """
         self.model_type = model_type.lower()
         if self.model_type not in ['nonparametric', 'broken_powerlaw']:
@@ -1606,10 +1651,7 @@ class MultiMetallicityFitter:
         self.outlier_sigma = outlier_sigma
 
         # Set default break points for broken power law
-        if break_points is None:
-            self.break_points = np.array([0.2, 0.5, 1.0])
-        else:
-            self.break_points = np.array(break_points)
+        self.n_segments = n_segments
 
         self.fitters = {}  # Dictionary to store fitters for each metallicity bin
         self.feh_bin_edges = None
@@ -1764,7 +1806,7 @@ class MultiMetallicityFitter:
             elif self.model_type == 'broken_powerlaw':
                 # Create broken power-law fitter for this bin
                 fitter = BrokenPowerLawMLR(
-                    break_points=self.break_points,
+                    n_segments=self.n_segments,
                     absg_min=self.absg_min,
                     absg_max=self.absg_max,
                     uncertainty_model=self.uncertainty_model,
@@ -1788,7 +1830,6 @@ class MultiMetallicityFitter:
                     num_chains=num_chains,
                     seed=seed,
                     a_prior_range=a_prior_range, b_prior_range=b_prior_range,
-                    anchor_sigma=None, # No anchor prior by default
                 )
 
             # Store fitter
@@ -1878,7 +1919,7 @@ class MultiMetallicityFitter:
                 ax.plot(absg_range, best_fit_mags, color=color, linestyle='-.', linewidth=3, label=label)
 
                 # Add vertical lines for break points
-                for bp in self.break_points:
+                for bp in fitter.break_points:
                     ax.axhline(y=bp, color='gray', linestyle='--', alpha=0.5)
 
             # Plot data scatter points for this metallicity bin
@@ -1900,8 +1941,8 @@ class MultiMetallicityFitter:
                         raise ValueError("data must be astropy.Table or dict")
 
                     # Plot both primary and secondary masses with low opacity
-                    ax.scatter(absg1, m1, color=color, s=1, alpha=0.2, zorder=0)
-                    ax.scatter(absg2, m2, color=color, s=1, alpha=0.15, zorder=0)
+                    ax.scatter(absg1, m1, color=color, s=5, alpha=0.5, zorder=0)
+                    ax.scatter(absg2, m2, color=color, s=5, alpha=0.5, zorder=0)
                 except (KeyError, AttributeError) as e:
                     print(f"Could not extract masses from data for bin {bin_idx}: {e}")
 
