@@ -163,6 +163,72 @@ def test_broken_powerlaw_model(data, output_dir,
     return multi_fitter
 
 
+def test_polynomial_model(data, output_dir,
+                          order=3, absg_min=3.0, absg_max=14.0,
+                          uncertainty_model='rice',
+                          feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                          num_warmup=800, num_samples=2000, num_chains=2,
+                          mass_min=0.05, mass_max=2.0,
+                          seed=12, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0):
+    """Test the polynomial model using the new MultiMetallicityFitter."""
+    print("\n" + "="*50)
+    print("TESTING POLYNOMIAL MODEL")
+    print("="*50)
+
+    print(f"1. Using polynomial of order {order}")
+
+    print("2. Initializing polynomial multi-metallicity fitter...")
+    multi_fitter = MultiMetallicityFitter(
+        model_type='polynomial',
+        absg_min=absg_min,
+        absg_max=absg_max,
+        uncertainty_model=uncertainty_model,
+        f_outlier=0,
+        outlier_u0=30,
+        outlier_sigma=15,
+        poly_order=order,
+        poly_deriv_penalty_strength=poly_deriv_penalty_strength,
+        poly_coeff_prior_scale=poly_coeff_prior_scale,
+    )
+
+    print("3. Binning data by metallicity...")
+    binned_data = multi_fitter.bin_data_by_metallicity(
+        data,
+        feh_column=feh_column,
+        n_feh_bins=n_feh_bins,
+        feh_min=feh_min,
+        feh_max=feh_max,
+        equal_frequency=equal_frequency
+    )
+
+    print("4. Fitting all metallicity bins (polynomial)...")
+    print("   This may take several minutes...")
+    multi_fitter.fit_all_bins(
+        binned_data,
+        num_warmup=num_warmup,
+        num_samples=num_samples,
+        num_chains=num_chains,
+        mass_min=mass_min,
+        mass_max=mass_max,
+        seed=seed,
+    )
+
+    print("5. Saving polynomial samples...")
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix=f'polynomial_{uncertainty_model}_samples')
+
+    print("6. Plotting polynomial results...")
+    multi_fitter.plot_all_results(binned_data=binned_data, output_dir=output_dir)
+    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, f'polynomial_{uncertainty_model}_uncertainty_{n_feh_bins}fehbins_comparison.png'), data=binned_data)
+
+    print("\n7. Polynomial Summary Statistics:")
+    for bin_idx, fitter in multi_fitter.fitters.items():
+        feh_center = multi_fitter.feh_bin_centers[bin_idx]
+        print(f"   Bin {bin_idx} ([Fe/H]={feh_center:.2f}]):")
+        print(f"     Number of systems: {len(binned_data[bin_idx])}")
+
+    return multi_fitter
+
+
 
 
 def main():
@@ -205,12 +271,21 @@ def main():
     
 
     # Test broken power law model
-    broken_powerlaw_models = test_broken_powerlaw_model(data, output_dir,
-                                                        n_segments=2, absg_min=3.0, absg_max=14.0,
-                                                        uncertainty_model='gaussian',
-                                                        feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
-                                                        num_warmup=500, num_samples=2000, num_chains=2,
-                                                        seed=8)
+    # broken_powerlaw_models = test_broken_powerlaw_model(data, output_dir,
+    #                                                     n_segments=2, absg_min=3.0, absg_max=14.0,
+    #                                                     uncertainty_model='gaussian',
+    #                                                     feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
+    #                                                     num_warmup=500, num_samples=2000, num_chains=2,
+    #                                                     seed=8)
+
+    # Test polynomial model
+    polynomial_models = test_polynomial_model(data, output_dir,
+                                              order=3, absg_min=4.5, absg_max=14.0,
+                                              uncertainty_model='gaussian',
+                                              feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                                              num_warmup=500, num_samples=1500, num_chains=2,
+                                              mass_min=0.05, mass_max=1.5,
+                                              seed=11, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0)
 
     # Final summary
     # print("\n" + "=" * 70)

@@ -8,7 +8,7 @@ Authors: Yutong Wang and collaborators
 License: MIT
 """
 
-from .core import NonParametricMLR, MultiMetallicityFitter, PU8Sampler, BrokenPowerLawMLR
+from .core import NonParametricMLR, MultiMetallicityFitter, BrokenPowerLawMLR
 from .sampling import BinarySystem, BinaryPopulation
 
 __version__ = "1.0.0"
@@ -18,7 +18,6 @@ __all__ = [
     "NonParametricMLR",
     "MultiMetallicityFitter",
     "BrokenPowerLawMLR",
-    "PU8Sampler",
     "BinarySystem",
     "BinaryPopulation"
 ]
