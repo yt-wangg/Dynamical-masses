@@ -262,12 +262,12 @@ def main():
     print(f"\n2. Results will be saved to: {output_dir}")
 
     # Test non-parametric model
-    # nonparametric_fitter = test_nonparametric_model(data, output_dir,
-    #                                                 n_absg_bins=10, absg_min=3.0, absg_max=14.0,
-    #                                                 uncertainty_model='gaussian',
-    #                                                 feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
-    #                                                 gamma=np.inf, num_warmup=500, num_samples=3000, num_chains=2,
-    #                                                 mass_min=0.01, mass_max=1.5, seed=4)
+    nonparametric_fitter = test_nonparametric_model(data, output_dir,
+                                                    n_absg_bins=10, absg_min=4.5, absg_max=14.0,
+                                                    uncertainty_model='rice',
+                                                    feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                                                    gamma=np.inf, num_warmup=500, num_samples=3000, num_chains=2,
+                                                    mass_min=0.01, mass_max=1.5, seed=4)
     
 
     # Test broken power law model
@@ -281,11 +281,11 @@ def main():
     # Test polynomial model
     polynomial_models = test_polynomial_model(data, output_dir,
                                               order=3, absg_min=4.5, absg_max=14.0,
-                                              uncertainty_model='gaussian',
-                                              feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
-                                              num_warmup=500, num_samples=1500, num_chains=2,
+                                              uncertainty_model='rice',
+                                              feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                                              num_warmup=500, num_samples=3500, num_chains=2,
                                               mass_min=0.05, mass_max=1.5,
-                                              seed=11, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0)
+                                              seed=13, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0)
 
     # Final summary
     # print("\n" + "=" * 70)

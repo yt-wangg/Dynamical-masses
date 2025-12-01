@@ -1592,24 +1592,29 @@ class BrokenPowerLawMLR:
         plt.close(fig)
 
 
-import numpy as np
-
 class PolyMassAbsgModel:
     """
-    Global low-order polynomial model for the mass–M_G relation:
+    Global low-order polynomial model for the mass–M_G relation.
 
-        log10(M / Msun) = sum_{i=0}^order c_i * (M_G - pivot)^i
+        log10(M / Msun) = sum_{i=0}^order c_i * x^i
+
+    where x is a rescaled version of the absolute G magnitude M_G,
+    mapped from [absg_min, absg_max] to [-1, 1]. This rescaling greatly
+    improves numerical conditioning compared to using raw magnitudes or
+    a simple pivot.
 
     Parameters
     ----------
     order : int
         Polynomial order (typically 2–3 is enough).
     absg_min, absg_max : float
-        Magnitude range you care about. Used only for the derivative penalty grid.
+        Magnitude range you care about. Used for the x-rescaling and
+        for the derivative-penalty grid.
     mass_min : float
         Lower floor for the mass (in Msun), used as a safety fallback.
     pivot : float or None
-        Pivot magnitude; if None, uses (absg_min + absg_max) / 2.
+        Kept for backwards compatibility but not used in the current
+        implementation (x-rescaling replaces it).
     deriv_penalty_strength : float
         Strength of the monotonicity penalty in log-prob units.
         Larger values enforce d log10(M) / d M_G <= 0 more strongly.
@@ -1621,31 +1626,40 @@ class PolyMassAbsgModel:
                  absg_max: float = 15.0,
                  mass_min: float = 0.05,
                  pivot: Union[float, None] = None,
-                 deriv_penalty_strength: float = 10.0):
+                 deriv_penalty_strength: float = 2.0):
         self.order = int(order)
         self.n_params = self.order + 1  # c_0,...,c_order
         self.absg_min = float(absg_min)
         self.absg_max = float(absg_max)
         self.mass_min = float(mass_min)
+        # Pivot kept for API compatibility but no longer used explicitly
         self.pivot = (absg_min + absg_max) / 2.0 if pivot is None else float(pivot)
         self.deriv_penalty_strength = float(deriv_penalty_strength)
 
     # ------------------------------------------------------------------
-    # Parameter handling
+    # Internal helpers
     # ------------------------------------------------------------------
     def _split_params(self, params):
-        """
-        For API compatibility with your broken-power-law class.
-        Here 'params' is just the polynomial coefficients c_0,...,c_order.
+        """For API compatibility with the broken-power-law class.
+
+        Here ``params`` is just the polynomial coefficients c_0,...,c_order.
         """
         return params  # (order+1,)
+
+    def _absg_to_x_np(self, absg):
+        """Map M_G in [absg_min, absg_max] -> x in [-1, 1] (NumPy)."""
+        return 2.0 * (absg - self.absg_min) / (self.absg_max - self.absg_min) - 1.0
+
+    def _absg_to_x_jax(self, absg):
+        """Map M_G in [absg_min, absg_max] -> x in [-1, 1] (JAX)."""
+        import jax.numpy as jnp
+        return 2.0 * (absg - self.absg_min) / (self.absg_max - self.absg_min) - 1.0
 
     # ------------------------------------------------------------------
     # NumPy version: mass_from_absg
     # ------------------------------------------------------------------
     def mass_from_absg(self, absg, params):
-        """
-        NumPy version of mass_from_absg.
+        """NumPy version of mass_from_absg.
 
         Parameters
         ----------
@@ -1662,8 +1676,9 @@ class PolyMassAbsgModel:
         absg = np.asarray(absg)
         coeffs = np.asarray(self._split_params(params))
 
-        x = absg - self.pivot  # centred magnitude
-        powers = np.stack([x**i for i in range(self.order + 1)], axis=-1)  # (..., order+1)
+        # Rescaled magnitude x in [-1, 1]
+        x = self._absg_to_x_np(absg)
+        powers = np.stack([x ** i for i in range(self.order + 1)], axis=-1)  # (..., order+1)
         log10_m = np.sum(coeffs * powers, axis=-1)
         mass = np.power(10.0, log10_m)
 
@@ -1675,8 +1690,7 @@ class PolyMassAbsgModel:
     # JAX versions
     # ------------------------------------------------------------------
     def mass_from_absg_jax(self, absg, params):
-        """
-        JAX-compatible mass_from_absg for use in NumPyro.
+        """JAX-compatible mass_from_absg for use in NumPyro.
 
         Parameters
         ----------
@@ -1694,7 +1708,8 @@ class PolyMassAbsgModel:
 
         coeffs = self._split_params(params)  # (order+1,)
 
-        x = absg - self.pivot  # centred magnitude, shape (N,) or arbitrary
+        # Rescaled magnitude x in [-1, 1]
+        x = self._absg_to_x_jax(absg)
         # Build [1, x, x^2, ...] along last axis
         powers = jnp.stack([jnp.power(x, i) for i in range(self.order + 1)], axis=-1)
         log10_m = jnp.sum(coeffs * powers, axis=-1)
@@ -1705,14 +1720,15 @@ class PolyMassAbsgModel:
         return mass
 
     def derivative_penalty_jax(self, params, n_grid: int = 64):
-        """
-        Compute a soft penalty enforcing d log10(M) / d M_G <= 0
-        over [absg_min, absg_max].
+        """Compute a soft penalty enforcing d log10(M) / d M_G <= 0.
 
-        This returns a *log-probability* penalty that you can plug into
-        NumPyro via:
+        The derivative is evaluated over [absg_min, absg_max] using a grid
+        in M_G and the chain rule with the rescaled variable x. This
+        returns a *log-probability* penalty that you can plug into
+        NumPyro via::
 
-            numpyro.factor("poly_monotonicity", model.derivative_penalty_jax(params))
+            numpyro.factor("poly_monotonicity",
+                           model.derivative_penalty_jax(params))
 
         Parameters
         ----------
@@ -1730,36 +1746,35 @@ class PolyMassAbsgModel:
 
         coeffs = self._split_params(params)  # (order+1,)
 
-        # Derivative of polynomial in x = (M_G - pivot):
-        # p(x) = Σ c_i x^i  =>  p'(x) = Σ_{i>=1} i * c_i x^{i-1}
         if self.order == 0:
             # Constant polynomial: derivative is zero -> no penalty
             return jnp.array(0.0)
 
-        deriv_coeffs = jnp.array([i * coeffs[i] for i in range(1, self.order + 1)])  # shape (order,)
-
         # Grid in M_G, then convert to x
         absg_grid = jnp.linspace(self.absg_min, self.absg_max, n_grid)
-        x_grid = absg_grid - self.pivot
+        x_grid = self._absg_to_x_jax(absg_grid)
 
-        # Evaluate derivative at grid points:
-        # p'(x) = Σ_{j=0}^{order-1} deriv_coeffs[j] * x^j
-        powers_d = jnp.stack(
-            [jnp.power(x_grid, j) for j in range(self.order)],
-            axis=-1
-        )  # (n_grid, order)
-        dlog10m_dabsg = jnp.dot(powers_d, deriv_coeffs)  # (n_grid,)
+        # Derivative of polynomial in x:
+        # p(x) = Σ c_i x^i  =>  p'(x) = Σ_{i>=1} i * c_i x^{i-1}
+        dlog10m_dx = jnp.zeros_like(x_grid)
+        for i in range(1, self.order + 1):
+            dlog10m_dx = dlog10m_dx + i * coeffs[i] * jnp.power(x_grid, i - 1)
+
+        # Chain rule: d log10 M / d M_G = d log10 M / d x * d x / d M_G
+        dx_dabsg = 2.0 / (self.absg_max - self.absg_min)
+        dlog10m_dabsg = dlog10m_dx * dx_dabsg
 
         # Enforce d log10(M)/d M_G <= 0  (mass decreases with increasing M_G)
         # -> penalise positive derivatives
         violations = jnp.maximum(dlog10m_dabsg, 0.0)
 
         # Quadratic penalty, averaged over the grid
-        mean_sq_violation = jnp.mean(violations**2)
+        mean_sq_violation = jnp.mean(violations ** 2)
 
         # Convert to log-prob penalty; negative (or zero if no violation)
         penalty = -self.deriv_penalty_strength * mean_sq_violation
         return penalty
+
 
 
 class PolynomialMLR:
@@ -2544,6 +2559,7 @@ class MultiMetallicityFitter:
 
         ax.set_yscale('log')
         ax.set_xlim(fitter.absg_min, fitter.absg_max)
+        ax.set_ylim(self.fitters[0].mass_min * 0.8, self.fitters[0].mass_max * 1.2)
         ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
         ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=14)
         ax.invert_xaxis()  # Astronomical magnitude convention
