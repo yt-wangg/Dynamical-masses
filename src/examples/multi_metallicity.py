@@ -23,7 +23,7 @@ def test_nonparametric_model(data, output_dir,
                              uncertainty_model='rice',
                              feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
                              gamma=np.inf, num_warmup=800, num_samples=1500, num_chains=2,
-                             mass_min=0.08, mass_max=1.5, seed=42):
+                             mass_min=0.05, mass_max=1.5, seed=42):
     """Test the non-parametric model using the new MultiMetallicityFitter."""
     print("\n" + "="*50)
     print("TESTING NON-PARAMETRIC MODEL")
@@ -36,6 +36,8 @@ def test_nonparametric_model(data, output_dir,
         n_absg_bins=n_absg_bins,
         absg_min=absg_min,
         absg_max=absg_max,
+        mass_min=mass_min,
+        mass_max=mass_max,
         uncertainty_model=uncertainty_model,  # Use Rice distribution
         f_outlier=0,  # No outliers
         outlier_u0=30,
@@ -62,8 +64,6 @@ def test_nonparametric_model(data, output_dir,
         num_warmup=num_warmup,   # Reduced for demo
         num_samples=num_samples,  # Reduced for demo
         num_chains=num_chains,      # Reduced for demo
-        mass_min=mass_min,
-        mass_max=mass_max,
         seed=seed,
     )
 
@@ -182,6 +182,8 @@ def test_polynomial_model(data, output_dir,
         model_type='polynomial',
         absg_min=absg_min,
         absg_max=absg_max,
+        mass_min=mass_min,
+        mass_max=mass_max,
         uncertainty_model=uncertainty_model,
         f_outlier=0,
         outlier_u0=30,
@@ -208,8 +210,6 @@ def test_polynomial_model(data, output_dir,
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=num_chains,
-        mass_min=mass_min,
-        mass_max=mass_max,
         seed=seed,
     )
 
@@ -284,7 +284,7 @@ def main():
                                               uncertainty_model='rice',
                                               feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
                                               num_warmup=500, num_samples=3500, num_chains=2,
-                                              mass_min=0.05, mass_max=1.5,
+                                              mass_min=0.01, mass_max=1.5,
                                               seed=13, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0)
 
     # Final summary

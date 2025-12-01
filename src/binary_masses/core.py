@@ -25,7 +25,7 @@ class NonParametricMLR:
     models for the u parameter.
     """
 
-    def __init__(self, n_bins=10, absg_min=4.0, absg_max=12.0, uncertainty_model='rice',
+    def __init__(self, n_bins=10, absg_min=4.0, absg_max=12.0, mass_min=0.01, mass_max=1.5, uncertainty_model='rice',
                  f_outlier=0, outlier_u0=30, outlier_sigma=15, fit_outlier_params=False):
         """
         Initialize the non-parametric plotter.
@@ -38,6 +38,10 @@ class NonParametricMLR:
             Minimum absg value
         absg_max : float
             Maximum absg value
+        mass_min : float
+            Minimum mass value for priors
+        mass_max : float    
+            Maximum mass value for priors
         uncertainty_model : str
             Uncertainty model to use: 'rice' or 'gaussian' (default: 'rice')
         f_outlier : float
@@ -62,6 +66,8 @@ class NonParametricMLR:
         self.absg_min = absg_min
         self.absg_max = absg_max
         self.absg_bins = np.linspace(absg_min, absg_max, n_bins)
+        self.mass_min = mass_min
+        self.mass_max = mass_max
 
         # Uncertainty model selection
         if uncertainty_model not in ['rice', 'gaussian']:
@@ -232,7 +238,7 @@ class NonParametricMLR:
             self.gamma = np.inf  # No regularization by default
 
     def run_numpyro(self, num_warmup=1000, num_samples=2000, num_chains=4,
-                    mass_min=0.01, mass_max=2, int_umax=80., int_du=0.02,
+                    int_umax=80., int_du=0.02,
                     seed=None, use_dense_mass=False, **kwargs):
         """
         Run HMC sampling using NumPyro with chosen uncertainty model (Rice or Gaussian).
@@ -444,6 +450,8 @@ class NonParametricMLR:
 
             # Prior: uniform for each mass bin
             ndim = self.n_bins
+            mass_min = self.mass_min
+            mass_max = self.mass_max
             mass_bins = numpyro.sample('mass_bins',
                                       dist.Uniform(mass_min, mass_max).expand([ndim]))
 
@@ -2158,7 +2166,7 @@ class MultiMetallicityFitter:
     or broken power-law parameterizations.
     """
 
-    def __init__(self, model_type='nonparametric', n_absg_bins=10, absg_min=4.0, absg_max=12.0,
+    def __init__(self, model_type='nonparametric', n_absg_bins=10, absg_min=4.0, absg_max=12.0, mass_min=0.05, mass_max=2.0,
                  uncertainty_model='rice', f_outlier=0, outlier_u0=30, outlier_sigma=15,
                  n_segments=3, fit_outlier_params=False,
                  poly_order=3, poly_pivot=None,
@@ -2197,6 +2205,8 @@ class MultiMetallicityFitter:
         self.n_absg_bins = n_absg_bins
         self.absg_min = absg_min
         self.absg_max = absg_max
+        self.mass_min = mass_min
+        self.mass_max = mass_max
         self.uncertainty_model = uncertainty_model
         self.f_outlier = f_outlier
         self.f_good = 1 - f_outlier
@@ -2295,7 +2305,7 @@ class MultiMetallicityFitter:
 
     def fit_all_bins(self, binned_data, u_column='u', u_sigma_column='u_sigma',
                     absg1_column='absg1', absg2_column='absg2',
-                    a_prior_range=(-1,20), b_prior_range=(-50,5), gamma=np.inf, mass_min=0.01, mass_max=2,
+                    a_prior_range=(-1,20), b_prior_range=(-50,5), gamma=np.inf,
                     num_warmup=1000, num_samples=2000, num_chains=4, seed=None):
         """
         Fit all metallicity bins.
@@ -2338,6 +2348,8 @@ class MultiMetallicityFitter:
                     n_bins=self.n_absg_bins,
                     absg_min=self.absg_min,
                     absg_max=self.absg_max,
+                    mass_min=self.mass_min,
+                    mass_max=self.mass_max,
                     uncertainty_model=self.uncertainty_model,
                     f_outlier=self.f_outlier,
                     outlier_u0=self.outlier_u0,
@@ -2359,8 +2371,6 @@ class MultiMetallicityFitter:
                     num_warmup=num_warmup,
                     num_samples=num_samples,
                     num_chains=num_chains,
-                    mass_min=mass_min,
-                    mass_max=mass_max,
                     seed=seed
                 )
 
@@ -2399,8 +2409,8 @@ class MultiMetallicityFitter:
                     order=self.poly_order,
                     absg_min=self.absg_min,
                     absg_max=self.absg_max,
-                    mass_min=mass_min,
-                    mass_max=mass_max,
+                    mass_min=self.mass_min,
+                    mass_max=self.mass_max,
                     pivot=self.poly_pivot,
                     uncertainty_model=self.uncertainty_model,
                     f_outlier=self.f_outlier,
@@ -2559,7 +2569,7 @@ class MultiMetallicityFitter:
 
         ax.set_yscale('log')
         ax.set_xlim(fitter.absg_min, fitter.absg_max)
-        ax.set_ylim(self.fitters[0].mass_min * 0.8, self.fitters[0].mass_max * 1.2)
+        ax.set_ylim(fitter.mass_min * 0.8, fitter.mass_max * 1.2)
         ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=14)
         ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=14)
         ax.invert_xaxis()  # Astronomical magnitude convention
