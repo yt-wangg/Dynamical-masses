@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""
+Multi-Metallicity Fitting Example
+
+This example demonstrates how to use the MultiMetallicityFitter
+to fit mass-luminosity relations for different metallicity bins.
+
+Author: Yutong Wang
+"""
+
+import numpy as np
+from astropy.table import Table
+import sys
+import os
+
+# Add the package to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from src.binary_masses import MultiMetallicityFitter
+
+
+def test_nonparametric_model(data, output_dir,
+                             iso_data = None, 
+                             n_absg_bins=10, absg_min=3.0, absg_max=14.0,
+                             uncertainty_model='rice',
+                             feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                             gamma=np.inf, num_warmup=800, num_samples=1500, num_chains=2,
+                             mass_min=0.05, mass_max=1.5, 
+                             seed=42, fit_outlier_params=False, iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'}):
+    """Test the non-parametric model using the new MultiMetallicityFitter."""
+    print("\n" + "="*50)
+    print("TESTING NON-PARAMETRIC MODEL")
+    print("="*50)
+
+    # Initialize multi-metallicity fitter with non-parametric model
+    print("1. Initializing non-parametric multi-metallicity fitter...")
+    multi_fitter = MultiMetallicityFitter(
+        model_type='nonparametric',
+        n_absg_bins=n_absg_bins,
+        absg_min=absg_min,
+        absg_max=absg_max,
+        mass_min=mass_min,
+        mass_max=mass_max,
+        uncertainty_model=uncertainty_model,  # Use Rice distribution
+        f_outlier=0.1,  # Allow 10% outliers
+        outlier_u0=30,
+        outlier_sigma=15,
+        fit_outlier_params=fit_outlier_params
+    )
+
+    # Bin data by metallicity
+    print("2. Binning data by metallicity...")
+    if iso_data is not None:
+        binned_data, binned_iso = multi_fitter.bin_data_by_metallicity(
+            data, iso_data=iso_data,
+            feh_column=feh_column,
+            n_feh_bins=n_feh_bins,
+            feh_min=feh_min,
+            feh_max=feh_max,
+            equal_frequency=equal_frequency,  # Equal number of stars per bin
+            iso_colname_dict=iso_colname_dict
+        )
+    else:
+        binned_data = multi_fitter.bin_data_by_metallicity(
+            data, iso_data=iso_data,
+            feh_column=feh_column,
+            n_feh_bins=n_feh_bins,
+            feh_min=feh_min,
+            feh_max=feh_max,
+            equal_frequency=equal_frequency  # Equal number of stars per bin
+        )
+        binned_iso = None
+
+    # Run fitting for all bins
+    print("3. Fitting all metallicity bins (non-parametric)...")
+    print("   This may take several minutes...")
+    multi_fitter.fit_all_bins(
+        binned_data,
+        gamma=gamma,  # No regularization
+        num_warmup=num_warmup,   # Reduced for demo
+        num_samples=num_samples,  # Reduced for demo
+        num_chains=num_chains,      # Reduced for demo
+        seed=seed,
+    )
+
+    # Save samples
+    print("4. Saving non-parametric samples...")
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix='mcmc')
+
+    # Plot results
+    print("5. Plotting non-parametric results...")
+    multi_fitter.plot_all_results(binned_data=binned_data, binned_iso=binned_iso, iso_colname_dict=iso_colname_dict, output_dir=output_dir)
+    multi_fitter.plot_comparison(output_dir=output_dir, data=binned_data, iso_data=binned_iso, iso_colname_dict=iso_colname_dict)
+
+    # Print summary
+    print("\n6. Non-parametric Summary Statistics:")
+    for bin_idx, fitter in multi_fitter.fitters.items():
+        feh_center = multi_fitter.feh_bin_centers[bin_idx]
+        mean_masses = np.mean(fitter.samples, axis=0)
+        print(f"   Bin {bin_idx} ([Fe/H]={feh_center:.2f}):")
+        print(f"     Mean masses: {mean_masses[:5]}...")
+        print(f"     Number of systems: {len(binned_data[bin_idx])}")
+
+    return multi_fitter
+
+
+def test_broken_powerlaw_model(data, output_dir,
+                               n_segments=3, absg_min=3.0, absg_max=14.0,
+                               uncertainty_model='rice',
+                               feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                               num_warmup=800, num_samples=2500, num_chains=2,
+                               seed=40, fit_outlier_params=False, iso_data=None, iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'}):
+    """Test the broken power law model using the new MultiMetallicityFitter."""
+    print("\n" + "="*50)
+    print("TESTING BROKEN POWER LAW MODEL")
+    print("="*50)
+
+    # Define break points for the broken power law
+    print(f"1. Using broken power law with : {n_segments} segments")
+
+    # Initialize multi-metallicity fitter with broken power law model
+    print("2. Initializing broken power law multi-metallicity fitter...")
+    multi_fitter = MultiMetallicityFitter(
+        model_type='broken_powerlaw',
+        absg_min=absg_min,
+        absg_max=absg_max,
+        n_segments=n_segments,
+        uncertainty_model=uncertainty_model,
+        f_outlier=0.1,  # Allow 10% outliers
+        outlier_u0=30,
+        outlier_sigma=15,
+        fit_outlier_params=fit_outlier_params
+    )
+
+    # Bin data by metallicity
+    print("3. Binning data by metallicity...")
+    if iso_data is not None:
+        binned_data, binned_iso = multi_fitter.bin_data_by_metallicity(
+            data,
+            iso_data=iso_data,
+            feh_column=feh_column,
+            n_feh_bins=n_feh_bins,
+            feh_min=feh_min,
+            feh_max=feh_max,
+            equal_frequency=equal_frequency,  # Equal number of stars per bin
+            iso_colname_dict=iso_colname_dict
+        )
+    else:
+        binned_data = multi_fitter.bin_data_by_metallicity(
+            data,
+            feh_column=feh_column,
+            n_feh_bins=n_feh_bins,
+            feh_min=feh_min,
+            feh_max=feh_max,
+            equal_frequency=equal_frequency  # Equal number of stars per bin
+        )
+        binned_iso = None
+
+    # Run fitting for all bins
+    print("4. Fitting all metallicity bins (broken power law)...")
+    print("   This may take several minutes...")
+    multi_fitter.fit_all_bins(
+        binned_data,
+        num_warmup=num_warmup,   # Reduced for demo
+        num_samples=num_samples,  # Reduced for demo
+        num_chains=num_chains,      # Reduced for demo
+        seed=seed,
+        a_prior_range=(-15,15), b_prior_range=(-80,5),
+    )
+
+    # Save samples
+    print("5. Saving broken power law samples...")
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix='mcmc')
+
+    # Plot results
+    print("6. Plotting broken power law results...")
+    multi_fitter.plot_all_results(binned_data=binned_data, binned_iso=binned_iso, iso_colname_dict=iso_colname_dict, output_dir=output_dir)
+    multi_fitter.plot_comparison(output_dir=output_dir, data=binned_data, iso_data=binned_iso, iso_colname_dict=iso_colname_dict)
+
+    # Print summary
+    print("\n7. Broken Power Law Summary Statistics:")
+    for bin_idx, fitter in multi_fitter.fitters.items():
+        feh_center = multi_fitter.feh_bin_centers[bin_idx]
+        print(f"   Bin {bin_idx} ([Fe/H]={feh_center:.2f}):")
+        print(f"     Number of systems: {len(binned_data[bin_idx])}")
+        # Print model-specific summary if available
+        if hasattr(fitter, 'print_summary'):
+            try:
+                fitter.print_summary()
+            except:
+                pass  # Skip if print_summary fails
+
+    return multi_fitter
+
+
+def test_polynomial_model(data, output_dir,
+                          order=3, absg_min=3.0, absg_max=14.0,
+                          uncertainty_model='rice',
+                          feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                          num_warmup=800, num_samples=2000, num_chains=2,
+                          mass_min=0.05, mass_max=2.0,
+                          poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0,
+                          seed=42, fit_outlier_params=False, iso_data=None, iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'}):
+    """Test the polynomial model using the new MultiMetallicityFitter."""
+    print("\n" + "="*50)
+    print("TESTING POLYNOMIAL MODEL")
+    print("="*50)
+
+    print(f"1. Using polynomial of order {order}")
+
+    print("2. Initializing polynomial multi-metallicity fitter...")
+    multi_fitter = MultiMetallicityFitter(
+        model_type='polynomial',
+        absg_min=absg_min,
+        absg_max=absg_max,
+        mass_min=mass_min,
+        mass_max=mass_max,
+        uncertainty_model=uncertainty_model,
+        f_outlier=0.1,
+        outlier_u0=30,
+        outlier_sigma=15,
+        poly_order=order,
+        poly_deriv_penalty_strength=poly_deriv_penalty_strength,
+        poly_coeff_prior_scale=poly_coeff_prior_scale,
+        fit_outlier_params=fit_outlier_params
+    )
+
+    print("3. Binning data by metallicity...")
+    if iso_data is not None:
+        binned_data, binned_iso = multi_fitter.bin_data_by_metallicity(
+            data,
+            iso_data=iso_data,
+            feh_column=feh_column,
+            n_feh_bins=n_feh_bins,
+            feh_min=feh_min,
+            feh_max=feh_max,
+            equal_frequency=equal_frequency,
+            iso_colname_dict=iso_colname_dict
+        )
+    else:
+        binned_data = multi_fitter.bin_data_by_metallicity(
+            data,
+            feh_column=feh_column,
+            n_feh_bins=n_feh_bins,
+            feh_min=feh_min,
+            feh_max=feh_max,
+            equal_frequency=equal_frequency
+        )
+        binned_iso = None
+
+    print("4. Fitting all metallicity bins (polynomial)...")
+    print("   This may take several minutes...")
+    multi_fitter.fit_all_bins(
+        binned_data,
+        num_warmup=num_warmup,
+        num_samples=num_samples,
+        num_chains=num_chains,
+        seed=seed,
+    )
+
+    print("5. Saving polynomial samples...")
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix='mcmc')
+
+    print("6. Plotting polynomial results...")
+    multi_fitter.plot_all_results(binned_data=binned_data, binned_iso=binned_iso, iso_colname_dict=iso_colname_dict, output_dir=output_dir)
+    multi_fitter.plot_comparison(output_dir=output_dir, data=binned_data, iso_data=binned_iso, iso_colname_dict=iso_colname_dict)
+
+    print("\n7. Polynomial Summary Statistics:")
+    for bin_idx, fitter in multi_fitter.fitters.items():
+        feh_center = multi_fitter.feh_bin_centers[bin_idx]
+        print(f"   Bin {bin_idx} ([Fe/H]={feh_center:.2f}]):")
+        print(f"     Number of systems: {len(binned_data[bin_idx])}")
+
+    return multi_fitter
+
+
+
+
+def main():
+    """Main multi-metallicity fitting routine."""
+    print("=" * 70)
+    print("Multi-Metallicity Binary Mass Fitting Example")
+    print("Testing Both Non-Parametric and Broken Power Law Models")
+    print("=" * 70)
+
+    # Import data
+    print("\n1. Importing data with metallicity...")
+    data_path = 'data/jd_single_1kpc_filtered.fits'
+    data = Table.read(data_path)
+
+    iso_data_path = 'data/PARSEC_logAge_6to10_0p5_MH_n1to0p6_0p2.csv'
+    iso_data = Table.read(iso_data_path)
+    iso_mask = (iso_data['logAge'] >= 9.1) & (iso_data['logAge'] <= 10.0)
+    iso_data = iso_data[iso_mask]
+    iso_colname_dict = {'absg':'Gmag', 'mass':'Mass', 'feh':'MH'}
+
+    # Prepare data subset
+    data['v'] = 4.74 * np.sqrt((data['pmra2']-data['pmra1'])**2 + 
+                                    (data['pmdec2']-data['pmdec1'])**2
+                                    ) / data['parallax1']
+    data['u'] = data['v'] * np.sqrt(data['sep_AU'])
+    data['u_sigma'] = data['u'] / data['dpm_over_error']
+
+    # Using a smaller subset for faster testing
+    # indices = np.random.choice(len(data), size=1000, replace=False)
+    # data = data[indices]
+    print(f"   Using {len(data)} systems for testing")
+
+    # Set output directory
+    output_dir = 'results/data'
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"\n2. Results will be saved to: {output_dir}")
+
+    # Test non-parametric model
+    nonparametric_fitter = test_nonparametric_model(data, output_dir,
+                                                    n_absg_bins=10, absg_min=3, absg_max=14.0,
+                                                    uncertainty_model='rice',
+                                                    feh_column='feh_jcaps_1', n_feh_bins=3, feh_min=-1.5, feh_max=0.6, equal_frequency=False,
+                                                    gamma=np.inf, num_warmup=500, num_samples=3000, num_chains=2,
+                                                    mass_min=0.05, mass_max=1.5, 
+                                                    seed=14, fit_outlier_params=False, iso_data=iso_data, iso_colname_dict=iso_colname_dict)
+    
+
+    # Test broken power law model
+    # broken_powerlaw_models = test_broken_powerlaw_model(data, output_dir,
+    #                                                     n_segments=2, absg_min=3.0, absg_max=14.0,
+    #                                                     uncertainty_model='gaussian',
+    #                                                     feh_column='feh_jcaps_1', n_feh_bins=1, feh_min=-1.5, feh_max=0.6, equal_frequency=False,
+    #                                                     num_warmup=500, num_samples=2000, num_chains=2,
+    #                                                     seed=8,
+    #                                                     fit_outlier_params=True, iso_data=iso_data, iso_colname_dict=iso_colname_dict)
+
+    # Test polynomial model
+    # polynomial_models = test_polynomial_model(data, output_dir,
+    #                                           order=3, absg_min=3, absg_max=14.0,
+    #                                           uncertainty_model='rice',
+    #                                           feh_column='feh_jcaps_1', n_feh_bins=4, feh_min=-1.5, feh_max=0.6, equal_frequency=False,
+    #                                           num_warmup=500, num_samples=3000, num_chains=2,
+    #                                           mass_min=0.05, mass_max=1.5,
+    #                                           poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0,
+    #                                           seed=14, fit_outlier_params=True, iso_data=iso_data, iso_colname_dict=iso_colname_dict)
+
+    # Final summary
+    # print("\n" + "=" * 70)
+    # print("FINAL SUMMARY")
+    # print("=" * 70)
+    # print(f"✓ Non-parametric model test completed")
+    # print(f"  - Number of metallicity bins: {len(nonparametric_fitter.fitters)}")
+
+    print(f"\n✓ Broken power law model test completed")
+    # print(f"  - Number of metallicity bins fitted: {len(broken_powerlaw_models)}")
+
+    print(f"\nGenerated files in {output_dir}:")
+    print("  - mcmc_<model>_unc-<unc>_feh<nbin>bins_<outlier>_bin*.txt")
+    print("  - corner_<model>_unc-<unc>_feh<nbin>bins_<outlier>_bin*.png")
+    print("  - fit_<model>_unc-<unc>_feh<nbin>bins_<outlier>_bin*.png")
+    print("  - feh_comparison_<model>_unc-<unc>_feh<nbin>bins_<outlier>.png")
+
+    print("\n" + "=" * 70)
+    print("Multi-metallicity example completed successfully!")
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    main()

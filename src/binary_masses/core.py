@@ -273,14 +273,24 @@ class NonParametricMLR:
             The fitted MCMC sampler
         """
         try:
+            # Configure JAX to use CPU if CUDA is not available
+            import os
+            # Set JAX platform before importing jax
+            os.environ['JAX_PLATFORMS'] = 'cpu'
+
             import jax
             import jax.numpy as jnp
             from jax.scipy.special import i0e  # Modified Bessel function I_0 * exp(-|x|)
             import numpyro
             import numpyro.distributions as dist
+            from numpyro.distributions import constraints
             from numpyro.infer import MCMC, NUTS
-            print(f"JAX devices: {jax.devices()}")
+
+            # Print device information
+            devices = jax.devices()
+            print(f"JAX devices: {devices}")
             print(f"Device count: {jax.local_device_count()}")
+            print(f"JAX backend: {devices[0].platform if devices else 'None'}")
         except ImportError:
             raise ImportError("numpyro is not installed. Install it with: pip install numpyro")
 
@@ -437,7 +447,7 @@ class NonParametricMLR:
                 good_component = jnp.sum(integrand, axis=1) / norm_factor + self.p_epsilon / (int_umax / int_du)
                 outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / norm_factor
 
-            total_prob = f_good * good_component + f_outlier * outlier_component + self.p_epsilon
+            total_prob = f_good * good_component + f_outlier * outlier_component - jnp.log(f_outlier) + self.p_epsilon
 
             # Clamp to reasonable range to avoid log(0)
             total_prob = jnp.clip(total_prob, 1e-100, 1e10)
@@ -457,10 +467,14 @@ class NonParametricMLR:
 
             # Priors for outlier model parameters (conditional)
             if self.fit_outlier_params:
-                f_outlier = numpyro.sample('f_outlier', dist.Uniform(0.0, 0.5))  # Allow up to 50% outliers
+                f_outlier = numpyro.sample("f_outlier", dist.Uniform(0.0, 0.5))          
                 f_good = 1.0 - f_outlier
-                outlier_u0 = numpyro.sample('outlier_u0', dist.Uniform(10.0, 100.0))  # Reasonable range for u values
-                outlier_sigma = numpyro.sample('outlier_sigma', dist.Uniform(5.0, 50.0))  # Width of outlier distribution
+                outlier_u0 = numpyro.sample('outlier_u0', dist.Normal(loc=30.0, scale=5.0))  # Reasonable range for u values
+                outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 2.5))  # Width of outlier distribution
+                # f_outlier = numpyro.sample("f_outlier", dist.TransformedDistribution(dist.Uniform(0.0, 1.0), dist.biject_to(constraints.interval(0.0, 0.25))))          
+                # f_good = 1.0 - f_outlier
+                # outlier_u0 = numpyro.sample('outlier_u0', dist.TruncatedNormal(low=25, loc=30.0, scale=1.0))  # Reasonable range for u values
+                # outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 0.5))  # Width of outlier distribution
             else:
                 # Use fixed initial values
                 f_outlier = self.f_outlier_init
@@ -515,7 +529,28 @@ class NonParametricMLR:
         # Store results
         self.sampler = mcmc
         samples_dict = mcmc.get_samples()
-        self.samples = np.array(samples_dict['mass_bins'])
+
+        # Extract all samples including outlier parameters if they were fitted
+        if self.fit_outlier_params:
+            # Combine mass_bins with outlier parameters
+            mass_bins_samples = np.array(samples_dict['mass_bins'])
+            f_outlier_samples = np.array(samples_dict['f_outlier'])
+            outlier_u0_samples = np.array(samples_dict['outlier_u0'])
+            outlier_sigma_samples = np.array(samples_dict['outlier_sigma'])
+            
+            self.samples = np.column_stack([
+                mass_bins_samples,
+                f_outlier_samples,
+                outlier_u0_samples,
+                outlier_sigma_samples
+            ])
+            
+            # Update parameter names to include outlier parameters
+            self.param_names = [f'Mass bin {i+1}\n(absg={self.absg_bins[i]:.1f})' 
+                            for i in range(self.n_bins)]
+            self.param_names.extend(['f_outlier', 'outlier_u0', 'outlier_sigma'])
+        else:
+            self.samples = np.array(samples_dict['mass_bins'])
 
         self.results = type('obj', (object,), {
             'samples': self.samples,
@@ -545,17 +580,23 @@ class NonParametricMLR:
         if labels is None:
             labels = [f'Mass bin {i+1}\n(absg={self.absg_bins[i]:.1f})'
                      for i in range(self.n_bins)]
+            # Add outlier parameter labels if they were fitted
+            if self.fit_outlier_params:
+                labels.extend(['f_outlier', 'outlier_u0', 'outlier_sigma'])
         try:
             import corner
             fig = corner.corner(self.samples, labels=labels, truths=truths,
                                truth_color='salmon', show_titles=True)
             plt.tight_layout()
-            plt.savefig(f'{output_dir}/corner_plot_nonparam_{self.uncertainty_model}{output_suffix}.png', dpi=300)
+            outlier_tag = 'outlierfit' if self.fit_outlier_params else 'outlierfixed'
+            metadata_suffix = output_suffix if output_suffix else f'_model-nonparametric_unc-{self.uncertainty_model}_outlier-{outlier_tag}'
+            filename = f'corner{metadata_suffix}.png'
+            plt.savefig(f'{output_dir}/{filename}', dpi=300)
             plt.close(fig)
         except ImportError:
             print("corner package not installed. Install it with: pip install corner")
 
-    def plot_fitting_results(self, data=None, output_dir='', output_suffix=''):
+    def plot_fitting_results(self, data=None, output_dir='', output_suffix='', isochrone_data_feh=None, iso_colname_dict={'absg':'Gmag', 'mass':'mass', 'feh':'MH'}):
         """
         Plot the fitting results with credible region.
 
@@ -576,11 +617,14 @@ class NonParametricMLR:
             print("No samples available for plotting fitting results.")
             return
 
-        num_samples = min(1000, len(self.samples))
-        indices = np.random.choice(len(self.samples), size=num_samples, replace=False)
-        resampled_data = self.samples[indices]
+        # Extract only mass bin parameters for plotting (exclude outlier parameters)
+        mass_bins_samples = self.samples[:, :self.n_bins]
 
-        percentiles = np.percentile(self.samples, [16, 50, 84], axis=0)
+        num_samples = min(1000, len(mass_bins_samples))
+        indices = np.random.choice(len(mass_bins_samples), size=num_samples, replace=False)
+        resampled_data = mass_bins_samples[indices]
+
+        percentiles = np.percentile(mass_bins_samples, [16, 50, 84], axis=0)
         lower, median, upper = percentiles[0], percentiles[1], percentiles[2]
 
         # Making fill_between like step function needs extra points
@@ -629,6 +673,12 @@ class NonParametricMLR:
             except (KeyError, AttributeError) as e:
                 print(f"Could not extract true masses from data: {e}")
 
+        if isochrone_data_feh is not None:
+            col = iso_colname_dict
+            # Plot isochrone data if provided
+            ax.scatter(isochrone_data_feh[col['absg']], isochrone_data_feh[col['mass']], 
+                        color='black', s=5, alpha=0.5,label='Isochrone', zorder=0)
+
 
         ax.set_xlim(self.absg_min, self.absg_max)
         ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=12)
@@ -639,7 +689,10 @@ class NonParametricMLR:
         title = f'Non-parametric fit with {self.uncertainty_model.capitalize()} uncertainty ({self.n_bins} bins)'
         plt.title(title, fontsize=14)
         plt.tight_layout()
-        plt.savefig(f'{output_dir}/nonparametric_fit_{self.n_bins}bins_{self.uncertainty_model}{output_suffix}.png', dpi=300)
+        outlier_tag = 'outlierfit' if self.fit_outlier_params else 'outlierfixed'
+        metadata_suffix = output_suffix if output_suffix else f'_model-nonparametric_unc-{self.uncertainty_model}_outlier-{outlier_tag}'
+        filename = f'fit{metadata_suffix}.png'
+        plt.savefig(f'{output_dir}/{filename}', dpi=300)
         plt.close(fig)
 
 
@@ -1138,10 +1191,16 @@ class BrokenPowerLawMLR:
         mcmc : numpyro.infer.MCMC
             MCMC object with results
         """
+        # Configure JAX to use CPU if CUDA is not available
+        import os
+        # Set JAX platform before importing jax
+        os.environ['JAX_PLATFORMS'] = 'cpu'
+
         import jax
         import jax.numpy as jnp
         import numpyro
         import numpyro.distributions as dist
+        from numpyro.distributions import constraints
         from numpyro.infer import MCMC, NUTS
         from scipy.special import i0 as bessel_i0
 
@@ -1306,7 +1365,7 @@ class BrokenPowerLawMLR:
             
             outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / norm_factor
 
-            total_prob = f_good * good_component + f_outlier * outlier_component + self.p_epsilon
+            total_prob = f_good * good_component + f_outlier * outlier_component - jnp.log(f_outlier) + self.p_epsilon
             total_prob = jnp.clip(total_prob, 1e-100, 1e10)
             return total_prob
 
@@ -1354,10 +1413,14 @@ class BrokenPowerLawMLR:
 
             # Priors for outlier model parameters (conditional)
             if self.fit_outlier_params:
-                f_outlier = numpyro.sample('f_outlier', dist.Uniform(0.0, 0.5))  # Allow up to 50% outliers
+                f_outlier = numpyro.sample("f_outlier", dist.Uniform(0.0, 0.5))          
                 f_good = 1.0 - f_outlier
-                outlier_u0 = numpyro.sample('outlier_u0', dist.Uniform(10.0, 100.0))  # Reasonable range for u values
-                outlier_sigma = numpyro.sample('outlier_sigma', dist.Uniform(5.0, 50.0))  # Width of outlier distribution
+                outlier_u0 = numpyro.sample('outlier_u0', dist.Normal(loc=30.0, scale=5.0))  # Reasonable range for u values
+                outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 2.5))  # Width of outlier distribution
+                # f_outlier = numpyro.sample("f_outlier", dist.TransformedDistribution(dist.Uniform(0.0, 1.0), dist.biject_to(constraints.interval(0.0, 0.25))))          
+                # f_good = 1.0 - f_outlier
+                # outlier_u0 = numpyro.sample('outlier_u0', dist.TruncatedNormal(low=25, loc=30.0, scale=1.0))  # Reasonable range for u values
+                # outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 0.5))  # Width of outlier distribution
             else:
                 # Use fixed initial values
                 f_outlier = self.f_outlier_init
@@ -1420,8 +1483,8 @@ class BrokenPowerLawMLR:
         self.sampler = mcmc
         samples_dict = mcmc.get_samples()
 
-        # Reconstruct samples as array [n_samples, 1 + n_segments + (n_segments-1)]
-        # Format: [a_0, b_0, b_1, ..., b_{n-1}, M_break_0, ..., M_break_{n-2}]
+        # Reconstruct samples as array [n_samples, 1 + n_segments + (n_segments-1) + outlier_params]
+        # Format: [a_0, b_0, b_1, ..., b_{n-1}, M_break_0, ..., M_break_{n-2}, f_outlier, outlier_u0, outlier_sigma]
         n_samples_total = len(samples_dict['a_0'])
 
         # Extract a_0
@@ -1442,12 +1505,28 @@ class BrokenPowerLawMLR:
                 intercepts = self._compute_all_intercepts(a_0, slopes_i, break_points_i)
                 intercept_samples[i] = intercepts
 
-            # Combine parameters in new format
-            self.samples = np.column_stack([a_0_samples, slope_samples, break_point_samples])
+            # Combine main parameters
+            main_samples = np.column_stack([a_0_samples, slope_samples, break_point_samples])
         else:
             # Single segment case
-            self.samples = np.column_stack([a_0_samples, slope_samples])
+            main_samples = np.column_stack([a_0_samples, slope_samples])
             intercept_samples = a_0_samples.reshape(-1, 1)
+
+        # Include outlier parameters if they were fitted
+        if self.fit_outlier_params:
+            f_outlier_samples = np.array(samples_dict['f_outlier'])
+            outlier_u0_samples = np.array(samples_dict['outlier_u0'])
+            outlier_sigma_samples = np.array(samples_dict['outlier_sigma'])
+
+            # Combine all parameters
+            self.samples = np.column_stack([
+                main_samples, f_outlier_samples, outlier_u0_samples, outlier_sigma_samples
+            ])
+
+            # Update parameter names to include outlier parameters
+            self.param_names = self.param_names + ['f_outlier', 'outlier_u0', 'outlier_sigma']
+        else:
+            self.samples = main_samples
 
         self.results = type('obj', (object,), {
             'samples': self.samples,
@@ -1501,12 +1580,15 @@ class BrokenPowerLawMLR:
                                truth_color='salmon', show_titles=True)
             plt.tight_layout()
             os.makedirs(output_dir, exist_ok=True) if output_dir else None
-            plt.savefig(f'{output_dir}/corner_plot_broken_powerlaw_{self.uncertainty_model}{output_suffix}.png', dpi=300)
+            outlier_tag = 'outlierfit' if self.fit_outlier_params else 'outlierfixed'
+            metadata_suffix = output_suffix if output_suffix else f'_model-brokenpowerlaw_unc-{self.uncertainty_model}_outlier-{outlier_tag}'
+            filename = f'corner{metadata_suffix}.png'
+            plt.savefig(f'{output_dir}/{filename}', dpi=300)
             plt.close(fig)
         except ImportError:
             print("corner package not installed. Install it with: pip install corner")
 
-    def plot_fitting_results(self, data=None, output_dir='', output_suffix=''):
+    def plot_fitting_results(self, data=None, output_dir='', output_suffix='', isochrone_data_feh=None, iso_colname_dict={'absg':'absg', 'mass':'mass', 'feh':'MH'}):
         """
         Plot the fitting results with credible region.
 
@@ -1527,20 +1609,27 @@ class BrokenPowerLawMLR:
             print("No samples available for plotting fitting results.")
             return
 
+        # Extract only main model parameters for plotting (exclude outlier parameters)
+        if self.fit_outlier_params:
+            # Exclude last 3 outlier parameters (f_outlier, outlier_u0, outlier_sigma)
+            main_params_samples = self.samples[:, :-3]
+        else:
+            main_params_samples = self.samples
+
         # Convert masses to M_G values for the plot (we'll invert later)
-        num_samples = min(1000, len(self.samples))
-        indices = np.random.choice(len(self.samples), size=num_samples, replace=False)
-        subsamples = self.samples[indices]
+        num_samples = min(1000, len(main_params_samples))
+        indices = np.random.choice(len(main_params_samples), size=num_samples, replace=False)
+        subsamples = main_params_samples[indices]
 
         # Sample masses for plotting (use M_G range similar to non-parametric)
         absg_range = np.linspace(self.absg_min, self.absg_max, 1000)
 
         # Compute M_G for each posterior sample
-        all_masses = self.mass_from_absg(absg_range, self.samples)
+        all_masses = self.mass_from_absg(absg_range, main_params_samples)
         lower_masses, median_masses, upper_masses = np.percentile(all_masses, [16, 50, 84], axis=0)
 
         # Best-fit line
-        median_params = np.median(self.samples, axis=0)
+        median_params = np.median(main_params_samples, axis=0)
         best_fit_masses = self.mass_from_absg(absg_range, median_params)
 
         # Create plot
@@ -1584,6 +1673,12 @@ class BrokenPowerLawMLR:
             except (KeyError, AttributeError) as e:
                 print(f"Could not extract true masses from data: {e}")
 
+        if isochrone_data_feh is not None:
+            col = iso_colname_dict
+            # Plot isochrone data if provided
+            ax.scatter(isochrone_data_feh[col['absg']], isochrone_data_feh[col['mass']], 
+                        color='black', s=5, alpha=0.5,label='Isochrone', zorder=0)
+
         ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=12)
         ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=12)
         ax.set_xlim(self.absg_min, self.absg_max)
@@ -1596,7 +1691,10 @@ class BrokenPowerLawMLR:
         plt.title(title, fontsize=14)
         plt.tight_layout()
         os.makedirs(output_dir, exist_ok=True) if output_dir else None
-        plt.savefig(f'{output_dir}/broken_powerlaw_fit_{self.n_segments}segments_{self.uncertainty_model}{output_suffix}.png', dpi=300)
+        outlier_tag = 'outlierfit' if self.fit_outlier_params else 'outlierfixed'
+        metadata_suffix = output_suffix if output_suffix else f'_model-brokenpowerlaw_unc-{self.uncertainty_model}_outlier-{outlier_tag}'
+        filename = f'fit{metadata_suffix}.png'
+        plt.savefig(f'{output_dir}/{filename}', dpi=300)
         plt.close(fig)
 
 
@@ -1890,11 +1988,17 @@ class PolynomialMLR:
         Run HMC sampling for polynomial MLR coefficients.
         """
         try:
+            # Configure JAX to use CPU if CUDA is not available
+            import os
+            # Set JAX platform before importing jax
+            os.environ['JAX_PLATFORMS'] = 'cpu'
+
             import jax
             import jax.numpy as jnp
             from jax.scipy.special import i0e  # Modified Bessel function I_0 * exp(-|x|)
             import numpyro
             import numpyro.distributions as dist
+            from numpyro.distributions import constraints
             from numpyro.infer import MCMC, NUTS
         except ImportError as exc:
             raise ImportError("numpyro is not installed. Install it with: pip install numpyro") from exc
@@ -2002,7 +2106,7 @@ class PolynomialMLR:
 
             outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / jnp.maximum(norm, 1e-10)
 
-            total_prob = f_good * good_component + f_outlier * outlier_component + self.p_epsilon
+            total_prob = f_good * good_component + f_outlier * outlier_component - jnp.log(f_outlier) + self.p_epsilon
             total_prob = jnp.clip(total_prob, 1e-100, 1e10)
             return total_prob
 
@@ -2021,10 +2125,14 @@ class PolynomialMLR:
             sqrt_mtot = jnp.sqrt(mtot)
 
             if self.fit_outlier_params:
-                f_outlier = numpyro.sample('f_outlier', dist.Uniform(0.0, 0.5))
+                f_outlier = numpyro.sample("f_outlier", dist.Uniform(0.0, 0.5))          
                 f_good = 1.0 - f_outlier
-                outlier_u0 = numpyro.sample('outlier_u0', dist.Uniform(10.0, 100.0))
-                outlier_sigma = numpyro.sample('outlier_sigma', dist.Uniform(5.0, 50.0))
+                outlier_u0 = numpyro.sample('outlier_u0', dist.Normal(loc=30.0, scale=5.0))  # Reasonable range for u values
+                outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 2.5))  # Width of outlier distribution
+                # f_outlier = numpyro.sample("f_outlier", dist.TransformedDistribution(dist.Uniform(0.0, 1.0), dist.biject_to(constraints.interval(0.0, 0.25))))          
+                # f_good = 1.0 - f_outlier
+                # outlier_u0 = numpyro.sample('outlier_u0', dist.TruncatedNormal(low=25, loc=30.0, scale=1.0))  # Reasonable range for u values
+                # outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 0.5))  # Width of outlier distribution
             else:
                 f_outlier = self.f_outlier_init
                 f_good = 1.0 - f_outlier
@@ -2062,7 +2170,25 @@ class PolynomialMLR:
 
         self.sampler = mcmc
         samples_dict = mcmc.get_samples()
-        self.samples = np.array(samples_dict['coeffs'])
+
+        # Extract coefficient samples
+        coeffs_samples = np.array(samples_dict['coeffs'])
+
+        # Include outlier parameters if they were fitted
+        if self.fit_outlier_params:
+            f_outlier_samples = np.array(samples_dict['f_outlier'])
+            outlier_u0_samples = np.array(samples_dict['outlier_u0'])
+            outlier_sigma_samples = np.array(samples_dict['outlier_sigma'])
+
+            # Combine all parameters
+            self.samples = np.column_stack([
+                coeffs_samples, f_outlier_samples, outlier_u0_samples, outlier_sigma_samples
+            ])
+
+            # Update parameter names to include outlier parameters
+            self.param_names = self.param_names + ['f_outlier', 'outlier_u0', 'outlier_sigma']
+        else:
+            self.samples = coeffs_samples
 
         self.results = type('obj', (object,), {
             'samples': self.samples,
@@ -2082,30 +2208,44 @@ class PolynomialMLR:
         os.makedirs(output_dir, exist_ok=True)
         labels = [f'$c_{i}$' for i in range(self.poly_model.n_params)]
 
+        # Add outlier parameter labels if they were fitted
+        if self.fit_outlier_params:
+            labels.extend(['f_outlier', 'outlier_u0', 'outlier_sigma'])
+
         try:
             import corner
             fig = corner.corner(self.samples, labels=labels, show_titles=True)
             plt.tight_layout()
-            plt.savefig(f'{output_dir}/corner_plot_poly_{self.uncertainty_model}{output_suffix}.png', dpi=300)
+            outlier_tag = 'outlierfit' if self.fit_outlier_params else 'outlierfixed'
+            metadata_suffix = output_suffix if output_suffix else f'_model-polynomial_unc-{self.uncertainty_model}_outlier-{outlier_tag}'
+            filename = f'corner{metadata_suffix}.png'
+            plt.savefig(f'{output_dir}/{filename}', dpi=300)
             plt.close(fig)
         except ImportError:
             print("corner package not installed. Install it with: pip install corner")
 
-    def plot_fitting_results(self, data=None, output_dir='', output_suffix=''):
+    def plot_fitting_results(self, data=None, output_dir='', output_suffix='', isochrone_data_feh=None, iso_colname_dict={'absg':'absg', 'mass':'mass', 'feh':'MH'}):
         """Plot posterior predictive mass-luminosity relation."""
         if self.samples is None or self.samples.size == 0:
             print("No samples available for plotting fitting results.")
             return
 
-        num_samples = min(1000, len(self.samples))
-        indices = np.random.choice(len(self.samples), size=num_samples, replace=False)
-        subsamples = self.samples[indices]
+        # Extract only polynomial coefficients for plotting (exclude outlier parameters)
+        if self.fit_outlier_params:
+            # Exclude last 3 outlier parameters (f_outlier, outlier_u0, outlier_sigma)
+            coeff_samples = self.samples[:, :-3]
+        else:
+            coeff_samples = self.samples
+
+        num_samples = min(1000, len(coeff_samples))
+        indices = np.random.choice(len(coeff_samples), size=num_samples, replace=False)
+        subsamples = coeff_samples[indices]
 
         absg_range = np.linspace(self.poly_model.absg_min, self.poly_model.absg_max, 1000)
-        all_masses = self.mass_from_absg(absg_range, self.samples)
+        all_masses = self.mass_from_absg(absg_range, coeff_samples)
         lower_masses, median_masses, upper_masses = np.percentile(all_masses, [16, 50, 84], axis=0)
 
-        median_params = np.median(self.samples, axis=0)
+        median_params = np.median(coeff_samples, axis=0)
         best_fit_masses = self.mass_from_absg(absg_range, median_params)
 
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -2141,6 +2281,13 @@ class PolynomialMLR:
             except (KeyError, AttributeError) as e:
                 print(f"Could not extract true masses from data: {e}")
 
+        if isochrone_data_feh is not None:
+            col = iso_colname_dict
+            # Plot isochrone data if provided
+            ax.scatter(isochrone_data_feh[col['absg']], isochrone_data_feh[col['mass']], 
+                        color='black', s=5, alpha=0.5,label='Isochrone', zorder=0)
+
+
         ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=12)
         ax.set_ylabel('Mass [$M_{\\odot}$]', fontsize=12)
         ax.set_xlim(self.poly_model.absg_min, self.poly_model.absg_max)
@@ -2153,7 +2300,10 @@ class PolynomialMLR:
         plt.title(title, fontsize=14)
         plt.tight_layout()
         os.makedirs(output_dir, exist_ok=True) if output_dir else None
-        plt.savefig(f'{output_dir}/polynomial_fit_order{self.poly_model.order}_{self.uncertainty_model}{output_suffix}.png', dpi=300)
+        outlier_tag = 'outlierfit' if self.fit_outlier_params else 'outlierfixed'
+        metadata_suffix = output_suffix if output_suffix else f'_model-polynomial_unc-{self.uncertainty_model}_outlier-{outlier_tag}'
+        filename = f'fit{metadata_suffix}.png'
+        plt.savefig(f'{output_dir}/{filename}', dpi=300)
         plt.close(fig)
 
 
@@ -2227,8 +2377,30 @@ class MultiMetallicityFitter:
         self.feh_bin_edges = None
         self.feh_bin_centers = None
 
+    def _n_feh_bins(self):
+        """Return number of metallicity bins if available."""
+        return len(self.feh_bin_centers) if self.feh_bin_centers is not None else 'unknown'
+
+    def _outlier_tag(self):
+        """Human-friendly tag indicating whether outliers are fitted."""
+        return 'outlierfit' if self.fit_outlier_params else 'outlierfixed'
+
+    def _build_suffix(self, bin_idx=None):
+        """
+        Build a standardized metadata suffix shared by all outputs.
+
+        Includes model, uncertainty model, metallicity bin count, outlier flag,
+        and (optionally) the specific metallicity bin information.
+        """
+        n_bins = self._n_feh_bins()
+        suffix = f'_model-{self.model_type}_unc-{self.uncertainty_model}_feh{n_bins}bins_{self._outlier_tag()}'
+        if bin_idx is not None and self.feh_bin_centers is not None:
+            suffix += f'_bin{bin_idx}_feh{self.feh_bin_centers[bin_idx]:+.2f}'
+        return suffix
+
     def bin_data_by_metallicity(self, data, feh_column='feh', n_feh_bins=5,
-                            feh_min=None, feh_max=None, equal_frequency=False):
+                                iso_data = None, iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'},
+                                feh_min=None, feh_max=None, equal_frequency=False):
         """
         Bin the data by metallicity using either equal-width or equal-frequency binning.
 
@@ -2301,7 +2473,32 @@ class MultiMetallicityFitter:
             star_count = len(binned_data[i]) if is_table else len(binned_data[i]['feh'])
             print(f"Metallicity bin {i} ([{self.feh_bin_edges[i]:.2f}, {self.feh_bin_edges[i+1]:.2f}]): {star_count} stars")
 
-        return binned_data
+        if iso_data is not None:
+            binned_iso = {}
+            # Bin isochrone data similarly
+            if hasattr(iso_data, 'colnames'):
+                iso_feh_values = iso_data[iso_colname_dict['feh']]
+                is_iso_table = True
+            elif isinstance(iso_data, dict):
+                iso_feh_values = np.array(iso_data[iso_colname_dict['feh']])
+                is_iso_table = False
+            else:
+                raise ValueError("iso_data must be astropy.Table or dict")
+
+            for i in range(n_feh_bins):
+                mask = (iso_feh_values >= self.feh_bin_edges[i]) & (iso_feh_values < self.feh_bin_edges[i+1])
+                if i == n_feh_bins - 1:
+                    mask = (iso_feh_values >= self.feh_bin_edges[i]) & (iso_feh_values <= self.feh_bin_edges[i+1])
+
+                if is_iso_table:
+                    binned_iso[i] = iso_data[mask]
+                else:
+                    binned_iso[i] = {key: values[mask] if isinstance(values, np.ndarray) else np.array(values)[mask]
+                                     for key, values in iso_data.items()}
+            return binned_data, binned_iso
+        
+        else:
+            return binned_data
 
     def fit_all_bins(self, binned_data, u_column='u', u_sigma_column='u_sigma',
                     absg1_column='absg1', absg2_column='absg2',
@@ -2438,7 +2635,7 @@ class MultiMetallicityFitter:
             # Store fitter
             self.fitters[bin_idx] = fitter
 
-    def plot_all_results(self, binned_data, output_dir='.', data=None):
+    def plot_all_results(self, binned_data, output_dir='.', binned_iso=None, iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'}):
         """
         Plot results for all metallicity bins.
 
@@ -2453,36 +2650,38 @@ class MultiMetallicityFitter:
         os.makedirs(output_dir, exist_ok=True)
 
         for bin_idx, fitter in self.fitters.items():
-            suffix = f'_fehbin{bin_idx}'
-            data = binned_data[bin_idx] if binned_data is not None else None
+            suffix = self._build_suffix(bin_idx)
+            bin_data = binned_data[bin_idx] if binned_data is not None else None
+            bin_iso = binned_iso[bin_idx] if binned_iso is not None else None
 
-            if len(data) == 0:
+            if bin_data is not None and len(bin_data) == 0:
                 print(f"Skipping metallicity bin {bin_idx} (no data)")
                 continue
 
             if self.model_type == 'nonparametric':
                 # Non-parametric model plotting
                 fitter.plot_results(output_dir=output_dir, output_suffix=suffix)
-                fitter.plot_fitting_results(data=data, output_dir=output_dir, output_suffix=suffix)
+                fitter.plot_fitting_results(data=bin_data, isochrone_data_feh=bin_iso, output_dir=output_dir, output_suffix=suffix, iso_colname_dict=iso_colname_dict)
 
             elif self.model_type == 'broken_powerlaw':
                 # Broken power law model plotting
                 fitter.plot_results(output_dir=output_dir, output_suffix=suffix)
-                fitter.plot_fitting_results(data=data, output_dir=output_dir, output_suffix=suffix)
+                fitter.plot_fitting_results(data=bin_data, isochrone_data_feh=bin_iso, output_dir=output_dir, output_suffix=suffix, iso_colname_dict=iso_colname_dict)
 
             elif self.model_type == 'polynomial':
                 fitter.plot_results(output_dir=output_dir, output_suffix=suffix)
-                fitter.plot_fitting_results(data=data, output_dir=output_dir, output_suffix=suffix)
-
-    def plot_comparison(self, output_path='mass_absg_comparison.png',
-                       data=None):
+                fitter.plot_fitting_results(data=bin_data, isochrone_data_feh=bin_iso, output_dir=output_dir, output_suffix=suffix, iso_colname_dict=iso_colname_dict)
+    
+    def plot_comparison(self, output_path=None, data=None, iso_data=None, output_dir='.', iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'}):
         """
         Plot comparison of mass-luminosity relations across all metallicity bins.
 
         Parameters
         ----------
-        output_path : str
-            Output file path
+        output_path : str, optional
+            Output file path. If None, a standardized path will be created in output_dir.
+        output_dir : str
+            Directory to write plots when output_path is None.
         data : binned_data : dict
         true_mass_funcs : dict or callable
             True mass functions for each bin (for validation)
@@ -2490,6 +2689,16 @@ class MultiMetallicityFitter:
         if len(self.fitters) == 0:
             print("No fitted results to plot")
             return
+
+        if output_path is None:
+            os.makedirs(output_dir, exist_ok=True)
+            n_bins = self._n_feh_bins()
+            filename = f'feh_comparison_{self.model_type}_unc-{self.uncertainty_model}_feh{n_bins}bins_{self._outlier_tag()}.png'
+            output_path = os.path.join(output_dir, filename)
+        else:
+            output_parent = os.path.dirname(output_path)
+            if output_parent:
+                os.makedirs(output_parent, exist_ok=True)
 
         fig, ax = plt.subplots(figsize=(12, 8))
 
@@ -2499,25 +2708,50 @@ class MultiMetallicityFitter:
         for (bin_idx, fitter), color in zip(self.fitters.items(), colors):
 
             if self.model_type == 'nonparametric':
-                # Non-parametric model: plot step-like mass vs magnitude
-                # Create absg bin edges for step plotting
-                percentiles = np.percentile(fitter.samples, [16, 50, 84], axis=0)
-                lower, median, upper = percentiles[0], percentiles[1], percentiles[2]
+                # Non-parametric model: plot credible intervals at bin centers
+                # Extract only mass bin parameters (exclude outlier parameters if present)
+                if hasattr(fitter, 'fit_outlier_params') and fitter.fit_outlier_params:
+                    mass_bins_samples = fitter.samples[:, :fitter.n_bins]
+                else:
+                    mass_bins_samples = fitter.samples
 
-                # Plot step-like function
+                percentiles = np.percentile(mass_bins_samples, [16, 50, 84], axis=0)
+                lower, median, upper = percentiles[0], percentiles[1], percentiles[2]
+                absg_centers = fitter.absg_bins
+                yerr = np.vstack((median - lower, upper - median))
+
                 label = f'[Fe/H]=[{self.feh_bin_edges[bin_idx]:.2f}, {self.feh_bin_edges[bin_idx+1]:.2f}]'
-                ax.fill_between(fitter.absg_bins, lower, upper, color=color, alpha=0.2, step='mid')
-                ax.step(fitter.absg_bins, median, color=color, label=label, linewidth=2, where='mid')
+                # add edge color for better visibility
+                ax.errorbar(
+                    absg_centers,
+                    median,
+                    yerr=yerr,
+                    fmt='o',
+                    markeredgecolor='black',
+                    markeredgewidth=1.5, 
+                    markersize=15,
+                    color=color,
+                    ecolor=color,
+                    elinewidth=4,
+                    capsize=0,
+                    label=label,
+                )
 
             elif self.model_type == 'broken_powerlaw':
                 # Broken power law model: plot magnitude vs mass
                 absg_range = np.linspace(fitter.absg_min, fitter.absg_max, 1000)  # absg range?
-                
-                all_masses = fitter.mass_from_absg(absg_range, fitter.samples)
+
+                # Extract only main model parameters (exclude outlier parameters if present)
+                if hasattr(fitter, 'fit_outlier_params') and fitter.fit_outlier_params:
+                    main_params_samples = fitter.samples[:, :-3]  # Exclude 3 outlier params
+                else:
+                    main_params_samples = fitter.samples
+
+                all_masses = fitter.mass_from_absg(absg_range, main_params_samples)
                 lower_mags, median_mags, upper_mags = np.percentile(all_masses, [16, 50, 84], axis=0)
 
                 # Best-fit line
-                median_params = np.median(fitter.samples, axis=0)
+                median_params = np.median(main_params_samples, axis=0)
                 best_fit_mags = fitter.mass_from_absg(absg_range, median_params)
 
                 # Plot
@@ -2532,10 +2766,16 @@ class MultiMetallicityFitter:
             elif self.model_type == 'polynomial':
                 absg_range = np.linspace(fitter.poly_model.absg_min, fitter.poly_model.absg_max, 1000)
 
-                all_masses = fitter.mass_from_absg(absg_range, fitter.samples)
+                # Extract only polynomial coefficients (exclude outlier parameters if present)
+                if hasattr(fitter, 'fit_outlier_params') and fitter.fit_outlier_params:
+                    coeff_samples = fitter.samples[:, :-3]  # Exclude 3 outlier params
+                else:
+                    coeff_samples = fitter.samples
+
+                all_masses = fitter.mass_from_absg(absg_range, coeff_samples)
                 lower_masses, median_masses, upper_masses = np.percentile(all_masses, [16, 50, 84], axis=0)
 
-                median_params = np.median(fitter.samples, axis=0)
+                median_params = np.median(coeff_samples, axis=0)
                 best_fit_masses = fitter.mass_from_absg(absg_range, median_params)
 
                 label = f'[Fe/H]=[{self.feh_bin_edges[bin_idx]:.2f}, {self.feh_bin_edges[bin_idx+1]:.2f}]'
@@ -2566,6 +2806,21 @@ class MultiMetallicityFitter:
                 except (KeyError, AttributeError) as e:
                     print(f"Could not extract masses from data for bin {bin_idx}: {e}")
 
+            if iso_data is not None:
+                bin_iso = iso_data[bin_idx]
+                try:
+                    if hasattr(bin_iso, 'colnames'):
+                        iso_absg = np.array(bin_iso[iso_colname_dict['absg']])
+                        iso_mass = np.array(bin_iso[iso_colname_dict['mass']])
+                    elif isinstance(bin_iso, dict):
+                        iso_absg = np.array(bin_iso[iso_colname_dict['absg']])
+                        iso_mass = np.array(bin_iso[iso_colname_dict['mass']])
+                    else:
+                        raise ValueError("iso_data must be astropy.Table or dict")
+
+                    ax.scatter(iso_absg, iso_mass, color=color, s=5, alpha=0.5, zorder=0)
+                except (KeyError, AttributeError) as e:
+                    print(f"Could not extract isochrone data for bin {bin_idx}: {e}")
 
         ax.set_yscale('log')
         ax.set_xlim(fitter.absg_min, fitter.absg_max)
@@ -2586,7 +2841,7 @@ class MultiMetallicityFitter:
         plt.close(fig)
         print(f"Saved comparison plot to {output_path}")
 
-    def save_all_samples(self, output_dir='.', prefix='samples'):
+    def save_all_samples(self, output_dir='.', prefix='mcmc'):
         """
         Save posterior samples for all bins.
 
@@ -2598,11 +2853,14 @@ class MultiMetallicityFitter:
             Prefix for output filenames
         """
         os.makedirs(output_dir, exist_ok=True)
+        n_bins = self._n_feh_bins()
+        outlier_tag = self._outlier_tag()
 
         for bin_idx, fitter in self.fitters.items():
+            feh_tag = f'_bin{bin_idx}_feh{self.feh_bin_centers[bin_idx]:+.2f}' if self.feh_bin_centers is not None else f'_bin{bin_idx}'
             output_path = os.path.join(
                 output_dir,
-                f'{prefix}_fehbin{bin_idx}_feh{self.feh_bin_centers[bin_idx]:.2f}.txt'
+                f'{prefix}_{self.model_type}_unc-{self.uncertainty_model}_feh{n_bins}bins_{outlier_tag}{feh_tag}.txt'
             )
             np.savetxt(output_path, fitter.samples)
             print(f"Saved samples for bin {bin_idx} to {output_path}")

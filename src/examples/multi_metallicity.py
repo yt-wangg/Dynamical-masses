@@ -69,12 +69,12 @@ def test_nonparametric_model(data, output_dir,
 
     # Save samples
     print("4. Saving non-parametric samples...")
-    multi_fitter.save_all_samples(output_dir=output_dir, prefix=f'nonparametric_{uncertainty_model}_samples')
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix='mcmc')
 
     # Plot results
     print("5. Plotting non-parametric results...")
     multi_fitter.plot_all_results(binned_data=binned_data, output_dir=output_dir)
-    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, f'nonparametric_{uncertainty_model}_uncertainty_{n_feh_bins}fehbins_comparison.png'), data=binned_data)
+    multi_fitter.plot_comparison(output_dir=output_dir, data=binned_data)
 
     # Print summary
     print("\n6. Non-parametric Summary Statistics:")
@@ -140,12 +140,12 @@ def test_broken_powerlaw_model(data, output_dir,
 
     # Save samples
     print("5. Saving broken power law samples...")
-    multi_fitter.save_all_samples(output_dir=output_dir, prefix=f'broken_powerlaw_{uncertainty_model}_samples')
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix='mcmc')
 
     # Plot results
     print("6. Plotting broken power law results...")
     multi_fitter.plot_all_results(binned_data=binned_data, output_dir=output_dir)
-    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, f'broken_powerlaw_{uncertainty_model}_uncertainty_{n_feh_bins}fehbins_comparison.png'), data=binned_data)
+    multi_fitter.plot_comparison(output_dir=output_dir, data=binned_data)
 
     # Print summary
     print("\n7. Broken Power Law Summary Statistics:")
@@ -214,11 +214,11 @@ def test_polynomial_model(data, output_dir,
     )
 
     print("5. Saving polynomial samples...")
-    multi_fitter.save_all_samples(output_dir=output_dir, prefix=f'polynomial_{uncertainty_model}_samples')
+    multi_fitter.save_all_samples(output_dir=output_dir, prefix='mcmc')
 
     print("6. Plotting polynomial results...")
     multi_fitter.plot_all_results(binned_data=binned_data, output_dir=output_dir)
-    multi_fitter.plot_comparison(output_path=os.path.join(output_dir, f'polynomial_{uncertainty_model}_uncertainty_{n_feh_bins}fehbins_comparison.png'), data=binned_data)
+    multi_fitter.plot_comparison(output_dir=output_dir, data=binned_data)
 
     print("\n7. Polynomial Summary Statistics:")
     for bin_idx, fitter in multi_fitter.fitters.items():
@@ -257,7 +257,7 @@ def main():
     print(f"   Using {len(data)} systems for testing")
 
     # Set output directory
-    output_dir = 'results/multi_metallicity'
+    output_dir = 'results/regularisation'
     os.makedirs(output_dir, exist_ok=True)
     print(f"\n2. Results will be saved to: {output_dir}")
 
@@ -266,7 +266,7 @@ def main():
                                                     n_absg_bins=10, absg_min=4.5, absg_max=14.0,
                                                     uncertainty_model='rice',
                                                     feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
-                                                    gamma=np.inf, num_warmup=500, num_samples=3000, num_chains=2,
+                                                    gamma=-2, num_warmup=500, num_samples=3000, num_chains=2,
                                                     mass_min=0.01, mass_max=1.5, seed=4)
     
 
@@ -279,13 +279,13 @@ def main():
     #                                                     seed=8)
 
     # Test polynomial model
-    polynomial_models = test_polynomial_model(data, output_dir,
-                                              order=3, absg_min=4.5, absg_max=14.0,
-                                              uncertainty_model='rice',
-                                              feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
-                                              num_warmup=500, num_samples=3500, num_chains=2,
-                                              mass_min=0.01, mass_max=1.5,
-                                              seed=13, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0)
+    # polynomial_models = test_polynomial_model(data, output_dir,
+    #                                           order=3, absg_min=4.5, absg_max=14.0,
+    #                                           uncertainty_model='rice',
+    #                                           feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
+    #                                           num_warmup=500, num_samples=3500, num_chains=2,
+    #                                           mass_min=0.01, mass_max=1.5,
+    #                                           seed=13, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0)
 
     # Final summary
     # print("\n" + "=" * 70)
@@ -298,14 +298,10 @@ def main():
     # print(f"  - Number of metallicity bins fitted: {len(broken_powerlaw_models)}")
 
     print(f"\nGenerated files in {output_dir}:")
-    print(f"  Non-parametric:")
-    print(f"    - nonparametric_*.png")
-    print(f"    - nonparametric_samples_*.txt")
-    print(f"    - nonparametric_multi_feh_comparison.png")
-    print(f"  Broken Power Law:")
-    print(f"    - broken_powerlaw_feh_*_results.png")
-    print(f"    - broken_powerlaw_feh_*_samples.txt")
-    print(f"    - broken_powerlaw_multi_feh_comparison.png")
+    print("  - mcmc_<model>_unc-<unc>_feh<nbin>bins_<outlier>_bin*.txt")
+    print("  - corner_<model>_unc-<unc>_feh<nbin>bins_<outlier>_bin*.png")
+    print("  - fit_<model>_unc-<unc>_feh<nbin>bins_<outlier>_bin*.png")
+    print("  - feh_comparison_<model>_unc-<unc>_feh<nbin>bins_<outlier>.png")
 
     print("\n" + "=" * 70)
     print("Multi-metallicity example completed successfully!")
