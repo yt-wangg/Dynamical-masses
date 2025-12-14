@@ -22,7 +22,8 @@ def test_nonparametric_model(data, output_dir,
                              n_absg_bins=10, absg_min=3.0, absg_max=14.0,
                              uncertainty_model='rice',
                              feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
-                             gamma=np.inf, num_warmup=800, num_samples=1500, num_chains=2,
+                             gamma=np.inf, outlier_kappa=50.0,
+                             num_warmup=800, num_samples=1500, num_chains=2,
                              mass_min=0.05, mass_max=1.5, seed=42):
     """Test the non-parametric model using the new MultiMetallicityFitter."""
     print("\n" + "="*50)
@@ -41,7 +42,8 @@ def test_nonparametric_model(data, output_dir,
         uncertainty_model=uncertainty_model,  # Use Rice distribution
         f_outlier=0,  # No outliers
         outlier_u0=30,
-        outlier_sigma=15
+        outlier_sigma=15,
+        outlier_kappa=outlier_kappa,
     )
 
     # Bin data by metallicity
@@ -60,7 +62,8 @@ def test_nonparametric_model(data, output_dir,
     print("   This may take several minutes...")
     multi_fitter.fit_all_bins(
         binned_data,
-        gamma=gamma,  # No regularization
+        gamma=gamma,  # Smoothness regularization
+        outlier_kappa=outlier_kappa,
         num_warmup=num_warmup,   # Reduced for demo
         num_samples=num_samples,  # Reduced for demo
         num_chains=num_chains,      # Reduced for demo
@@ -93,7 +96,7 @@ def test_broken_powerlaw_model(data, output_dir,
                                uncertainty_model='rice',
                                feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
                                num_warmup=800, num_samples=2500, num_chains=2,
-                               seed=40):
+                               outlier_kappa=50.0, seed=40):
     """Test the broken power law model using the new MultiMetallicityFitter."""
     print("\n" + "="*50)
     print("TESTING BROKEN POWER LAW MODEL")
@@ -112,7 +115,8 @@ def test_broken_powerlaw_model(data, output_dir,
         uncertainty_model=uncertainty_model,
         f_outlier=0,  # Allow 10% outliers
         outlier_u0=30,
-        outlier_sigma=15
+        outlier_sigma=15,
+        outlier_kappa=outlier_kappa,
     )
 
     # Bin data by metallicity
@@ -131,6 +135,7 @@ def test_broken_powerlaw_model(data, output_dir,
     print("   This may take several minutes...")
     multi_fitter.fit_all_bins(
         binned_data,
+        outlier_kappa=outlier_kappa,
         num_warmup=num_warmup,   # Reduced for demo
         num_samples=num_samples,  # Reduced for demo
         num_chains=num_chains,      # Reduced for demo
@@ -169,7 +174,7 @@ def test_polynomial_model(data, output_dir,
                           feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
                           num_warmup=800, num_samples=2000, num_chains=2,
                           mass_min=0.05, mass_max=2.0,
-                          seed=12, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0):
+                          outlier_kappa=50.0, seed=12, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0):
     """Test the polynomial model using the new MultiMetallicityFitter."""
     print("\n" + "="*50)
     print("TESTING POLYNOMIAL MODEL")
@@ -188,6 +193,7 @@ def test_polynomial_model(data, output_dir,
         f_outlier=0,
         outlier_u0=30,
         outlier_sigma=15,
+        outlier_kappa=outlier_kappa,
         poly_order=order,
         poly_deriv_penalty_strength=poly_deriv_penalty_strength,
         poly_coeff_prior_scale=poly_coeff_prior_scale,
@@ -207,6 +213,7 @@ def test_polynomial_model(data, output_dir,
     print("   This may take several minutes...")
     multi_fitter.fit_all_bins(
         binned_data,
+        outlier_kappa=outlier_kappa,
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=num_chains,

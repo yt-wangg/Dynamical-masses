@@ -15,6 +15,49 @@ import matplotlib.cm as cm
 from typing import Union
 
 
+def _configure_jax_gpu_fallback():
+    """
+    Configure JAX to prefer GPU but fall back to CPU if GPU is not available.
+
+    Returns
+    -------
+    jax : module
+        The configured JAX module
+    """
+    import warnings
+    import sys
+    import importlib
+
+    # Try GPU first, but fall back to CPU if not available
+    try:
+        # Clear any existing JAX platform preference to allow auto-detection
+        if 'JAX_PLATFORMS' in os.environ:
+            del os.environ['JAX_PLATFORMS']
+
+        # Try to import jax with auto-detection
+        import jax
+        devices = jax.devices()
+
+        # If no GPU devices are available, switch to CPU
+        if not any(device.platform == 'gpu' for device in devices):
+            warnings.warn("No GPU devices available, switching to CPU backend")
+            os.environ['JAX_PLATFORMS'] = 'cpu'
+            # Need to reload modules to pick up the platform change
+            importlib.reload(jax)
+
+    except Exception as e:
+        warnings.warn(f"Failed to initialize JAX GPU backend: {e}. Using CPU backend")
+        os.environ['JAX_PLATFORMS'] = 'cpu'
+        # Clear any cached imports and retry with CPU
+        modules_to_remove = [mod for mod in sys.modules.keys() if mod.startswith('jax')]
+        for mod in modules_to_remove:
+            if mod in sys.modules:
+                del sys.modules[mod]
+        import jax
+
+    return jax
+
+
 
 class NonParametricMLR:
     """
@@ -26,7 +69,7 @@ class NonParametricMLR:
     """
 
     def __init__(self, n_bins=10, absg_min=4.0, absg_max=12.0, mass_min=0.01, mass_max=1.5, uncertainty_model='rice',
-                 f_outlier=0, outlier_u0=30, outlier_sigma=15, fit_outlier_params=False):
+                 f_outlier=0, outlier_u0=30, outlier_sigma=15, outlier_kappa=50.0, fit_outlier_params=False):
         """
         Initialize the non-parametric plotter.
 
@@ -60,6 +103,7 @@ class NonParametricMLR:
         self.m_epsilon = 1e-10
         self.outlier_u0_init = outlier_u0
         self.outlier_sigma_init = outlier_sigma
+        self.outlier_kappa_init = outlier_kappa
 
         # Non-parametric bin settings
         self.n_bins = n_bins
@@ -196,7 +240,7 @@ class NonParametricMLR:
             return coeff * np.exp(exponent)
 
     def set_data(self, u_values=None, u_sigma_values=None,
-                absg1_values=None, absg2_values=None, gamma=None):
+                absg1_values=None, absg2_values=None, gamma=None, outlier_kappa=None):
         """
         Set the observed values for inference.
 
@@ -210,6 +254,8 @@ class NonParametricMLR:
             Absolute G magnitudes of primary and secondary stars
         gamma : float, optional
             Regularization parameter
+        outlier_kappa : float, optional
+            Concentration parameter for the Beta prior on f_outlier (default: 50.0)
         """
         self.u_values = np.array(u_values)
         self.absg1_values = np.array(absg1_values)
@@ -236,6 +282,8 @@ class NonParametricMLR:
             self.gamma = gamma
         else:
             self.gamma = np.inf  # No regularization by default
+
+        self.outlier_kappa = self.outlier_kappa_init if outlier_kappa is None else outlier_kappa
 
     def run_numpyro(self, num_warmup=1000, num_samples=2000, num_chains=4,
                     int_umax=80., int_du=0.02,
@@ -273,12 +321,8 @@ class NonParametricMLR:
             The fitted MCMC sampler
         """
         try:
-            # Configure JAX to use CPU if CUDA is not available
-            import os
-            # Set JAX platform before importing jax
-            os.environ['JAX_PLATFORMS'] = 'cpu'
-
-            import jax
+            # Configure JAX to prefer GPU but fall back to CPU
+            jax = _configure_jax_gpu_fallback()
             import jax.numpy as jnp
             from jax.scipy.special import i0e  # Modified Bessel function I_0 * exp(-|x|)
             import numpyro
@@ -291,6 +335,15 @@ class NonParametricMLR:
             print(f"JAX devices: {devices}")
             print(f"Device count: {jax.local_device_count()}")
             print(f"JAX backend: {devices[0].platform if devices else 'None'}")
+
+            # Log GPU status
+            gpu_devices = [d for d in devices if d.platform == 'gpu']
+            cpu_devices = [d for d in devices if d.platform == 'cpu']
+
+            if gpu_devices:
+                print(f"✓ Using {len(gpu_devices)} GPU device(s) for acceleration")
+            else:
+                print(f"⚠ Using CPU backend ({len(cpu_devices)} device(s))")
         except ImportError:
             raise ImportError("numpyro is not installed. Install it with: pip install numpyro")
 
@@ -447,7 +500,7 @@ class NonParametricMLR:
                 good_component = jnp.sum(integrand, axis=1) / norm_factor + self.p_epsilon / (int_umax / int_du)
                 outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / norm_factor
 
-            total_prob = f_good * good_component + f_outlier * outlier_component - jnp.log(f_outlier) + self.p_epsilon
+            total_prob = f_good * good_component + f_outlier * outlier_component + self.p_epsilon
 
             # Clamp to reasonable range to avoid log(0)
             total_prob = jnp.clip(total_prob, 1e-100, 1e10)
@@ -465,23 +518,6 @@ class NonParametricMLR:
             mass_bins = numpyro.sample('mass_bins',
                                       dist.Uniform(mass_min, mass_max).expand([ndim]))
 
-            # Priors for outlier model parameters (conditional)
-            if self.fit_outlier_params:
-                f_outlier = numpyro.sample("f_outlier", dist.Uniform(0.0, 0.5))          
-                f_good = 1.0 - f_outlier
-                outlier_u0 = numpyro.sample('outlier_u0', dist.Normal(loc=30.0, scale=5.0))  # Reasonable range for u values
-                outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 2.5))  # Width of outlier distribution
-                # f_outlier = numpyro.sample("f_outlier", dist.TransformedDistribution(dist.Uniform(0.0, 1.0), dist.biject_to(constraints.interval(0.0, 0.25))))          
-                # f_good = 1.0 - f_outlier
-                # outlier_u0 = numpyro.sample('outlier_u0', dist.TruncatedNormal(low=25, loc=30.0, scale=1.0))  # Reasonable range for u values
-                # outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 0.5))  # Width of outlier distribution
-            else:
-                # Use fixed initial values
-                f_outlier = self.f_outlier_init
-                f_good = 1.0 - f_outlier
-                outlier_u0 = self.outlier_u0_init
-                outlier_sigma = self.outlier_sigma_init
-
             # Smoothness regularization
             if ndim > 2:
                 second_diffs = (mass_bins[2:] - 2*mass_bins[1:-1] + mass_bins[:-2])/mass_bins[1:-1]
@@ -495,6 +531,38 @@ class NonParametricMLR:
             m2 = jnp.interp(absg2_values, absg_bins, mass_bins)
             mtot = m1 + m2
             sqrt_mtot = jnp.sqrt(mtot)
+
+            # Priors for outlier model parameters (conditional) with informative Beta/TruncatedNormal prior
+            if self.fit_outlier_params:
+                # ---- priors for contamination model
+                pi = 0.01          # prior mean outlier rate (1%)
+                kappa = self.outlier_kappa  # prior concentration (shrink strength)
+                alpha = pi * kappa
+                beta = (1 - pi) * kappa
+                f_outlier = numpyro.sample("f_outlier", dist.Beta(alpha, beta))
+                f_good = 1.0 - f_outlier
+
+                # Tail separation thresholds (choose once; can be data-driven)
+                u_tail_min = jnp.quantile(u_values / sqrt_mtot, 0.6)
+                u_tail_max = int_umax
+
+                # Outlier mean restricted to the tail region
+                outlier_u0 = numpyro.sample(
+                    "outlier_u0",
+                    dist.TruncatedNormal(low=u_tail_min, high=u_tail_max, loc=u_tail_min+5.0, scale=5.0)
+                )
+
+                # Outlier sigma strictly large
+                rho_sigma = numpyro.sample("rho_sigma", dist.Normal(0.0, 1.0))
+                sigma_min_out = 10.0  # set relative to your main-component width in tilde_u
+                outlier_sigma = sigma_min_out * (1.0 + jax.nn.softplus(rho_sigma))
+                numpyro.deterministic("outlier_sigma", outlier_sigma)
+            else:
+                # Use fixed initial values
+                f_outlier = self.f_outlier_init
+                f_good = 1.0 - f_outlier
+                outlier_u0 = self.outlier_u0_init
+                outlier_sigma = self.outlier_sigma_init
 
             # Calculate log likelihood for each data point
             log_likelihood_vec = jnp.log(likelihood_single_u_jax(u_values, sqrt_mtot, u_sigma_values, norm_factor=norm_factor,
@@ -715,7 +783,7 @@ class BrokenPowerLawMLR:
 
     def __init__(self, n_segments=3, mass_min=0.08, mass_max=1.0, absg_min=4.0, absg_max=12.0,
                  uncertainty_model='rice',
-                 f_outlier=0, outlier_u0=30, outlier_sigma=15, fit_outlier_params=False):
+                 f_outlier=0, outlier_u0=30, outlier_sigma=15, outlier_kappa=50.0, fit_outlier_params=False):
         """
         Initialize the broken power-law MLR fitter.
 
@@ -748,6 +816,7 @@ class BrokenPowerLawMLR:
         self.p_epsilon = 1e-10
         self.outlier_u0_init = outlier_u0
         self.outlier_sigma_init = outlier_sigma
+        self.outlier_kappa_init = outlier_kappa
         self.mass_min = mass_min
         self.mass_max = mass_max
         self.absg_min = absg_min
@@ -1117,7 +1186,7 @@ class BrokenPowerLawMLR:
             B * tilde_u**2 + np.exp((tilde_u - u0) / C)
         ))
 
-    def set_data(self, u_values, u_sigma_values, absg1_values, absg2_values):
+    def set_data(self, u_values, u_sigma_values, absg1_values, absg2_values, outlier_kappa=None):
         """
         Set the data for fitting.
 
@@ -1131,6 +1200,8 @@ class BrokenPowerLawMLR:
             Primary star absolute G magnitudes
         absg2_values : array_like
             Secondary star absolute G magnitudes
+        outlier_kappa : float, optional
+            Concentration parameter for the Beta prior on f_outlier (default: 50.0)
         """
         self.u_values = np.array(u_values)
         self.u_sigma_values = np.array(u_sigma_values)
@@ -1142,6 +1213,7 @@ class BrokenPowerLawMLR:
         int_du = 0.02
         int_ulist = np.arange(0.01, int_umax, int_du)
         self.norm_factor = np.sum(self.func_pu_8(int_ulist) * int_du)
+        self.outlier_kappa = self.outlier_kappa_init if outlier_kappa is None else outlier_kappa
 
     def run_numpyro(self, num_warmup=1000, num_samples=2000, num_chains=4,
                     seed=None,
@@ -1191,12 +1263,8 @@ class BrokenPowerLawMLR:
         mcmc : numpyro.infer.MCMC
             MCMC object with results
         """
-        # Configure JAX to use CPU if CUDA is not available
-        import os
-        # Set JAX platform before importing jax
-        os.environ['JAX_PLATFORMS'] = 'cpu'
-
-        import jax
+        # Configure JAX to prefer GPU but fall back to CPU
+        jax = _configure_jax_gpu_fallback()
         import jax.numpy as jnp
         import numpyro
         import numpyro.distributions as dist
@@ -1365,7 +1433,7 @@ class BrokenPowerLawMLR:
             
             outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / norm_factor
 
-            total_prob = f_good * good_component + f_outlier * outlier_component - jnp.log(f_outlier) + self.p_epsilon
+            total_prob = f_good * good_component + f_outlier * outlier_component + self.p_epsilon
             total_prob = jnp.clip(total_prob, 1e-100, 1e10)
             return total_prob
 
@@ -1411,23 +1479,6 @@ class BrokenPowerLawMLR:
             else:
                 break_points = jnp.array([])  # No break points for single segment
 
-            # Priors for outlier model parameters (conditional)
-            if self.fit_outlier_params:
-                f_outlier = numpyro.sample("f_outlier", dist.Uniform(0.0, 0.5))          
-                f_good = 1.0 - f_outlier
-                outlier_u0 = numpyro.sample('outlier_u0', dist.Normal(loc=30.0, scale=5.0))  # Reasonable range for u values
-                outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 2.5))  # Width of outlier distribution
-                # f_outlier = numpyro.sample("f_outlier", dist.TransformedDistribution(dist.Uniform(0.0, 1.0), dist.biject_to(constraints.interval(0.0, 0.25))))          
-                # f_good = 1.0 - f_outlier
-                # outlier_u0 = numpyro.sample('outlier_u0', dist.TruncatedNormal(low=25, loc=30.0, scale=1.0))  # Reasonable range for u values
-                # outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 0.5))  # Width of outlier distribution
-            else:
-                # Use fixed initial values
-                f_outlier = self.f_outlier_init
-                f_good = 1.0 - f_outlier
-                outlier_u0 = self.outlier_u0_init
-                outlier_sigma = self.outlier_sigma_init
-
             # Compute all intercepts analytically to ensure continuity
             intercepts = jnp.array([a_0])
             for i in range(len(break_points)):
@@ -1447,6 +1498,35 @@ class BrokenPowerLawMLR:
             m2 = mass_from_absg_jax_inner(absg2_values, params_jax)
             mtot = m1 + m2
             sqrt_mtot = jnp.sqrt(mtot)
+
+            # Priors for outlier model parameters (conditional) with informative Beta/TruncatedNormal prior
+            if self.fit_outlier_params:
+                pi = 0.01
+                kappa = self.outlier_kappa
+                alpha = pi * kappa
+                beta_param = (1 - pi) * kappa
+                f_outlier = numpyro.sample("f_outlier", dist.Beta(alpha, beta_param))
+                f_good = 1.0 - f_outlier
+
+                # Tail separation thresholds (choose once; can be data-driven)
+                u_tail_min = jnp.quantile(u_values / sqrt_mtot, 0.6)
+                u_tail_max = int_umax
+
+                # Outlier mean restricted to the tail region
+                outlier_u0 = numpyro.sample(
+                    "outlier_u0",
+                    dist.TruncatedNormal(low=u_tail_min, high=u_tail_max, loc=u_tail_min+5.0, scale=5.0)
+                )
+                
+                rho_sigma = numpyro.sample("rho_sigma", dist.Normal(0.0, 1.0))
+                sigma_min_out = 10.0
+                outlier_sigma = sigma_min_out * (1.0 + jax.nn.softplus(rho_sigma))
+                numpyro.deterministic("outlier_sigma", outlier_sigma)
+            else:
+                f_outlier = self.f_outlier_init
+                f_good = 1.0 - f_outlier
+                outlier_u0 = self.outlier_u0_init
+                outlier_sigma = self.outlier_sigma_init
 
             # Calculate log likelihood
             log_likelihood_vec = jnp.log(likelihood_single_u_jax(
@@ -1898,7 +1978,7 @@ class PolynomialMLR:
     def __init__(self, order=3, mass_min=0.05, mass_max=2.0,
                  absg_min=-1.0, absg_max=15.0, pivot=None,
                  uncertainty_model='rice',
-                 f_outlier=0, outlier_u0=30, outlier_sigma=15,
+                 f_outlier=0, outlier_u0=30, outlier_sigma=15, outlier_kappa=50.0,
                  fit_outlier_params=False, deriv_penalty_strength=10.0,
                  coeff_prior_scale=5.0):
         if uncertainty_model not in ['rice', 'gaussian']:
@@ -1924,6 +2004,7 @@ class PolynomialMLR:
         self.p_epsilon = 1e-10
         self.outlier_u0_init = outlier_u0
         self.outlier_sigma_init = outlier_sigma
+        self.outlier_kappa_init = outlier_kappa
 
         # Data placeholders
         self.u_values = None
@@ -1948,7 +2029,7 @@ class PolynomialMLR:
             B * tilde_u**2 + np.exp((tilde_u - u0) / C)
         ))
 
-    def set_data(self, u_values, u_sigma_values=None, absg1_values=None, absg2_values=None):
+    def set_data(self, u_values, u_sigma_values=None, absg1_values=None, absg2_values=None, outlier_kappa=None):
         """
         Set observational data.
         """
@@ -1966,6 +2047,8 @@ class PolynomialMLR:
                 self.norm_factor = np.ones(len(u_values))
             elif self.uncertainty_model == 'gaussian':
                 self.norm_factor = 1 - norm.cdf(0, loc=self.u_values, scale=self.u_sigma_values)
+
+        self.outlier_kappa = self.outlier_kappa_init if outlier_kappa is None else outlier_kappa
 
     def mass_from_absg(self, absg, params):
         """
@@ -1988,12 +2071,8 @@ class PolynomialMLR:
         Run HMC sampling for polynomial MLR coefficients.
         """
         try:
-            # Configure JAX to use CPU if CUDA is not available
-            import os
-            # Set JAX platform before importing jax
-            os.environ['JAX_PLATFORMS'] = 'cpu'
-
-            import jax
+            # Configure JAX to prefer GPU but fall back to CPU
+            jax = _configure_jax_gpu_fallback()
             import jax.numpy as jnp
             from jax.scipy.special import i0e  # Modified Bessel function I_0 * exp(-|x|)
             import numpyro
@@ -2106,7 +2185,7 @@ class PolynomialMLR:
 
             outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / jnp.maximum(norm, 1e-10)
 
-            total_prob = f_good * good_component + f_outlier * outlier_component - jnp.log(f_outlier) + self.p_epsilon
+            total_prob = f_good * good_component + f_outlier * outlier_component + self.p_epsilon
             total_prob = jnp.clip(total_prob, 1e-100, 1e10)
             return total_prob
 
@@ -2125,14 +2204,27 @@ class PolynomialMLR:
             sqrt_mtot = jnp.sqrt(mtot)
 
             if self.fit_outlier_params:
-                f_outlier = numpyro.sample("f_outlier", dist.Uniform(0.0, 0.5))          
+                pi = 0.01
+                kappa = self.outlier_kappa
+                alpha = pi * kappa
+                beta_param = (1 - pi) * kappa
+                f_outlier = numpyro.sample("f_outlier", dist.Beta(alpha, beta_param))          
                 f_good = 1.0 - f_outlier
-                outlier_u0 = numpyro.sample('outlier_u0', dist.Normal(loc=30.0, scale=5.0))  # Reasonable range for u values
-                outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 2.5))  # Width of outlier distribution
-                # f_outlier = numpyro.sample("f_outlier", dist.TransformedDistribution(dist.Uniform(0.0, 1.0), dist.biject_to(constraints.interval(0.0, 0.25))))          
-                # f_good = 1.0 - f_outlier
-                # outlier_u0 = numpyro.sample('outlier_u0', dist.TruncatedNormal(low=25, loc=30.0, scale=1.0))  # Reasonable range for u values
-                # outlier_sigma = numpyro.sample('outlier_sigma', dist.Normal(10.0, 0.5))  # Width of outlier distribution
+                
+                # Tail separation thresholds (choose once; can be data-driven)
+                u_tail_min = jnp.quantile(u_values / sqrt_mtot, 0.6)
+                u_tail_max = int_umax
+
+                # Outlier mean restricted to the tail region
+                outlier_u0 = numpyro.sample(
+                    "outlier_u0",
+                    dist.TruncatedNormal(low=u_tail_min, high=u_tail_max, loc=u_tail_min+5.0, scale=5.0)
+                )
+                
+                rho_sigma = numpyro.sample("rho_sigma", dist.Normal(0.0, 1.0))
+                sigma_min_out = 10.0
+                outlier_sigma = sigma_min_out * (1.0 + jax.nn.softplus(rho_sigma))
+                numpyro.deterministic("outlier_sigma", outlier_sigma)
             else:
                 f_outlier = self.f_outlier_init
                 f_good = 1.0 - f_outlier
@@ -2317,7 +2409,7 @@ class MultiMetallicityFitter:
     """
 
     def __init__(self, model_type='nonparametric', n_absg_bins=10, absg_min=4.0, absg_max=12.0, mass_min=0.05, mass_max=2.0,
-                 uncertainty_model='rice', f_outlier=0, outlier_u0=30, outlier_sigma=15,
+                 uncertainty_model='rice', f_outlier=0, outlier_u0=30, outlier_sigma=15, outlier_kappa=50.0,
                  n_segments=3, fit_outlier_params=False,
                  poly_order=3, poly_pivot=None,
                  poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0):
@@ -2362,6 +2454,7 @@ class MultiMetallicityFitter:
         self.f_good = 1 - f_outlier
         self.outlier_u0 = outlier_u0
         self.outlier_sigma = outlier_sigma
+        self.outlier_kappa = outlier_kappa
 
         # Set default break points for broken power law
         self.n_segments = n_segments
@@ -2502,7 +2595,7 @@ class MultiMetallicityFitter:
 
     def fit_all_bins(self, binned_data, u_column='u', u_sigma_column='u_sigma',
                     absg1_column='absg1', absg2_column='absg2',
-                    a_prior_range=(-1,20), b_prior_range=(-50,5), gamma=np.inf,
+                    a_prior_range=(-1,20), b_prior_range=(-50,5), gamma=np.inf, outlier_kappa=None,
                     num_warmup=1000, num_samples=2000, num_chains=4, seed=None):
         """
         Fit all metallicity bins.
@@ -2515,6 +2608,8 @@ class MultiMetallicityFitter:
             Column names in the data
         gamma : float
             Regularization parameter (only for nonparametric model)
+        outlier_kappa : float
+            Concentration parameter for the Beta prior on f_outlier
         mass_min, mass_max : float
             Mass bounds
         num_warmup, num_samples, num_chains : int
@@ -2541,6 +2636,7 @@ class MultiMetallicityFitter:
 
             if self.model_type == 'nonparametric':
                 # Create non-parametric fitter for this bin
+                effective_kappa = self.outlier_kappa if outlier_kappa is None else outlier_kappa
                 fitter = NonParametricMLR(
                     n_bins=self.n_absg_bins,
                     absg_min=self.absg_min,
@@ -2551,6 +2647,7 @@ class MultiMetallicityFitter:
                     f_outlier=self.f_outlier,
                     outlier_u0=self.outlier_u0,
                     outlier_sigma=self.outlier_sigma,
+                    outlier_kappa=effective_kappa,
                     fit_outlier_params=self.fit_outlier_params
                 )
 
@@ -2560,7 +2657,8 @@ class MultiMetallicityFitter:
                     u_sigma_values=u_sigma_values,
                     absg1_values=absg1_values,
                     absg2_values=absg2_values,
-                    gamma=gamma
+                    gamma=gamma,
+                    outlier_kappa=effective_kappa
                 )
 
                 # Run fitting
@@ -2573,6 +2671,7 @@ class MultiMetallicityFitter:
 
             elif self.model_type == 'broken_powerlaw':
                 # Create broken power-law fitter for this bin
+                effective_kappa = self.outlier_kappa if outlier_kappa is None else outlier_kappa
                 fitter = BrokenPowerLawMLR(
                     n_segments=self.n_segments,
                     absg_min=self.absg_min,
@@ -2581,6 +2680,7 @@ class MultiMetallicityFitter:
                     f_outlier=self.f_outlier,
                     outlier_u0=self.outlier_u0,
                     outlier_sigma=self.outlier_sigma,
+                    outlier_kappa=effective_kappa,
                     fit_outlier_params=self.fit_outlier_params
                 )
 
@@ -2589,7 +2689,8 @@ class MultiMetallicityFitter:
                     u_values=u_values,
                     u_sigma_values=u_sigma_values,
                     absg1_values=absg1_values,
-                    absg2_values=absg2_values
+                    absg2_values=absg2_values,
+                    outlier_kappa=effective_kappa
                 )
 
                 # Run fitting
@@ -2602,6 +2703,7 @@ class MultiMetallicityFitter:
                 )
 
             elif self.model_type == 'polynomial':
+                effective_kappa = self.outlier_kappa if outlier_kappa is None else outlier_kappa
                 fitter = PolynomialMLR(
                     order=self.poly_order,
                     absg_min=self.absg_min,
@@ -2613,6 +2715,7 @@ class MultiMetallicityFitter:
                     f_outlier=self.f_outlier,
                     outlier_u0=self.outlier_u0,
                     outlier_sigma=self.outlier_sigma,
+                    outlier_kappa=effective_kappa,
                     fit_outlier_params=self.fit_outlier_params,
                     deriv_penalty_strength=self.poly_deriv_penalty_strength,
                     coeff_prior_scale=self.poly_coeff_prior_scale,
@@ -2622,7 +2725,8 @@ class MultiMetallicityFitter:
                     u_values=u_values,
                     u_sigma_values=u_sigma_values,
                     absg1_values=absg1_values,
-                    absg2_values=absg2_values
+                    absg2_values=absg2_values,
+                    outlier_kappa=effective_kappa
                 )
 
                 fitter.run_numpyro(

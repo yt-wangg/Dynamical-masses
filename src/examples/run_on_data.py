@@ -23,7 +23,7 @@ def test_nonparametric_model(data, output_dir,
                              n_absg_bins=10, absg_min=3.0, absg_max=14.0,
                              uncertainty_model='rice',
                              feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
-                             gamma=np.inf, num_warmup=800, num_samples=1500, num_chains=2,
+                             gamma=np.inf, outlier_kappa=50.0, num_warmup=800, num_samples=1500, num_chains=2,
                              mass_min=0.05, mass_max=1.5, 
                              seed=42, fit_outlier_params=False, iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'}):
     """Test the non-parametric model using the new MultiMetallicityFitter."""
@@ -44,6 +44,7 @@ def test_nonparametric_model(data, output_dir,
         f_outlier=0.1,  # Allow 10% outliers
         outlier_u0=30,
         outlier_sigma=15,
+        outlier_kappa=outlier_kappa,
         fit_outlier_params=fit_outlier_params
     )
 
@@ -76,6 +77,7 @@ def test_nonparametric_model(data, output_dir,
     multi_fitter.fit_all_bins(
         binned_data,
         gamma=gamma,  # No regularization
+        outlier_kappa=outlier_kappa,
         num_warmup=num_warmup,   # Reduced for demo
         num_samples=num_samples,  # Reduced for demo
         num_chains=num_chains,      # Reduced for demo
@@ -108,7 +110,7 @@ def test_broken_powerlaw_model(data, output_dir,
                                uncertainty_model='rice',
                                feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
                                num_warmup=800, num_samples=2500, num_chains=2,
-                               seed=40, fit_outlier_params=False, iso_data=None, iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'}):
+                               outlier_kappa=50.0, seed=40, fit_outlier_params=False, iso_data=None, iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'}):
     """Test the broken power law model using the new MultiMetallicityFitter."""
     print("\n" + "="*50)
     print("TESTING BROKEN POWER LAW MODEL")
@@ -128,6 +130,7 @@ def test_broken_powerlaw_model(data, output_dir,
         f_outlier=0.1,  # Allow 10% outliers
         outlier_u0=30,
         outlier_sigma=15,
+        outlier_kappa=outlier_kappa,
         fit_outlier_params=fit_outlier_params
     )
 
@@ -160,6 +163,7 @@ def test_broken_powerlaw_model(data, output_dir,
     print("   This may take several minutes...")
     multi_fitter.fit_all_bins(
         binned_data,
+        outlier_kappa=outlier_kappa,
         num_warmup=num_warmup,   # Reduced for demo
         num_samples=num_samples,  # Reduced for demo
         num_chains=num_chains,      # Reduced for demo
@@ -199,7 +203,7 @@ def test_polynomial_model(data, output_dir,
                           num_warmup=800, num_samples=2000, num_chains=2,
                           mass_min=0.05, mass_max=2.0,
                           poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0,
-                          seed=42, fit_outlier_params=False, iso_data=None, iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'}):
+                          outlier_kappa=50.0, seed=42, fit_outlier_params=False, iso_data=None, iso_colname_dict = {'absg':'absg', 'mass':'mass', 'feh':'MH'}):
     """Test the polynomial model using the new MultiMetallicityFitter."""
     print("\n" + "="*50)
     print("TESTING POLYNOMIAL MODEL")
@@ -218,6 +222,7 @@ def test_polynomial_model(data, output_dir,
         f_outlier=0.1,
         outlier_u0=30,
         outlier_sigma=15,
+        outlier_kappa=outlier_kappa,
         poly_order=order,
         poly_deriv_penalty_strength=poly_deriv_penalty_strength,
         poly_coeff_prior_scale=poly_coeff_prior_scale,
@@ -251,6 +256,7 @@ def test_polynomial_model(data, output_dir,
     print("   This may take several minutes...")
     multi_fitter.fit_all_bins(
         binned_data,
+        outlier_kappa=outlier_kappa,
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=num_chains,
@@ -289,7 +295,7 @@ def main():
 
     iso_data_path = 'data/PARSEC_logAge_6to10_0p5_MH_n1to0p6_0p2.csv'
     iso_data = Table.read(iso_data_path)
-    iso_mask = (iso_data['logAge'] >= 9.1) & (iso_data['logAge'] <= 10.0)
+    iso_mask = (iso_data['logAge'] > 9.3) & (iso_data['logAge'] <= 10.0)
     iso_data = iso_data[iso_mask]
     iso_colname_dict = {'absg':'Gmag', 'mass':'Mass', 'feh':'MH'}
 
@@ -306,18 +312,18 @@ def main():
     print(f"   Using {len(data)} systems for testing")
 
     # Set output directory
-    output_dir = 'results/data'
+    output_dir = 'results/data_kappa_fix'
     os.makedirs(output_dir, exist_ok=True)
     print(f"\n2. Results will be saved to: {output_dir}")
 
     # Test non-parametric model
-    nonparametric_fitter = test_nonparametric_model(data, output_dir,
+    nonparametric_fitter = test_nonparametric_model(data, output_dir, outlier_kappa=1000,
                                                     n_absg_bins=10, absg_min=3, absg_max=14.0,
                                                     uncertainty_model='rice',
                                                     feh_column='feh_jcaps_1', n_feh_bins=3, feh_min=-1.5, feh_max=0.6, equal_frequency=False,
                                                     gamma=np.inf, num_warmup=500, num_samples=3000, num_chains=2,
                                                     mass_min=0.05, mass_max=1.5, 
-                                                    seed=14, fit_outlier_params=False, iso_data=iso_data, iso_colname_dict=iso_colname_dict)
+                                                    seed=23, fit_outlier_params=True, iso_data=iso_data, iso_colname_dict=iso_colname_dict)
     
 
     # Test broken power law model
