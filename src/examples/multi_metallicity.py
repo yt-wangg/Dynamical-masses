@@ -15,14 +15,14 @@ import os
 
 # Add the package to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-from src.binary_masses import MultiMetallicityFitter
+from binary_masses import MultiMetallicityFitter
 
 
 def test_nonparametric_model(data, output_dir,
                              n_absg_bins=10, absg_min=3.0, absg_max=14.0,
                              uncertainty_model='rice',
                              feh_column='feh', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
-                             gamma=np.inf, outlier_kappa=50.0,
+                             gamma=np.inf, outlier_kappa=None, outlier_kappa_scale=0.05,
                              num_warmup=800, num_samples=1500, num_chains=2,
                              mass_min=0.05, mass_max=1.5, seed=42):
     """Test the non-parametric model using the new MultiMetallicityFitter."""
@@ -44,6 +44,7 @@ def test_nonparametric_model(data, output_dir,
         outlier_u0=30,
         outlier_sigma=15,
         outlier_kappa=outlier_kappa,
+        outlier_kappa_scale=outlier_kappa_scale,
     )
 
     # Bin data by metallicity
@@ -64,6 +65,7 @@ def test_nonparametric_model(data, output_dir,
         binned_data,
         gamma=gamma,  # Smoothness regularization
         outlier_kappa=outlier_kappa,
+        outlier_kappa_scale=outlier_kappa_scale,
         num_warmup=num_warmup,   # Reduced for demo
         num_samples=num_samples,  # Reduced for demo
         num_chains=num_chains,      # Reduced for demo
@@ -96,7 +98,7 @@ def test_broken_powerlaw_model(data, output_dir,
                                uncertainty_model='rice',
                                feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
                                num_warmup=800, num_samples=2500, num_chains=2,
-                               outlier_kappa=50.0, seed=40):
+                               outlier_kappa=None, outlier_kappa_scale=0.05, seed=40):
     """Test the broken power law model using the new MultiMetallicityFitter."""
     print("\n" + "="*50)
     print("TESTING BROKEN POWER LAW MODEL")
@@ -117,6 +119,7 @@ def test_broken_powerlaw_model(data, output_dir,
         outlier_u0=30,
         outlier_sigma=15,
         outlier_kappa=outlier_kappa,
+        outlier_kappa_scale=outlier_kappa_scale,
     )
 
     # Bin data by metallicity
@@ -136,6 +139,7 @@ def test_broken_powerlaw_model(data, output_dir,
     multi_fitter.fit_all_bins(
         binned_data,
         outlier_kappa=outlier_kappa,
+        outlier_kappa_scale=outlier_kappa_scale,
         num_warmup=num_warmup,   # Reduced for demo
         num_samples=num_samples,  # Reduced for demo
         num_chains=num_chains,      # Reduced for demo
@@ -174,7 +178,7 @@ def test_polynomial_model(data, output_dir,
                           feh_column='feh', n_feh_bins=1, feh_min=-1, feh_max=0.6, equal_frequency=False,
                           num_warmup=800, num_samples=2000, num_chains=2,
                           mass_min=0.05, mass_max=2.0,
-                          outlier_kappa=50.0, seed=12, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0):
+                          outlier_kappa=None, outlier_kappa_scale=0.05, seed=12, poly_deriv_penalty_strength=10.0, poly_coeff_prior_scale=5.0):
     """Test the polynomial model using the new MultiMetallicityFitter."""
     print("\n" + "="*50)
     print("TESTING POLYNOMIAL MODEL")
@@ -194,6 +198,7 @@ def test_polynomial_model(data, output_dir,
         outlier_u0=30,
         outlier_sigma=15,
         outlier_kappa=outlier_kappa,
+        outlier_kappa_scale=outlier_kappa_scale,
         poly_order=order,
         poly_deriv_penalty_strength=poly_deriv_penalty_strength,
         poly_coeff_prior_scale=poly_coeff_prior_scale,
@@ -214,6 +219,7 @@ def test_polynomial_model(data, output_dir,
     multi_fitter.fit_all_bins(
         binned_data,
         outlier_kappa=outlier_kappa,
+        outlier_kappa_scale=outlier_kappa_scale,
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=num_chains,

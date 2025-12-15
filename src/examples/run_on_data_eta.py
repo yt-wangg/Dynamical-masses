@@ -15,7 +15,7 @@ import os
 
 # Add the package to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-from src.binary_masses import MultiMetallicityFitter
+from binary_masses import MultiMetallicityFitter
 
 
 def test_nonparametric_model(data, output_dir, outlier_kappa,
