@@ -15,6 +15,9 @@ from .core import (
     PolynomialMLR,
     IsochroneMassModel,
     DifferencePolyMLR,
+    load_interpolated_mass_grid,
+    load_interpolated_mass_curve,
+    load_interpolated_isochrone_data,
 )
 from .sampling import BinarySystem, BinaryPopulation
 
@@ -28,6 +31,9 @@ __all__ = [
     "PolynomialMLR",
     "IsochroneMassModel",
     "DifferencePolyMLR",
+    "load_interpolated_mass_grid",
+    "load_interpolated_mass_curve",
+    "load_interpolated_isochrone_data",
     "BinarySystem",
     "BinaryPopulation"
 ]

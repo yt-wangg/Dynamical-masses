@@ -17,6 +17,11 @@ from .polynomial import (
     IsochroneMassModel,
     DifferencePolyMLR,
 )
+from .isochrone_grid import (
+    load_interpolated_isochrone_data,
+    load_interpolated_mass_curve,
+    load_interpolated_mass_grid,
+)
 from .multi_metallicity import MultiMetallicityFitter
 
 __all__ = [
@@ -28,4 +33,7 @@ __all__ = [
     "IsochroneMassModel",
     "DifferencePolyMLR",
     "MultiMetallicityFitter",
+    "load_interpolated_mass_grid",
+    "load_interpolated_mass_curve",
+    "load_interpolated_isochrone_data",
 ]

@@ -37,6 +37,7 @@ Download the example data: https://keeper.mpdl.mpg.de/f/1587c6531bf84155ad9a/?dl
 import numpy as np
 from astropy.table import Table
 from binary_masses import MultiMetallicityFitter
+from binary_masses import load_interpolated_isochrone_data, IsochroneMassModel
 
 # Load your binary star data
 data = Table.read('your_binary_data.fits')
@@ -56,6 +57,12 @@ binned_data = fitter.bin_data_by_metallicity(
     n_feh_bins=3,            # Number of metallicity bins
     equal_frequency=False    # Use equal-width binning
 )
+
+# (Optional) Load the pre-resampled isochrone grid for plotting / reference
+iso_data = load_interpolated_isochrone_data('data/interpolated_mass_data')
+
+# (Optional) Build a 1D isochrone mass model at a given [M/H] for DifferencePolyMLR
+iso_model = IsochroneMassModel.from_interpolated_mass_data(mh=0.0, data_dir='data/interpolated_mass_data')
 
 # Fit all metallicity bins
 fitter.fit_all_bins(

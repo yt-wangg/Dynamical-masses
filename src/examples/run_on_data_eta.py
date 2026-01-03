@@ -130,11 +130,11 @@ def main():
     data_path = 'data/jd_single_1kpc_filtered.fits'
     data = Table.read(data_path)
 
-    iso_data_path = 'data/PARSEC_logAge_6to10_0p5_MH_n1to0p6_0p2.csv'
-    iso_data = Table.read(iso_data_path)
-    iso_mask = (iso_data['logAge'] >= 9.1) & (iso_data['logAge'] <= 10.0)
-    iso_data = iso_data[iso_mask]
-    iso_colname_dict = {'absg':'Gmag', 'mass':'Mass', 'feh':'MH'}
+    # Use the pre-resampled interpolated isochrone grid (fast, already filtered)
+    from binary_masses import load_interpolated_isochrone_data
+
+    iso_data = load_interpolated_isochrone_data("data/interpolated_mass_data")
+    iso_colname_dict = {"absg": "absg", "mass": "mass", "feh": "MH"}
 
     # Prepare data subset
     data['v'] = 4.74 * np.sqrt((data['pmra2']-data['pmra1'])**2 +

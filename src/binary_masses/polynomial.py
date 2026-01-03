@@ -1,7 +1,7 @@
 """Polynomial mass-luminosity relation (MLR) model."""
 
 import os
-from typing import Union
+from typing import Optional, Union
 
 import numpy as np
 from scipy.stats import norm
@@ -390,7 +390,6 @@ class PolynomialMLR:
 
             if u_sigma is None:
                 good_component = (1.0 / sqrt_mtot) * func_pu_8_jax(tilde_u)
-                norm = jnp.ones_like(good_component)
             else:
                 u_sigma = jnp.maximum(u_sigma, 1e-10)
 
@@ -421,7 +420,9 @@ class PolynomialMLR:
                 norm = jnp.maximum(norm_factor, 1e-10)
                 good_component = jnp.sum(integrand, axis=1) / norm + self.p_epsilon / (int_umax / int_du)
 
-            outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / jnp.maximum(norm, 1e-10)
+            from jax.scipy.special import erf as jax_erf
+            outlier_gaussian_norm = 1. - 0.5 * (1 + jax_erf(-outlier_u0 / outlier_sigma / jnp.sqrt(2.)))
+            outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / jnp.maximum(outlier_gaussian_norm, 1e-10)
 
             total_prob = f_good * good_component + f_outlier * outlier_component + self.p_epsilon
             total_prob = jnp.clip(total_prob, 1e-100, 1e10)
@@ -442,7 +443,7 @@ class PolynomialMLR:
             sqrt_mtot = jnp.sqrt(mtot)
 
             if self.fit_outlier_params:
-                pi = 0.01
+                pi = self.f_outlier_init
                 kappa = self.outlier_kappa
                 alpha = pi * kappa
                 beta_param = (1 - pi) * kappa
@@ -458,11 +459,7 @@ class PolynomialMLR:
                     "outlier_u0",
                     dist.TruncatedNormal(low=u_tail_min, high=u_tail_max, loc=u_tail_min+5.0, scale=5.0)
                 )
-                
-                rho_sigma = numpyro.sample("rho_sigma", dist.Normal(0.0, 1.0))
-                sigma_min_out = 10.0
-                outlier_sigma = sigma_min_out * (1.0 + jax.nn.softplus(rho_sigma))
-                numpyro.deterministic("outlier_sigma", outlier_sigma)
+                outlier_sigma = numpyro.sample("outlier_sigma", dist.Normal(15.0, 2.0))
             else:
                 f_outlier = self.f_outlier_init
                 f_good = 1.0 - f_outlier
@@ -536,15 +533,35 @@ class PolynomialMLR:
             return
 
         os.makedirs(output_dir, exist_ok=True)
-        labels = [f'$c_{i}$' for i in range(self.poly_model.n_params)]
+        if getattr(self, "param_names", None) and len(self.param_names) == self.samples.shape[1]:
+            labels = list(self.param_names)
+        else:
+            labels = [f'$c_{i}$' for i in range(self.poly_model.n_params)]
+            # Add outlier parameter labels if they were fitted
+            if self.fit_outlier_params:
+                labels.extend(['f_outlier', 'outlier_u0', 'outlier_sigma'])
 
-        # Add outlier parameter labels if they were fitted
-        if self.fit_outlier_params:
-            labels.extend(['f_outlier', 'outlier_u0', 'outlier_sigma'])
+        # Drop parameters with zero dynamic range to avoid corner errors.
+        samples = self.samples
+        keep_mask = np.ones(samples.shape[1], dtype=bool)
+        for idx in range(samples.shape[1]):
+            col = samples[:, idx]
+            if not np.isfinite(col).any():
+                keep_mask[idx] = False
+                continue
+            if np.nanmax(col) == np.nanmin(col):
+                keep_mask[idx] = False
+
+        if not np.all(keep_mask):
+            dropped = [labels[i] for i in range(len(labels)) if not keep_mask[i]]
+            if dropped:
+                print(f"Dropping constant parameters from corner plot: {', '.join(dropped)}")
+            samples = samples[:, keep_mask]
+            labels = [labels[i] for i in range(len(labels)) if keep_mask[i]]
 
         try:
             import corner
-            fig = corner.corner(self.samples, labels=labels, show_titles=True)
+            fig = corner.corner(samples, labels=labels, show_titles=True)
             plt.tight_layout()
             outlier_tag = 'outlierfit' if self.fit_outlier_params else 'outlierfixed'
             metadata_suffix = output_suffix if output_suffix else f'_model-polynomial_unc-{self.uncertainty_model}_outlier-{outlier_tag}'
@@ -634,21 +651,21 @@ class PolynomialMLR:
                         iso_absg_curve[order],
                         iso_mass_curve[order],
                         color="black",
-                        linewidth=2,
+                        linewidth=1.5,
                         alpha=0.8,
-                        linestyle="-",
-                        label="Isochrone (binned)",
+                        linestyle="--",
+                        label="Isochrone",
                         zorder=0,
                     )
             except Exception as e:
                 print(f"Could not plot binned isochrone curve: {e}")
 
-        if isochrone_data_feh is not None:
-            col = iso_colname_dict
-            # Plot isochrone data if provided
-            iso_scatter_label = "Isochrone (raw)" if isochrone_curve_data_feh is not None else "Isochrone"
-            ax.scatter(isochrone_data_feh[col['absg']], isochrone_data_feh[col['mass']], 
-                        color='black', s=5, alpha=0.5, label=iso_scatter_label, zorder=0)
+        # if isochrone_data_feh is not None:
+        #     col = iso_colname_dict
+        #     # Plot isochrone data if provided
+        #     iso_scatter_label = "Isochrone (raw)" if isochrone_curve_data_feh is not None else "Isochrone"
+        #     ax.scatter(isochrone_data_feh[col['absg']], isochrone_data_feh[col['mass']], 
+        #                 color='black', s=5, alpha=0.5, label=iso_scatter_label, zorder=0)
 
 
         ax.set_xlabel('$M_{\\mathrm{G}}$ [mag]', fontsize=12)
@@ -733,6 +750,51 @@ class IsochroneMassModel:
             mass = jnp.interp(absg, jnp.asarray(self.absg_grid_np), jnp.asarray(self.mass_grid_np))
         mass = jnp.where(mass > 0.0, mass, self.mass_min)
         return mass
+
+    @classmethod
+    def from_interpolated_mass_data(
+        cls,
+        mh: float,
+        data_dir: Optional[str] = None,
+        *,
+        mh_interpolation: str = "linear",
+        absg_min: Optional[float] = None,
+        absg_max: Optional[float] = None,
+        mass_min: float = 0.01,
+    ) -> "IsochroneMassModel":
+        """Build an `IsochroneMassModel` from `data/interpolated_mass_data`.
+
+        Parameters
+        ----------
+        mh : float
+            Target metallicity [M/H] for the curve.
+        data_dir : str, optional
+            Directory containing `gmag_grid.npy` and `mass_interp_MH_*.npy`.
+            If None, tries the repo-local default under `bayesian-binary-masses/data/`.
+        mh_interpolation : {"linear","nearest"}
+            How to handle MH values not exactly present in the grid.
+        absg_min, absg_max : float, optional
+            Magnitude bounds advertised by the model; defaults to the curve range.
+        mass_min : float
+            Safety floor applied by the model.
+        """
+        from .isochrone_grid import load_interpolated_mass_curve
+
+        absg_grid, mass_grid = load_interpolated_mass_curve(
+            mh=mh, data_dir=data_dir, mh_interpolation=mh_interpolation
+        )
+        if absg_min is None:
+            absg_min = float(np.nanmin(absg_grid))
+        if absg_max is None:
+            absg_max = float(np.nanmax(absg_grid))
+
+        return cls(
+            absg_min=absg_min,
+            absg_max=absg_max,
+            absg_grid=absg_grid,
+            mass_grid=mass_grid,
+            mass_min=mass_min,
+        )
 
 
 class DifferencePolyMassAbsgModel(PolyMassAbsgModel):

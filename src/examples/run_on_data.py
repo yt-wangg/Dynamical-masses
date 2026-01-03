@@ -393,27 +393,30 @@ def test_differencepoly_model(
             best_fit = fitter.mass_from_absg(absg_range, median_params)
 
             label = f"[Fe/H]=[{feh_bin_edges[bin_idx]:.2f}, {feh_bin_edges[bin_idx+1]:.2f}]"
-            ax.fill_between(absg_range, lower_m, upper_m, color=color, alpha=0.2)
-            ax.plot(absg_range, best_fit, color=color, linestyle="-.", linewidth=3, label=label)
+            ax.fill_between(absg_range, lower_m, upper_m, color=color, alpha=0.3)
+            ax.plot(absg_range, best_fit, color=color, linestyle="-.", linewidth=2, label=label)
 
             # Raw isochrone scatter in the background
-            if binned_iso_raw is not None:
-                iso_bin = binned_iso_raw.get(bin_idx)
-                if iso_bin is not None:
-                    try:
-                        ax.scatter(
-                            np.array(iso_bin[iso_col_dict["absg"]]),
-                            np.array(iso_bin[iso_col_dict["mass"]]),
-                            color="black",
-                            s=5,
-                            alpha=0.15,
-                            zorder=0,
-                        )
-                    except Exception:
-                        pass
+            # if binned_iso_raw is not None:
+            #     iso_bin = binned_iso_raw.get(bin_idx)
+            #     if iso_bin is not None:
+            #         try:
+            #             ax.plot(
+            #                 np.array(iso_bin[iso_col_dict["absg"]]),
+            #                 np.array(iso_bin[iso_col_dict["mass"]]),
+            #                 color=color,
+            #                 linestyle=":",
+            #                 linewidth=2.5,
+            #                 alpha=1,
+            #                 zorder=0,
+            #                 label=label
+            #             )
+            #         except Exception:
+            #             pass
 
             # Binned isochrone curve used in the model (for reference)
             if binned_iso_curve is not None and bin_idx in binned_iso_curve:
+                label_iso = f"[Fe/H]=[{feh_bin_edges[bin_idx]:.2f}, {feh_bin_edges[bin_idx+1]:.2f}] Isochrone"
                 try:
                     iso_curve = binned_iso_curve[bin_idx]
                     ax.plot(
@@ -421,15 +424,17 @@ def test_differencepoly_model(
                         iso_curve["mass"],
                         color=color,
                         linewidth=2,
-                        alpha=0.7,
+                        alpha=0.8,
                         linestyle=":",
+                        label=label_iso,
+                        zorder=0,
                     )
                 except Exception:
                     pass
 
         ax.set_yscale("log")
         ax.set_xlim(absg_min_val, absg_max_val)
-        ax.set_ylim(mass_min_val * 0.8, mass_max_val * 1.2)
+        ax.set_ylim(mass_min_val, mass_max_val)
         ax.set_xlabel("$M_{\\mathrm{G}}$ [mag]", fontsize=14)
         ax.set_ylabel("Mass [$M_{\\odot}$]", fontsize=14)
         ax.invert_xaxis()
@@ -595,11 +600,11 @@ def main():
     data_path = 'data/jd_single_1kpc_filtered.fits'
     data = Table.read(data_path)
 
-    iso_data_path = 'data/PARSEC_logAge_6to10_0p5_MH_n1to0p6_0p2.csv'
-    iso_data = Table.read(iso_data_path)
-    iso_mask = (iso_data['logAge'] > 9.3) & (iso_data['logAge'] <= 10.0)
-    iso_data = iso_data[iso_mask]
-    iso_colname_dict = {'absg':'Gmag', 'mass':'Mass', 'feh':'MH'}
+    # Use the pre-resampled interpolated isochrone grid (fast, already filtered)
+    from binary_masses import load_interpolated_isochrone_data
+
+    iso_data = load_interpolated_isochrone_data("data/interpolated_mass_data")
+    iso_colname_dict = {"absg": "absg", "mass": "mass", "feh": "MH"}
 
     # Prepare data subset
     data['v'] = 4.74 * np.sqrt((data['pmra2']-data['pmra1'])**2 + 
@@ -614,18 +619,18 @@ def main():
     print(f"   Using {len(data)} systems for testing")
 
     # Set output directory
-    output_dir = 'results/data_diffpoly_kappac0p2'
+    output_dir = 'results/data_nonparam_prior_kappac0p3'
     os.makedirs(output_dir, exist_ok=True)
     print(f"\n2. Results will be saved to: {output_dir}")
 
     # Test non-parametric model with isochrone mass prior
-    # nonparametric_fitter = test_nonparametric_model(data, output_dir, iso_data=iso_data,
-    #                                                 n_absg_bins=10, absg_min=3, absg_max=14.0,
-    #                                                 uncertainty_model='rice',
-    #                                                 feh_column='feh_jcaps_1', n_feh_bins=3, feh_min=-1.5, feh_max=0.6, equal_frequency=False,
-    #                                                 gamma=0, num_warmup=500, num_samples=3000, num_chains=2,
-    #                                                 mass_min=0.05, mass_max=1.5,
-    #                                                 seed=23, fit_outlier_params=True, iso_colname_dict=iso_colname_dict)
+    nonparametric_fitter = test_nonparametric_model(data, output_dir, iso_data=iso_data,
+                                                    n_absg_bins=10, absg_min=3.5, absg_max=14.0,
+                                                    uncertainty_model='rice',
+                                                    feh_column='feh_jcaps_1', n_feh_bins=3, feh_min=-1, feh_max=0.6, equal_frequency=False,
+                                                    gamma=0, num_warmup=500, num_samples=3000, num_chains=2,
+                                                    mass_min=0.05, mass_max=1.5,
+                                                    seed=32, fit_outlier_params=True, outlier_kappa_scale=0.4, iso_colname_dict=iso_colname_dict)
     
 
     # Test broken power law model
@@ -648,12 +653,12 @@ def main():
     #                                           seed=14, fit_outlier_params=True, iso_data=iso_data, iso_colname_dict=iso_colname_dict)
 
     # Test difference-polynomial model (residual relative to isochrone)
-    differencepoly_models = test_differencepoly_model(data, iso_data=iso_data, output_dir=output_dir, order=2, 
-                                                      absg_min=3, absg_max=14.0, iso_absg_bin_width=0.25, uncertainty_model="rice", feh_column="feh_jcaps_1", n_feh_bins=3, feh_min=-1.5, feh_max=0.6,
-                                                      equal_frequency=False, 
-                                                      num_warmup=500, num_samples=3000, num_chains=2,
-                                                      mass_min=0.05, mass_max=1.5,
-                                                      seed=24, fit_outlier_params=True, outlier_kappa_scale=0.2, iso_colname_dict=iso_colname_dict,)
+    # differencepoly_models = test_differencepoly_model(data, iso_data=iso_data, output_dir=output_dir, order=2, 
+    #                                                   absg_min=3.5, absg_max=14.0, iso_absg_bin_width=0.25, uncertainty_model="rice", feh_column="feh_jcaps_1", n_feh_bins=3, feh_min=-1, feh_max=0.6,
+    #                                                   equal_frequency=False, 
+    #                                                   num_warmup=500, num_samples=3000, num_chains=2,
+    #                                                   mass_min=0.05, mass_max=1.5,
+    #                                                   seed=34, fit_outlier_params=True, outlier_kappa_scale=0.35, iso_colname_dict=iso_colname_dict,)
 
     # Final summary
     # print("\n" + "=" * 70)

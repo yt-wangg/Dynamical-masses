@@ -543,15 +543,17 @@ class NonParametricMLR:
                     * int_du
                 )
 
-                # Ensure norm_factor is positive
-                norm_factor = jnp.maximum(norm_factor, 1e-10)
-                good_component = jnp.sum(integrand, axis=1) / norm_factor + self.p_epsilon / (int_umax / int_du)
-                outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / norm_factor
+                norm = jnp.maximum(norm_factor, 1e-10)
+                good_component = jnp.sum(integrand, axis=1) / norm + self.p_epsilon / (int_umax / int_du)
+
+            from jax.scipy.special import erf as jax_erf
+            outlier_gaussian_norm = 1. - 0.5 * (1 + jax_erf(-outlier_u0 / outlier_sigma / jnp.sqrt(2.)))
+            outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / jnp.maximum(outlier_gaussian_norm, 1e-10)
 
             total_prob = f_good * good_component + f_outlier * outlier_component + self.p_epsilon
 
             # Clamp to reasonable range to avoid log(0)
-            total_prob = jnp.clip(total_prob, 1e-100, 1e10)
+            # total_prob = jnp.clip(total_prob, 1e-100, 1e10)
             return total_prob
 
         # Define the NumPyro model with regularization
@@ -619,7 +621,7 @@ class NonParametricMLR:
             # Priors for outlier model parameters (conditional) with informative Beta/TruncatedNormal prior
             if self.fit_outlier_params:
                 # ---- priors for contamination model
-                pi = 0.01          # prior mean outlier rate (1%)
+                pi = self.f_outlier_init          # prior mean outlier rate (1%)
                 kappa = self.outlier_kappa  # prior concentration (shrink strength)
                 alpha = pi * kappa
                 beta = (1 - pi) * kappa
@@ -635,12 +637,7 @@ class NonParametricMLR:
                     "outlier_u0",
                     dist.TruncatedNormal(low=u_tail_min, high=u_tail_max, loc=u_tail_min+5.0, scale=5.0)
                 )
-
-                # Outlier sigma strictly large
-                rho_sigma = numpyro.sample("rho_sigma", dist.Normal(0.0, 1.0))
-                sigma_min_out = 10.0  # set relative to your main-component width in tilde_u
-                outlier_sigma = sigma_min_out * (1.0 + jax.nn.softplus(rho_sigma))
-                numpyro.deterministic("outlier_sigma", outlier_sigma)
+                outlier_sigma = numpyro.sample("outlier_sigma", dist.Normal(15.0, 2.0))
             else:
                 # Use fixed initial values
                 f_outlier = self.f_outlier_init
