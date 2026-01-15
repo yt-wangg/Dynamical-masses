@@ -85,10 +85,11 @@ class NonParametricMLR:
         self.mass_prior_means_log10 = None
         self.mass_prior_sigma_log10 = 0.3
 
-    def func_pu_8(self, tilde_u, A=4.95e-3, B=2.24e-3, C=3.85, u0=36.09):
+    def func_pu_8(self, tilde_u, A=5.434e-3, B=2.544e-3, C=3.100, u0=35.67):
         """
         Version 8 of p(u)
         The probability distribution for the normalized parameter ũ = u/√mtot
+        phase selection considered
 
         Parameters
         ----------
@@ -426,8 +427,11 @@ class NonParametricMLR:
             n_uniform_bins = self.n_bins
 
         # JAX-compatible helper functions
-        def func_pu_8_jax(tilde_u, A=4.95e-3, B=2.24e-3, C=3.85, u0=36.09):
-            """JAX version of p(u) function"""
+        def func_pu_8_jax(tilde_u, A=5.434e-3, B=2.544e-3, C=3.100, u0=35.67):
+            """
+            JAX version of p(u) function
+            phase selection considered
+            """
             return A * tilde_u * jnp.exp(-1 * (
                 B * tilde_u**2 + jnp.exp((tilde_u - u0) / C)
             ))

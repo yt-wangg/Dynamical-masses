@@ -16,7 +16,102 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
+
 from scipy.stats import norm
+from scipy.special import erf, i0e
+
+
+def _predictive_metrics_worker(args):
+    (
+        coeff_samples,
+        f_outlier_samples,
+        outlier_u0_samples,
+        outlier_sigma_samples,
+        u,
+        u_sigma,
+        absg1,
+        absg2,
+        feh,
+        norm_factor,
+        int_ulist,
+        func_ulist,
+        uncertainty_model,
+        int_umax,
+        int_du,
+        p_epsilon,
+        data_chunk,
+        poly_model,
+    ) = args
+
+    def rice_pdf(u_obs, u_true, sigma):
+        sigma = np.maximum(sigma, 1e-10)
+        sigma_sq = sigma**2
+        bessel_arg = u_obs * u_true / sigma_sq
+        log_prefactor = np.log(u_obs + 1e-100) - np.log(sigma_sq)
+        log_exp_term = -(u_obs**2 + u_true**2) / (2 * sigma_sq)
+        log_bessel = np.log(i0e(bessel_arg) + 1e-100) + np.abs(bessel_arg)
+        return np.maximum(np.exp(log_prefactor + log_exp_term + log_bessel), 1e-100)
+
+    def gaussian_pdf(x, mu, sigma):
+        sigma = np.maximum(sigma, 1e-10)
+        coeff = 1.0 / (sigma * np.sqrt(2 * np.pi))
+        exponent = -0.5 * ((x - mu) / sigma) ** 2
+        return coeff * np.exp(exponent)
+
+    sum_probs = np.zeros(u.shape[0], dtype=float)
+    sum_out = np.zeros(u.shape[0], dtype=float)
+
+    for s in range(coeff_samples.shape[0]):
+        theta = coeff_samples[s]
+        f_out = f_outlier_samples[s]
+        u0 = outlier_u0_samples[s]
+        sig = outlier_sigma_samples[s]
+
+        for d0 in range(0, u.shape[0], data_chunk):
+            d1 = min(d0 + data_chunk, u.shape[0])
+            u_c = u[d0:d1]
+            absg1_c = absg1[d0:d1]
+            absg2_c = absg2[d0:d1]
+            feh_c = feh[d0:d1]
+            norm_c = norm_factor[d0:d1]
+            u_sigma_c = None if u_sigma is None else u_sigma[d0:d1]
+
+            m1 = poly_model.mass_from_absg_feh(absg1_c, feh_c, theta)
+            m2 = poly_model.mass_from_absg_feh(absg2_c, feh_c, theta)
+            sqrt_mtot = np.sqrt(np.maximum(m1 + m2, 1e-12))
+            tilde_u = u_c / sqrt_mtot
+
+            if u_sigma_c is None:
+                good = (1.0 / sqrt_mtot) * (
+                    4.95e-3
+                    * tilde_u
+                    * np.exp(-1.0 * (2.24e-3 * tilde_u**2 + np.exp((tilde_u - 36.09) / 3.85)))
+                )
+            else:
+                u_obs_grid = (u_c / sqrt_mtot)[:, None]
+                sigma_grid = (u_sigma_c / sqrt_mtot)[:, None]
+                integration_grid = int_ulist[None, :]
+
+                if uncertainty_model == "rice":
+                    unc = rice_pdf(u_obs_grid, integration_grid, sigma_grid)
+                else:
+                    unc = gaussian_pdf(u_obs_grid, integration_grid, sigma_grid)
+
+                integrand = (1.0 / sqrt_mtot[:, None]) * func_ulist[None, :] * unc * float(int_du)
+                norm_ = np.maximum(norm_c, 1e-10)
+                good = np.sum(integrand, axis=1) / norm_ + p_epsilon / (int_umax / int_du)
+
+            outlier_norm = 1.0 - 0.5 * (1.0 + erf(-u0 / np.maximum(sig, 1e-10) / np.sqrt(2.0)))
+            outlier = gaussian_pdf(tilde_u, u0, sig) / np.maximum(outlier_norm, 1e-10)
+
+            total = (1.0 - f_out) * good + f_out * outlier + p_epsilon
+            total = np.clip(total, 1e-100, 1e10)
+            sum_probs[d0:d1] += total
+            sum_out[d0:d1] += (f_out * outlier) / total
+
+    return sum_probs, sum_out, coeff_samples.shape[0]
 
 from .jax_utils import _configure_jax_gpu_fallback
 from .isochrone_grid import load_interpolated_mass_grid
@@ -158,7 +253,7 @@ class DifferencePolyFehMassAbsgModel(PolyMassAbsgModel):
         absg_max: float,
         mass_min: float,
         pivot: float,
-        deriv_penalty_strength: float, # The penalty enforces d log10(M) / d M_G ≤ 0, \lambda_{M_G} in the paper.
+        deriv_penalty_strength: float, # The penalty enforces d log10(M) / d M_G ≤ 0, i.e., mass should not increase with increasing magnitude.
         feh_monotone_strength: float,
         isochrone_surface_model: IsochroneMassSurfaceModel,
         feh_min: float,
@@ -409,6 +504,8 @@ class DifferencePolyFehMLR(PolynomialMLR):
         feh_coeff_prior_scale=None,
         feh_b_mask=None,
         feh_b0_positive=False,
+        save_predictive_metrics_path=None,
+        save_predictive_metrics_kwargs=None,
         **kwargs,
     ):
         """Run HMC sampling for (a_i, b_i) coefficients and optional outlier params."""
@@ -426,6 +523,12 @@ class DifferencePolyFehMLR(PolynomialMLR):
             raise ValueError("No data set. Use set_data() first.")
         if self.feh_values is None:
             raise ValueError("No metallicity set. Provide feh_values via set_data().")
+
+        devices = jax.devices()
+        gpu_devices = [device for device in devices if device.platform == "gpu"]
+        if gpu_devices:
+            gpu_names = ", ".join(getattr(device, "device_kind", str(device)) for device in gpu_devices)
+            print(f"NumPyro: running on GPU backend ({gpu_names}).")
 
         coeff_prior_scale = coeff_prior_scale or self.coeff_prior_scale
         feh_coeff_prior_scale = feh_coeff_prior_scale or self.feh_coeff_prior_scale
@@ -452,7 +555,8 @@ class DifferencePolyFehMLR(PolynomialMLR):
             u_sigma_values_jax = None
             int_ulist_jax = None
 
-        def func_pu_8_jax(tilde_u, A=4.95e-3, B=2.24e-3, C=3.85, u0=36.09):
+        def func_pu_8_jax(tilde_u, A=5.434e-3, B=2.544e-3, C=3.100, u0=35.67):
+            # phase selection considered
             return A * tilde_u * jnp.exp(-1 * (B * tilde_u**2 + jnp.exp((tilde_u - u0) / C)))
 
         def gaussian_jax(x, mu, sigma):
@@ -630,4 +734,186 @@ class DifferencePolyFehMLR(PolynomialMLR):
 
         self.results = type("obj", (object,), {"samples": self.samples, "logz": None, "logzerr": None})()
         mcmc.print_summary()
+        if save_predictive_metrics_path is not None:
+            self.save_predictive_metrics(
+                save_predictive_metrics_path,
+                **(save_predictive_metrics_kwargs or {}),
+            )
         return mcmc
+
+    def compute_predictive_metrics(
+        self,
+        *,
+        params_samples=None,
+        int_umax=80.0,
+        int_du=0.02,
+        sample_limit=None,
+        rng=None,
+        data_chunk=2048,
+        num_workers=0,
+        sample_chunk=64,
+        show_progress=False,
+        f_outlier_init=None,
+        outlier_u0_init=None,
+        outlier_sigma_init=None,
+        p_epsilon=None,
+    ):
+        """Compute per-point posterior predictive log-likelihood and outlier probability."""
+        if self.u_values is None or self.absg1_values is None or self.absg2_values is None:
+            raise ValueError("No data set. Use set_data() first.")
+        if self.feh_values is None:
+            raise ValueError("No metallicity set. Provide feh_values via set_data().")
+
+        samples = self.samples if params_samples is None else np.asarray(params_samples)
+        if samples is None or samples.size == 0:
+            raise ValueError("No posterior samples available.")
+
+        n_base = self.poly_model.n_base_params
+        n_coeff = 2 * n_base
+        samples = np.atleast_2d(samples)
+        if samples.shape[1] == n_coeff + 3:
+            coeff_samples = samples[:, :n_coeff]
+            f_outlier_samples = samples[:, n_coeff]
+            outlier_u0_samples = samples[:, n_coeff + 1]
+            outlier_sigma_samples = samples[:, n_coeff + 2]
+        elif samples.shape[1] == n_coeff:
+            f_outlier_init = self.f_outlier_init if f_outlier_init is None else f_outlier_init
+            outlier_u0_init = self.outlier_u0_init if outlier_u0_init is None else outlier_u0_init
+            outlier_sigma_init = self.outlier_sigma_init if outlier_sigma_init is None else outlier_sigma_init
+            coeff_samples = samples
+            f_outlier_samples = np.full(samples.shape[0], f_outlier_init, dtype=float)
+            outlier_u0_samples = np.full(samples.shape[0], outlier_u0_init, dtype=float)
+            outlier_sigma_samples = np.full(samples.shape[0], outlier_sigma_init, dtype=float)
+        else:
+            raise ValueError(
+                f"Unexpected sample width: {samples.shape[1]} (expected {n_coeff} or {n_coeff + 3})"
+            )
+
+        if sample_limit is not None and samples.shape[0] > sample_limit:
+            rng = np.random.default_rng(rng)
+            idx = rng.choice(samples.shape[0], size=int(sample_limit), replace=False)
+            coeff_samples = coeff_samples[idx]
+            f_outlier_samples = f_outlier_samples[idx]
+            outlier_u0_samples = outlier_u0_samples[idx]
+            outlier_sigma_samples = outlier_sigma_samples[idx]
+
+        p_epsilon = self.p_epsilon if p_epsilon is None else float(p_epsilon)
+
+        u = np.asarray(self.u_values, dtype=float)
+        u_sigma = None if self.u_sigma_values is None else np.asarray(self.u_sigma_values, dtype=float)
+        absg1 = np.asarray(self.absg1_values, dtype=float)
+        absg2 = np.asarray(self.absg2_values, dtype=float)
+        feh = np.asarray(self.feh_values, dtype=float)
+
+        if u_sigma is None:
+            norm_factor = np.ones_like(u)
+        elif self.uncertainty_model == "gaussian":
+            norm_factor = 1.0 - norm.cdf(0.0, loc=u, scale=u_sigma)
+        else:
+            norm_factor = np.ones_like(u)
+
+        int_ulist = np.arange(0.0, float(int_umax), float(int_du))
+        func_ulist = 4.95e-3 * int_ulist * np.exp(
+            -1.0 * (2.24e-3 * int_ulist**2 + np.exp((int_ulist - 36.09) / 3.85))
+        )
+
+        def rice_pdf(u_obs, u_true, sigma):
+            sigma = np.maximum(sigma, 1e-10)
+            sigma_sq = sigma**2
+            bessel_arg = u_obs * u_true / sigma_sq
+            log_prefactor = np.log(u_obs + 1e-100) - np.log(sigma_sq)
+            log_exp_term = -(u_obs**2 + u_true**2) / (2 * sigma_sq)
+            log_bessel = np.log(i0e(bessel_arg) + 1e-100) + np.abs(bessel_arg)
+            return np.maximum(np.exp(log_prefactor + log_exp_term + log_bessel), 1e-100)
+
+        def gaussian_pdf(x, mu, sigma):
+            sigma = np.maximum(sigma, 1e-10)
+            coeff = 1.0 / (sigma * np.sqrt(2 * np.pi))
+            exponent = -0.5 * ((x - mu) / sigma) ** 2
+            return coeff * np.exp(exponent)
+
+        sum_probs = np.zeros(u.shape[0], dtype=float)
+        sum_out = np.zeros(u.shape[0], dtype=float)
+        n_samples = coeff_samples.shape[0]
+
+        if num_workers and n_samples > sample_chunk:
+            futures = []
+            with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context("spawn")) as executor:
+                for s0 in range(0, n_samples, sample_chunk):
+                    s1 = min(s0 + sample_chunk, n_samples)
+                    futures.append(
+                        executor.submit(
+                            _predictive_metrics_worker,
+                            (
+                                coeff_samples[s0:s1],
+                                f_outlier_samples[s0:s1],
+                                outlier_u0_samples[s0:s1],
+                                outlier_sigma_samples[s0:s1],
+                                u,
+                                u_sigma,
+                                absg1,
+                                absg2,
+                                feh,
+                                norm_factor,
+                                int_ulist,
+                                func_ulist,
+                                self.uncertainty_model,
+                                int_umax,
+                                int_du,
+                                p_epsilon,
+                                data_chunk,
+                                self.poly_model,
+                            ),
+                        )
+                    )
+                for idx, future in enumerate(futures, start=1):
+                    sum_probs_c, sum_out_c, n_part = future.result()
+                    sum_probs += sum_probs_c
+                    sum_out += sum_out_c
+                    if show_progress:
+                        done = min(idx * sample_chunk, n_samples)
+                        print(f"predictive_metrics: {done}/{n_samples} samples processed")
+        else:
+            sum_probs, sum_out, _ = _predictive_metrics_worker(
+                (
+                    coeff_samples,
+                    f_outlier_samples,
+                    outlier_u0_samples,
+                    outlier_sigma_samples,
+                    u,
+                    u_sigma,
+                    absg1,
+                    absg2,
+                    feh,
+                    norm_factor,
+                    int_ulist,
+                    func_ulist,
+                    self.uncertainty_model,
+                    int_umax,
+                    int_du,
+                    p_epsilon,
+                    data_chunk,
+                    self.poly_model,
+                )
+            )
+            if show_progress:
+                print(f"predictive_metrics: {n_samples}/{n_samples} samples processed")
+
+        log_pred = np.log(sum_probs / n_samples)
+        p_out = sum_out / n_samples
+        return log_pred, p_out
+
+    def save_predictive_metrics(
+        self,
+        output_path,
+        *,
+        params_samples=None,
+        **kwargs,
+    ):
+        """Compute and save log_pred/p_out arrays to a .npz file."""
+        log_pred, p_out = self.compute_predictive_metrics(
+            params_samples=params_samples,
+            **kwargs,
+        )
+        np.savez(output_path, log_pred=log_pred, p_out=p_out)
+        return output_path

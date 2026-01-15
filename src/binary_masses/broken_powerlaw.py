@@ -425,9 +425,10 @@ class BrokenPowerLawMLR:
 
         return mass
 
-    def func_pu_8(self, tilde_u, A=4.95e-3, B=2.24e-3, C=3.85, u0=36.09):
+    def func_pu_8(self, tilde_u, A=5.434e-3, B=2.544e-3, C=3.100, u0=35.67):
         """
         The probability distribution for the normalized parameter ũ = u/√mtot
+        # Phase selection considered
         """
         return A * tilde_u * np.exp(-1 * (
             B * tilde_u**2 + np.exp((tilde_u - u0) / C)
@@ -543,7 +544,8 @@ class BrokenPowerLawMLR:
         int_ulist_jax = jnp.arange(0.01, int_umax, int_du)
 
         # Define JAX-compatible functions
-        def func_pu_8_jax(tilde_u, A=4.95e-3, B=2.24e-3, C=3.85, u0=36.09):
+        def func_pu_8_jax(tilde_u, A=5.434e-3, B=2.544e-3, C=3.100, u0=35.67):
+            # Phase selection considered
             return A * tilde_u * jnp.exp(-1 * (
                 B * tilde_u**2 + jnp.exp((tilde_u - u0) / C)
             ))

@@ -128,6 +128,13 @@ def test_differencepoly_feh_model(
         feh_b_mask_run[0] = True
         feh_b0_positive_run = True
 
+    outlier_tag = "outlierfit" if fit_outlier_params else "outlierfixed"
+    suffix = (
+        f"_model-differencepolyfeh_unc-{uncertainty_model}"
+        f"_fehcont_{outlier_tag}_order{order}"
+        f"_feh[{feh_min:+.2f},{feh_max:+.2f}]"
+    )
+
     fitter.run_numpyro(
         num_warmup=num_warmup,
         num_samples=num_samples,
@@ -135,13 +142,15 @@ def test_differencepoly_feh_model(
         seed=seed,
         feh_b_mask=feh_b_mask_run,
         feh_b0_positive=feh_b0_positive_run,
-    )
-
-    outlier_tag = "outlierfit" if fit_outlier_params else "outlierfixed"
-    suffix = (
-        f"_model-differencepolyfeh_unc-{uncertainty_model}"
-        f"_fehcont_{outlier_tag}_order{order}"
-        f"_feh[{feh_min:+.2f},{feh_max:+.2f}]"
+        save_predictive_metrics_path=os.path.join(output_dir, f"predictive_metrics{suffix}.npz"),
+        save_predictive_metrics_kwargs={
+            "sample_limit": 500,
+            "data_chunk": 2048,
+            "int_du": 0.05,
+            "num_workers": 4,
+            "sample_chunk": 32,
+            "show_progress": True,
+        },
     )
 
     print("5. Saving samples and plots...")
@@ -265,7 +274,7 @@ def main():
     print("=" * 70)
 
     print("\n1. Importing data with metallicity...")
-    data_path = "data/jd_msms_single_bic_1kpc_filtered_cmdcut.fits"
+    data_path = "data/jd_single_1kpc_filtered.fits"
     data = Table.read(data_path)
 
     print("2. Computing u and u_sigma...")
@@ -279,7 +288,7 @@ def main():
 
     print(f"   Using {len(data)} systems")
 
-    output_dir = "results/data_expand_feh_diffpoly_kappa1"
+    output_dir = "results/data_diffpoly_feh_pred_kappa0p5"
 
     # Pick the metallicity column that exists in your table.
     # Common choices in this repo: "feh" or "feh_jcaps_1".
