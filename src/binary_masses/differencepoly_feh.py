@@ -1,12 +1,18 @@
 """Continuous-metallicity difference-polynomial MLR model.
 
-This module implements a DifferencePoly-style model that:
-- uses an isochrone baseline m_iso(M_G, [M/H]) from the interpolated grid, and
-- fits a metallicity-dependent polynomial residual in log10 mass.
+This module implements DifferencePoly-style models that:
+- use an isochrone baseline m_iso(M_G, [M/H]) from the interpolated grid, and
+- fit a metallicity-dependent residual in log10 mass.
 
-The core parameterization is:
+Supported parameterizations:
+
+1) Linear-in-metallicity polynomial residual:
 
     log10 m_dyn(M_G, MH) = log10 m_iso(M_G, MH) + Σ_i (a_i + b_i * z) x^i
+
+2) 2D quadratic perturbation (second order only):
+
+    δ = a0 + b1*z + a1*x + b2*z^2 + a2*x^2 + c*z*x
 
 where x is rescaled M_G in [-1, 1] and z is rescaled metallicity in [-1, 1].
 """
@@ -258,11 +264,19 @@ class DifferencePolyFehMassAbsgModel(PolyMassAbsgModel):
         isochrone_surface_model: IsochroneMassSurfaceModel,
         feh_min: float,
         feh_max: float,
+        feh_model: str = "quadratic2d",
+        cross_mode: str = "product",
     ):
         if isochrone_surface_model is None:
             raise ValueError("DifferencePolyFehMassAbsgModel requires `isochrone_surface_model`.")
         if not (np.isfinite(feh_min) and np.isfinite(feh_max) and feh_max > feh_min):
             raise ValueError("Invalid (feh_min, feh_max) for metallicity scaling.")
+        if feh_model not in {"linear", "quadratic2d"}:
+            raise ValueError("feh_model must be 'linear' or 'quadratic2d'.")
+        if cross_mode not in {"product", "free"}:
+            raise ValueError("cross_mode must be 'product' or 'free'.")
+        if feh_model == "quadratic2d" and order != 2:
+            raise ValueError("feh_model='quadratic2d' is second-order only; set order=2.")
 
         super().__init__(
             order=order,
@@ -278,16 +292,34 @@ class DifferencePolyFehMassAbsgModel(PolyMassAbsgModel):
         self.feh_min = float(feh_min)
         self.feh_max = float(feh_max)
 
-        self.n_base_params = self.order + 1
-        self.n_params = 2 * self.n_base_params  # (a_0..a_n, b_0..b_n)
+        self.feh_model = feh_model
+        self.cross_mode = cross_mode
+
+        if self.feh_model == "linear":
+            self.n_base_params = self.order + 1
+            self.n_params = 2 * self.n_base_params  # (a_0..a_n, b_0..b_n)
+            self.param_names = (
+                [f"a_{i}" for i in range(self.n_base_params)]
+                + [f"b_{i}" for i in range(self.n_base_params)]
+            )
+        else:
+            self.n_base_params = 3  # x^0, x^1, x^2 basis for the quadratic model
+            if self.cross_mode == "free":
+                self.n_params = 6
+                self.param_names = ["a0", "b1", "a1", "b2", "a2", "c_xy"]
+            else:
+                self.n_params = 5
+                self.param_names = ["a0", "b1", "a1", "b2", "a2"]
 
     def _split_params(self, params):
         params = np.asarray(params)
         if params.shape[-1] != self.n_params:
             raise ValueError(f"Expected params with last dimension {self.n_params}, got {params.shape}")
-        a = params[..., : self.n_base_params]
-        b = params[..., self.n_base_params :]
-        return a, b
+        if self.feh_model == "linear":
+            a = params[..., : self.n_base_params]
+            b = params[..., self.n_base_params :]
+            return a, b
+        return params
 
     def _feh_to_z_np(self, feh):
         feh = np.asarray(feh, dtype=float)
@@ -302,34 +334,59 @@ class DifferencePolyFehMassAbsgModel(PolyMassAbsgModel):
         return 2.0 * (feh - self.feh_min) / (self.feh_max - self.feh_min) - 1.0
 
     def _log10_delta_np(self, absg, feh, params):
-        a, b = self._split_params(params)
         absg = np.asarray(absg, dtype=float)
         feh = np.asarray(feh, dtype=float)
         absg, feh = np.broadcast_arrays(absg, feh)
 
-        z = self._feh_to_z_np(feh)[..., None]  # (..., 1)
-        coeffs = a + b * z  # (..., n_base_params)
-
         x = self._absg_to_x_np(absg)
-        powers = np.stack([x ** i for i in range(self.order + 1)], axis=-1)  # (..., n_base_params)
-        return np.sum(coeffs * powers, axis=-1)
+        z = self._feh_to_z_np(feh)
+
+        if self.feh_model == "linear":
+            a, b = self._split_params(params)
+            coeffs = a + b * z[..., None]  # (..., n_base_params)
+            powers = np.stack([x ** i for i in range(self.order + 1)], axis=-1)  # (..., n_base_params)
+            return np.sum(coeffs * powers, axis=-1)
+
+        params = self._split_params(params)
+        if self.cross_mode == "free":
+            a0, b1, a1, b2, a2, c_xy = np.split(params, 6, axis=-1)
+        else:
+            a0, b1, a1, b2, a2 = np.split(params, 5, axis=-1)
+            c_xy = a2 * b2
+
+        a0 = np.squeeze(a0, axis=-1)
+        b1 = np.squeeze(b1, axis=-1)
+        a1 = np.squeeze(a1, axis=-1)
+        b2 = np.squeeze(b2, axis=-1)
+        a2 = np.squeeze(a2, axis=-1)
+        c_xy = np.squeeze(c_xy, axis=-1)
+
+        return a0 + b1 * z + a1 * x + b2 * (z ** 2) + a2 * (x ** 2) + c_xy * z * x
 
     def _log10_delta_jax(self, absg, feh, params):
         import jax.numpy as jnp
-
-        a = params[: self.n_base_params]
-        b = params[self.n_base_params :]
 
         absg = jnp.asarray(absg)
         feh = jnp.asarray(feh)
         absg, feh = jnp.broadcast_arrays(absg, feh)
 
-        z = self._feh_to_z_jax(feh)[..., None]
-        coeffs = a + b * z
-
         x = self._absg_to_x_jax(absg)
-        powers = jnp.stack([jnp.power(x, i) for i in range(self.order + 1)], axis=-1)
-        return jnp.sum(coeffs * powers, axis=-1)
+        z = self._feh_to_z_jax(feh)
+
+        if self.feh_model == "linear":
+            a = params[: self.n_base_params]
+            b = params[self.n_base_params :]
+            coeffs = a + b * z[..., None]
+            powers = jnp.stack([jnp.power(x, i) for i in range(self.order + 1)], axis=-1)
+            return jnp.sum(coeffs * powers, axis=-1)
+
+        if self.cross_mode == "free":
+            a0, b1, a1, b2, a2, c_xy = jnp.split(params, 6)
+        else:
+            a0, b1, a1, b2, a2 = jnp.split(params, 5)
+            c_xy = a2 * b2
+
+        return a0 + b1 * z + a1 * x + b2 * (z ** 2) + a2 * (x ** 2) + c_xy * z * x
 
     def mass_from_absg_feh(self, absg, feh, params):
         absg = np.asarray(absg, dtype=float)
@@ -389,13 +446,15 @@ class DifferencePolyFehMLR(PolynomialMLR):
     def __init__(
         self,
         *,
-        order: int = 3,
+        order: int = 2,
         isochrone_surface_model: IsochroneMassSurfaceModel,
         feh_min: float,
         feh_max: float,
         feh_coeff_prior_scale: float = 1.0, # deriv_penalty_strength=10.0: strength of the penalty. Larger values enforce monotonicity more strongly (in log‑probability units).
         feh_monotone_strength: float = 0.0,
         monotone_n_feh: int = 5, # monotone_n_feh=5: number of metallicity grid points used when applying the penalty (i.e., how many [Fe/H] slices are checked). More points = more robust monotonicity across metallicity.
+        feh_model: str = "quadratic2d",
+        cross_mode: str = "product",
         **kwargs,
     ):
         super().__init__(order=order, **kwargs)
@@ -420,15 +479,14 @@ class DifferencePolyFehMLR(PolynomialMLR):
             isochrone_surface_model=isochrone_surface_model,
             feh_min=self.feh_min,
             feh_max=self.feh_max,
+            feh_model=feh_model,
+            cross_mode=cross_mode,
         )
 
         self.feh_values = None
         self.feh_plot = None  # used by mass_from_absg when feh is not provided
 
-        self.param_names = (
-            [f"a_{i}" for i in range(self.poly_model.n_base_params)]
-            + [f"b_{i}" for i in range(self.poly_model.n_base_params)]
-        )
+        self.param_names = list(self.poly_model.param_names)
 
     def set_data(
         self,
@@ -504,6 +562,7 @@ class DifferencePolyFehMLR(PolynomialMLR):
         feh_coeff_prior_scale=None,
         feh_b_mask=None,
         feh_b0_positive=False,
+        quad_mask=None,
         save_predictive_metrics_path=None,
         save_predictive_metrics_kwargs=None,
         **kwargs,
@@ -534,13 +593,27 @@ class DifferencePolyFehMLR(PolynomialMLR):
         feh_coeff_prior_scale = feh_coeff_prior_scale or self.feh_coeff_prior_scale
 
         n_base = self.poly_model.n_base_params
-        if feh_b_mask is None:
-            feh_b_mask_list = [True] * n_base
+        n_coeff = self.poly_model.n_params
+
+        if self.poly_model.feh_model == "linear":
+            if feh_b_mask is None:
+                feh_b_mask_list = [True] * n_base
+            else:
+                feh_b_mask = np.asarray(feh_b_mask, dtype=bool).reshape(-1)
+                if feh_b_mask.shape[0] != n_base:
+                    raise ValueError(f"feh_b_mask must have length {n_base}.")
+                feh_b_mask_list = [bool(x) for x in feh_b_mask]
         else:
-            feh_b_mask = np.asarray(feh_b_mask, dtype=bool).reshape(-1)
-            if feh_b_mask.shape[0] != n_base:
-                raise ValueError(f"feh_b_mask must have length {n_base}.")
-            feh_b_mask_list = [bool(x) for x in feh_b_mask]
+            if quad_mask is None:
+                quad_mask_list = [True] * n_coeff
+            else:
+                if isinstance(quad_mask, dict):
+                    quad_mask_list = [bool(quad_mask.get(name, True)) for name in self.param_names]
+                else:
+                    quad_mask = np.asarray(quad_mask, dtype=bool).reshape(-1)
+                    if quad_mask.shape[0] != n_coeff:
+                        raise ValueError(f"quad_mask must have length {n_coeff}.")
+                    quad_mask_list = [bool(x) for x in quad_mask]
 
         u_values_jax = jnp.array(self.u_values)
         absg1_values_jax = jnp.array(self.absg1_values)
@@ -637,18 +710,36 @@ class DifferencePolyFehMLR(PolynomialMLR):
             return jnp.clip(total_prob, 1e-100, 1e10)
 
         def model(u_values, u_sigma_values, absg1_values, absg2_values, feh_values, norm_factor):
-            a = numpyro.sample("a", dist.Normal(0.0, float(coeff_prior_scale)).expand([n_base]))
-            b_list = []
-            for i in range(n_base):
-                if not feh_b_mask_list[i]:
-                    b_i = jnp.array(0.0)
-                elif i == 0 and feh_b0_positive:
-                    b_i = numpyro.sample(f"b_{i}", dist.HalfNormal(float(feh_coeff_prior_scale)))
+            if self.poly_model.feh_model == "linear":
+                a = numpyro.sample("a", dist.Normal(0.0, float(coeff_prior_scale)).expand([n_base]))
+                b_list = []
+                for i in range(n_base):
+                    if not feh_b_mask_list[i]:
+                        b_i = jnp.array(0.0)
+                    elif i == 0 and feh_b0_positive:
+                        b_i = numpyro.sample(f"b_{i}", dist.HalfNormal(float(feh_coeff_prior_scale)))
+                    else:
+                        b_i = numpyro.sample(f"b_{i}", dist.Normal(0.0, float(feh_coeff_prior_scale)))
+                    b_list.append(b_i)
+                b = jnp.stack(b_list)
+                coeffs = jnp.concatenate([a, b])
+            else:
+                def sample_or_zero(name, scale, mask):
+                    if not mask:
+                        return jnp.array(0.0)
+                    return numpyro.sample(name, dist.Normal(0.0, float(scale)))
+
+                a0 = sample_or_zero("a0", coeff_prior_scale, quad_mask_list[0])
+                b1 = sample_or_zero("b1", feh_coeff_prior_scale, quad_mask_list[1])
+                a1 = sample_or_zero("a1", coeff_prior_scale, quad_mask_list[2])
+                b2 = sample_or_zero("b2", feh_coeff_prior_scale, quad_mask_list[3])
+                a2 = sample_or_zero("a2", coeff_prior_scale, quad_mask_list[4])
+
+                if self.poly_model.cross_mode == "free":
+                    c_xy = sample_or_zero("c_xy", feh_coeff_prior_scale, quad_mask_list[5])
+                    coeffs = jnp.stack([a0, b1, a1, b2, a2, c_xy])
                 else:
-                    b_i = numpyro.sample(f"b_{i}", dist.Normal(0.0, float(feh_coeff_prior_scale)))
-                b_list.append(b_i)
-            b = jnp.stack(b_list)
-            coeffs = jnp.concatenate([a, b])
+                    coeffs = jnp.stack([a0, b1, a1, b2, a2])
             numpyro.deterministic("coeffs", coeffs)
 
             if self.poly_model.deriv_penalty_strength > 0:
@@ -768,8 +859,7 @@ class DifferencePolyFehMLR(PolynomialMLR):
         if samples is None or samples.size == 0:
             raise ValueError("No posterior samples available.")
 
-        n_base = self.poly_model.n_base_params
-        n_coeff = 2 * n_base
+        n_coeff = self.poly_model.n_params
         samples = np.atleast_2d(samples)
         if samples.shape[1] == n_coeff + 3:
             coeff_samples = samples[:, :n_coeff]

@@ -211,7 +211,8 @@ class PolynomialMLR:
                  uncertainty_model='rice',
                  f_outlier=0, outlier_u0=30, outlier_sigma=15, outlier_kappa=None, outlier_kappa_scale=0.05,
                  fit_outlier_params=False, deriv_penalty_strength=10.0,
-                 coeff_prior_scale=5.0):
+                 coeff_prior_scale=5.0,
+                 param_truths: Optional[list] = None):
         if uncertainty_model not in ['rice', 'gaussian']:
             raise ValueError("uncertainty_model must be 'rice' or 'gaussian'")
 
@@ -252,6 +253,7 @@ class PolynomialMLR:
 
         self.param_names = [f'c_{i}' for i in range(self.poly_model.n_params)]
         self.coeff_prior_scale = coeff_prior_scale
+        self.param_truths = param_truths
 
     def func_pu_8(self, tilde_u, A=5.434e-3, B=2.544e-3, C=3.100, u0=35.67):
         """
@@ -560,10 +562,12 @@ class PolynomialMLR:
                 print(f"Dropping constant parameters from corner plot: {', '.join(dropped)}")
             samples = samples[:, keep_mask]
             labels = [labels[i] for i in range(len(labels)) if keep_mask[i]]
+            if self.param_truths is not None:
+                param_truths = [self.param_truths[i] for i in range(len(self.param_truths)) if keep_mask[i]]
 
         try:
             import corner
-            fig = corner.corner(samples, labels=labels, show_titles=True)
+            fig = corner.corner(samples, labels=labels, show_titles=True, truths=param_truths, truth_color='salmon')
             plt.tight_layout()
             outlier_tag = 'outlierfit' if self.fit_outlier_params else 'outlierfixed'
             metadata_suffix = output_suffix if output_suffix else f'_model-polynomial_unc-{self.uncertainty_model}_outlier-{outlier_tag}'

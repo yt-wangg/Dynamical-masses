@@ -16,6 +16,7 @@ Author: Yutong Wang
 
 import os
 import sys
+import jax
 
 import numpy as np
 from astropy.table import Table
@@ -52,9 +53,10 @@ def test_differencepoly_feh_model(
     outlier_kappa=None,
     outlier_kappa_scale=0.05,
     fit_outlier_params=False,
+    param_truths=None,
     num_warmup=800,
     num_samples=2000,
-    num_chains=2,
+    num_chains=1,
     seed=42,
     iso_data_dir="data/interpolated_mass_data",
     feh_plot_values=None,
@@ -107,6 +109,7 @@ def test_differencepoly_feh_model(
         coeff_prior_scale=coeff_prior_scale,
         feh_coeff_prior_scale=feh_coeff_prior_scale,
         monotone_n_feh=monotone_n_feh,
+        param_truths=param_truths,
     )
 
     print("3. Setting data...")
@@ -146,8 +149,8 @@ def test_differencepoly_feh_model(
         save_predictive_metrics_kwargs={
             "sample_limit": 500,
             "data_chunk": 2048,
-            "int_du": 0.05,
-            "num_workers": 4,
+            "int_du": 0.02,
+            "num_workers": 2,
             "sample_chunk": 32,
             "show_progress": True,
         },
@@ -316,9 +319,10 @@ def main():
         outlier_kappa=None,
         outlier_kappa_scale=1,
         fit_outlier_params=True,
+        param_truths=None,
         num_warmup=500,
         num_samples=2500,
-        num_chains=2,
+        num_chains=1,
         seed=11,
         iso_data_dir="data/interpolated_mass_data",
         feh_plot_values=[-1.0, -0.5, 0.0, 0.3, 0.6],
