@@ -548,6 +548,7 @@ class PolynomialMLR:
         # Drop parameters with zero dynamic range to avoid corner errors.
         samples = self.samples
         keep_mask = np.ones(samples.shape[1], dtype=bool)
+        param_truths = self.param_truths if self.param_truths is not None else None
         for idx in range(samples.shape[1]):
             col = samples[:, idx]
             if not np.isfinite(col).any():
@@ -562,8 +563,8 @@ class PolynomialMLR:
                 print(f"Dropping constant parameters from corner plot: {', '.join(dropped)}")
             samples = samples[:, keep_mask]
             labels = [labels[i] for i in range(len(labels)) if keep_mask[i]]
-            if self.param_truths is not None:
-                param_truths = [self.param_truths[i] for i in range(len(self.param_truths)) if keep_mask[i]]
+            if param_truths is not None:
+                param_truths = [param_truths[i] for i in range(len(param_truths)) if keep_mask[i]]
 
         try:
             import corner

@@ -5,9 +5,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-from .nonparametric import NonParametricMLR
+from ..nonparametric import NonParametricMLR
 from .broken_powerlaw import BrokenPowerLawMLR
-from .polynomial import PolynomialMLR
+from ..polynomial import PolynomialMLR
 
 class MultiMetallicityFitter:
     """
