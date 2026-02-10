@@ -208,13 +208,13 @@ class PolynomialMLR:
 
     def __init__(self, order=3, mass_min=0.05, mass_max=2.0,
                  absg_min=-1.0, absg_max=15.0, pivot=None,
-                 uncertainty_model='rice',
+                 uncertainty_model=None,
                  f_outlier=0, outlier_u0=30, outlier_sigma=15, outlier_kappa=None, outlier_kappa_scale=0.05,
                  fit_outlier_params=False, deriv_penalty_strength=10.0,
                  coeff_prior_scale=5.0,
                  param_truths: Optional[list] = None):
-        if uncertainty_model not in ['rice', 'gaussian']:
-            raise ValueError("uncertainty_model must be 'rice' or 'gaussian'")
+        if uncertainty_model not in ['rice', 'gaussian', None]:
+            raise ValueError("uncertainty_model must be 'rice', 'gaussian', or None")
 
         self.uncertainty_model = uncertainty_model
         self.mass_min = mass_min

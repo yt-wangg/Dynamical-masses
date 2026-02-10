@@ -10,9 +10,41 @@ Supported parameterizations:
 
     log10 m_dyn(M_G, MH) = log10 m_iso(M_G, MH) + Σ_i (a_i + b_i * z) x^i
 
-2) 2D quadratic perturbation (second order only):
+2) 2D quadratic perturbation (second order, but allow x-order 0/1/2):
 
     δ = a0 + b1*z + a1*x + b2*z^2 + a2*x^2 + c*z*x
+
+    where the cross term can be free, tied to a2*b2, or omitted.
+
+Notes on model choices
+----------------------
+Quadratic2D parameters (x = rescaled M_G, z = rescaled [Fe/H]):
+    a0: constant offset in log10 mass.
+    a1: linear-in-x trend (magnitude dependence).
+    a2: quadratic-in-x curvature.
+    b1: linear-in-z trend (metallicity dependence).
+    b2: quadratic-in-z curvature.
+    c_xy: cross term z * x (coupled magnitude–metallicity effect).
+
+Quadratic2D order:
+    order=0 -> fit a0 only
+    order=1 -> fit a0 + a1 + b1
+    order=2 -> fit a0 + a1 + a2 + b1 + b2
+    (use quad_mode="full" to include c_xy or force all terms regardless of order)
+
+Masking precedence for feh_model="quadratic2d":
+    quad_mask (if provided) overrides order-based defaults.
+    quad_mode (if provided) overrides order-based defaults.
+    If neither is provided, order sets the default mask.
+
+Cross-term choice (cross_mode):
+    "free"    -> c_xy is an independent parameter
+    "product" -> c_xy = a2 * b2 (coupled, no extra parameter)
+    "none"    -> c_xy = 0 (no cross term)
+
+Outlier handling (fit_outlier_params):
+    False -> f_outlier, outlier_u0, outlier_sigma fixed to initial values
+    True  -> these are sampled along with polynomial coefficients
 
 where x is rescaled M_G in [-1, 1] and z is rescaled metallicity in [-1, 1].
 """
@@ -74,6 +106,11 @@ def _predictive_metrics_worker(args):
         f_out = f_outlier_samples[s]
         u0 = outlier_u0_samples[s]
         sig = outlier_sigma_samples[s]
+        outlier_norm = 1.0 - 0.5 * (1.0 + erf(-u0 / np.maximum(sig, 1e-10) / np.sqrt(2.0)))
+        outlier_norm = np.maximum(outlier_norm, 1e-10)
+        outlier_ulist = None
+        if u_sigma is not None:
+            outlier_ulist = gaussian_pdf(int_ulist, u0, sig) / outlier_norm
 
         for d0 in range(0, u.shape[0], data_chunk):
             d1 = min(d0 + data_chunk, u.shape[0])
@@ -95,6 +132,7 @@ def _predictive_metrics_worker(args):
                     * tilde_u
                     * np.exp(-1.0 * (2.24e-3 * tilde_u**2 + np.exp((tilde_u - 36.09) / 3.85)))
                 )
+                outlier = gaussian_pdf(tilde_u, u0, sig) / outlier_norm
             else:
                 u_obs_grid = (u_c / sqrt_mtot)[:, None]
                 sigma_grid = (u_sigma_c / sqrt_mtot)[:, None]
@@ -106,11 +144,10 @@ def _predictive_metrics_worker(args):
                     unc = gaussian_pdf(u_obs_grid, integration_grid, sigma_grid)
 
                 integrand = (1.0 / sqrt_mtot[:, None]) * func_ulist[None, :] * unc * float(int_du)
+                outlier_integrand = outlier_ulist[None, :] * unc * float(int_du)
                 norm_ = np.maximum(norm_c, 1e-10)
                 good = np.sum(integrand, axis=1) / norm_ + p_epsilon / (int_umax / int_du)
-
-            outlier_norm = 1.0 - 0.5 * (1.0 + erf(-u0 / np.maximum(sig, 1e-10) / np.sqrt(2.0)))
-            outlier = gaussian_pdf(tilde_u, u0, sig) / np.maximum(outlier_norm, 1e-10)
+                outlier = np.sum(outlier_integrand, axis=1) / norm_
 
             total = (1.0 - f_out) * good + f_out * outlier + p_epsilon
             total = np.clip(total, 1e-100, 1e10)
@@ -273,10 +310,10 @@ class DifferencePolyFehMassAbsgModel(PolyMassAbsgModel):
             raise ValueError("Invalid (feh_min, feh_max) for metallicity scaling.")
         if feh_model not in {"linear", "quadratic2d"}:
             raise ValueError("feh_model must be 'linear' or 'quadratic2d'.")
-        if cross_mode not in {"product", "free"}:
-            raise ValueError("cross_mode must be 'product' or 'free'.")
-        if feh_model == "quadratic2d" and order != 2:
-            raise ValueError("feh_model='quadratic2d' is second-order only; set order=2.")
+        if cross_mode not in {"product", "free", "none"}:
+            raise ValueError("cross_mode must be 'product', 'free', or 'none'.")
+        if feh_model == "quadratic2d" and order not in {0, 1, 2}:
+            raise ValueError("feh_model='quadratic2d' supports order in {0, 1, 2}.")
 
         super().__init__(
             order=order,
@@ -352,7 +389,10 @@ class DifferencePolyFehMassAbsgModel(PolyMassAbsgModel):
             a0, b1, a1, b2, a2, c_xy = np.split(params, 6, axis=-1)
         else:
             a0, b1, a1, b2, a2 = np.split(params, 5, axis=-1)
-            c_xy = a2 * b2
+            if self.cross_mode == "product":
+                c_xy = a2 * b2
+            else:
+                c_xy = 0.0
 
         a0 = np.squeeze(a0, axis=-1)
         b1 = np.squeeze(b1, axis=-1)
@@ -384,7 +424,10 @@ class DifferencePolyFehMassAbsgModel(PolyMassAbsgModel):
             a0, b1, a1, b2, a2, c_xy = jnp.split(params, 6)
         else:
             a0, b1, a1, b2, a2 = jnp.split(params, 5)
-            c_xy = a2 * b2
+            if self.cross_mode == "product":
+                c_xy = a2 * b2
+            else:
+                c_xy = 0.0
 
         return a0 + b1 * z + a1 * x + b2 * (z ** 2) + a2 * (x ** 2) + c_xy * z * x
 
@@ -409,7 +452,22 @@ class DifferencePolyFehMassAbsgModel(PolyMassAbsgModel):
         return mass
 
     def derivative_penalty_jax(self, params, *, n_grid: int = 64, n_feh: int = 5):
-        """Soft penalty enforcing d log10(M) / d M_G <= 0 for a small MH grid."""
+        """Soft penalty enforcing d log10(M) / d M_G <= 0 for a small MH grid.
+
+        feh_monotone_strength controls a *soft* monotonicity penalty in [Fe/H]:
+        it penalizes negative d log10(M) / d [Fe/H]. Larger values enforce
+        non-decreasing log10(M) with increasing [Fe/H] more strongly.
+
+        Rule-of-thumb scale (log-prob units):
+        - 0: off
+        - 0.1–1: weak
+        - 1–10: medium
+        - 10–50: strong
+        Approximate calibration: to make a mean negative slope of magnitude
+        s (dex per dex) cost ~P log-prob units, set
+            feh_monotone_strength ≈ P / s^2.
+        Example: s=0.1 and P=1 -> strength ~100.
+        """
         import jax.numpy as jnp
 
         if self.deriv_penalty_strength <= 0 and self.feh_monotone_strength <= 0:
@@ -448,25 +506,54 @@ class DifferencePolyFehMLR(PolynomialMLR):
         *,
         order: int = 2,
         isochrone_surface_model: IsochroneMassSurfaceModel,
-        feh_min: float,
-        feh_max: float,
+        feh_min: Optional[float],
+        feh_max: Optional[float],
         feh_coeff_prior_scale: float = 1.0, # deriv_penalty_strength=10.0: strength of the penalty. Larger values enforce monotonicity more strongly (in log‑probability units).
-        feh_monotone_strength: float = 0.0,
+        feh_monotone_strength: float = 0.0,  # 0=off, 0.1–1 weak, 1–10 medium, 10–50 strong (log-prob units)
         monotone_n_feh: int = 5, # monotone_n_feh=5: number of metallicity grid points used when applying the penalty (i.e., how many [Fe/H] slices are checked). More points = more robust monotonicity across metallicity.
         feh_model: str = "quadratic2d",
         cross_mode: str = "product",
         **kwargs,
     ):
-        super().__init__(order=order, **kwargs)
+        absg_min_given = "absg_min" in kwargs
+        absg_max_given = "absg_max" in kwargs
+        absg_min_input = kwargs.pop("absg_min", None) if absg_min_given else None
+        absg_max_input = kwargs.pop("absg_max", None) if absg_max_given else None
 
-        self.feh_min = float(feh_min)
-        self.feh_max = float(feh_max)
+        self._auto_absg_min = absg_min_given and absg_min_input is None
+        self._auto_absg_max = absg_max_given and absg_max_input is None
+
+        super_kwargs = dict(kwargs)
+        if absg_min_input is not None:
+            super_kwargs["absg_min"] = absg_min_input
+        if absg_max_input is not None:
+            super_kwargs["absg_max"] = absg_max_input
+
+        super().__init__(order=order, **super_kwargs)
+
+        self.feh_min = None if feh_min is None else float(feh_min)
+        self.feh_max = None if feh_max is None else float(feh_max)
+        self._auto_feh_min = feh_min is None
+        self._auto_feh_max = feh_max is None
         self.feh_coeff_prior_scale = float(feh_coeff_prior_scale)
         self.feh_monotone_strength = float(feh_monotone_strength)
         self.monotone_n_feh = int(monotone_n_feh)
 
         if isochrone_surface_model is None:
             raise ValueError("DifferencePolyFehMLR requires `isochrone_surface_model`.")
+
+        self.iso_surface = isochrone_surface_model
+        self.feh_model = feh_model
+        self.cross_mode = cross_mode
+
+        feh_min_init = self.feh_min
+        feh_max_init = self.feh_max
+        if feh_min_init is None and feh_max_init is None:
+            feh_min_init, feh_max_init = -1.0, 0.5
+        elif feh_min_init is None:
+            feh_min_init = feh_max_init - 1.0
+        elif feh_max_init is None:
+            feh_max_init = feh_min_init + 1.0
 
         self.poly_model = DifferencePolyFehMassAbsgModel(
             order=order,
@@ -476,16 +563,34 @@ class DifferencePolyFehMLR(PolynomialMLR):
             pivot=self.poly_model.pivot,
             deriv_penalty_strength=self.poly_model.deriv_penalty_strength,
             feh_monotone_strength=self.feh_monotone_strength,
-            isochrone_surface_model=isochrone_surface_model,
-            feh_min=self.feh_min,
-            feh_max=self.feh_max,
-            feh_model=feh_model,
-            cross_mode=cross_mode,
+            isochrone_surface_model=self.iso_surface,
+            feh_min=feh_min_init,
+            feh_max=feh_max_init,
+            feh_model=self.feh_model,
+            cross_mode=self.cross_mode,
         )
 
         self.feh_values = None
         self.feh_plot = None  # used by mass_from_absg when feh is not provided
 
+        self.param_names = list(self.poly_model.param_names)
+
+    def _refresh_poly_model(self):
+        """Rebuild the polynomial model after updating absg/feh ranges."""
+        self.poly_model = DifferencePolyFehMassAbsgModel(
+            order=self.poly_model.order,
+            absg_min=self.absg_min,
+            absg_max=self.absg_max,
+            mass_min=self.mass_min,
+            pivot=self.poly_model.pivot,
+            deriv_penalty_strength=self.poly_model.deriv_penalty_strength,
+            feh_monotone_strength=self.feh_monotone_strength,
+            isochrone_surface_model=self.iso_surface,
+            feh_min=self.feh_min,
+            feh_max=self.feh_max,
+            feh_model=self.feh_model,
+            cross_mode=self.cross_mode,
+        )
         self.param_names = list(self.poly_model.param_names)
 
     def set_data(
@@ -505,6 +610,44 @@ class DifferencePolyFehMLR(PolynomialMLR):
         self.absg1_values = np.array(absg1_values)
         self.absg2_values = np.array(absg2_values)
         self.feh_values = np.array(feh_values, dtype=float)
+
+        # Auto-derive normalization ranges from data (robust percentiles).
+        need_refresh = False
+        if self._auto_absg_min or self._auto_absg_max:
+            absg_all = np.concatenate([self.absg1_values, self.absg2_values])
+            absg_all = absg_all[np.isfinite(absg_all)]
+            if absg_all.size == 0:
+                raise ValueError("No finite absg values available to infer absg_min/absg_max.")
+            p_lo, p_hi = np.nanpercentile(absg_all, [1.0, 99.0])
+            if self._auto_absg_min:
+                self.absg_min = float(p_lo)
+                need_refresh = True
+            if self._auto_absg_max:
+                self.absg_max = float(p_hi)
+                need_refresh = True
+            if self.absg_max <= self.absg_min:
+                raise ValueError(
+                    f"Invalid absg range inferred from data: [{self.absg_min}, {self.absg_max}]."
+                )
+
+        if self._auto_feh_min or self._auto_feh_max:
+            feh_all = self.feh_values[np.isfinite(self.feh_values)]
+            if feh_all.size == 0:
+                raise ValueError("No finite feh values available to infer feh_min/feh_max.")
+            p_lo, p_hi = np.nanpercentile(feh_all, [1.0, 99.0])
+            if self._auto_feh_min:
+                self.feh_min = float(p_lo)
+                need_refresh = True
+            if self._auto_feh_max:
+                self.feh_max = float(p_hi)
+                need_refresh = True
+            if self.feh_max <= self.feh_min:
+                raise ValueError(
+                    f"Invalid feh range inferred from data: [{self.feh_min}, {self.feh_max}]."
+                )
+
+        if need_refresh:
+            self._refresh_poly_model()
 
         if self.feh_values.shape[0] != self.u_values.shape[0]:
             raise ValueError("feh_values must have the same length as u_values.")
@@ -562,7 +705,9 @@ class DifferencePolyFehMLR(PolynomialMLR):
         feh_coeff_prior_scale=None,
         feh_b_mask=None,
         feh_b0_positive=False,
+        quad_mode=None,
         quad_mask=None,
+        fit_outlier_params=None,
         save_predictive_metrics_path=None,
         save_predictive_metrics_kwargs=None,
         **kwargs,
@@ -592,10 +737,18 @@ class DifferencePolyFehMLR(PolynomialMLR):
         coeff_prior_scale = coeff_prior_scale or self.coeff_prior_scale
         feh_coeff_prior_scale = feh_coeff_prior_scale or self.feh_coeff_prior_scale
 
+        if fit_outlier_params is not None:
+            self.fit_outlier_params = bool(fit_outlier_params)
+
+        # Reset parameter names to the polynomial-only list before applying masks.
+        self.param_names = list(self.poly_model.param_names)
+
         n_base = self.poly_model.n_base_params
         n_coeff = self.poly_model.n_params
 
         if self.poly_model.feh_model == "linear":
+            if quad_mode is not None or quad_mask is not None:
+                raise ValueError("quad_mode/quad_mask are only valid for feh_model='quadratic2d'.")
             if feh_b_mask is None:
                 feh_b_mask_list = [True] * n_base
             else:
@@ -604,8 +757,27 @@ class DifferencePolyFehMLR(PolynomialMLR):
                     raise ValueError(f"feh_b_mask must have length {n_base}.")
                 feh_b_mask_list = [bool(x) for x in feh_b_mask]
         else:
-            if quad_mask is None:
-                quad_mask_list = [True] * n_coeff
+            if quad_mode is not None and quad_mask is not None:
+                raise ValueError("Provide only one of quad_mode or quad_mask.")
+
+            if quad_mode is not None:
+                mode = str(quad_mode).strip().lower()
+                if mode in {"core", "a0a1b1", "linear"}:
+                    quad_mask_list = [name in {"a0", "a1", "b1"} for name in self.param_names]
+                elif mode in {"full", "all"}:
+                    quad_mask_list = [True] * n_coeff
+                else:
+                    raise ValueError("quad_mode must be 'core'/'a0a1b1' or 'full'/'all'.")
+            elif quad_mask is None:
+                # Default: use `order` to include a-terms and matching b-terms.
+                order = int(self.poly_model.order)
+                if order <= 0:
+                    keep = {"a0"}
+                elif order == 1:
+                    keep = {"a0", "a1", "b1"}
+                else:
+                    keep = {"a0", "a1", "a2", "b1", "b2"}
+                quad_mask_list = [name in keep for name in self.param_names]
             else:
                 if isinstance(quad_mask, dict):
                     quad_mask_list = [bool(quad_mask.get(name, True)) for name in self.param_names]
@@ -671,55 +843,72 @@ class DifferencePolyFehMLR(PolynomialMLR):
                 outlier_sigma = self.outlier_sigma_init
             f_good = 1.0 - f_outlier
 
+            # valid = (u > 0) & (sqrt_mtot > 0)
+            # u = jnp.where(valid, u, 1e-10)
+            #  sqrt_mtot = jnp.where(valid, sqrt_mtot, 1e-10)
+
             valid = (u > 0) & (sqrt_mtot > 0)
             u = jnp.where(valid, u, 1e-10)
             sqrt_mtot = jnp.where(valid, sqrt_mtot, 1e-10)
-            tilde_u = u / sqrt_mtot
+
+            tilde_u_obs = u / sqrt_mtot
+
+            from jax.scipy.special import erf as jax_erf
+            outlier_gaussian_norm = 1.0 - 0.5 * (1.0 + jax_erf(-outlier_u0 / outlier_sigma / jnp.sqrt(2.0)))
+            outlier_gaussian_norm = jnp.maximum(outlier_gaussian_norm, 1e-10)
 
             if u_sigma is None:
-                good_component = (1.0 / sqrt_mtot) * func_pu_8_jax(tilde_u)
+                good_component = (1.0 / sqrt_mtot) * func_pu_8_jax(tilde_u_obs)
+                outlier_component = outlier_gaussian_jax(tilde_u_obs, outlier_u0, outlier_sigma) / outlier_gaussian_norm
             else:
                 u_sigma = jnp.maximum(u_sigma, 1e-10)
 
-                u_obs_grid = (u / sqrt_mtot)[:, None]
-                sigma_grid = (u_sigma / sqrt_mtot)[:, None]
-                integration_grid = int_ulist_jax[None, :]
+                tilde_u_obs_grid = (u / sqrt_mtot)[:, None]
+                tilde_u_sigma_grid = (u_sigma / sqrt_mtot)[:, None]
+                tilde_u_grid = int_ulist_jax[None, :]
 
                 if self.uncertainty_model == "rice":
-                    uncertainty_dist = rice_distribution_jax(u_obs_grid, integration_grid, sigma_grid)
+                    uncertainty_dist = rice_distribution_jax(tilde_u_obs_grid, tilde_u_grid, tilde_u_sigma_grid)
                 else:
-                    uncertainty_dist = gaussian_jax(u_obs_grid, integration_grid, sigma_grid)
+                    uncertainty_dist = gaussian_jax(tilde_u_obs_grid, tilde_u_grid, tilde_u_sigma_grid)
 
                 integrand = (
                     (1.0 / sqrt_mtot[:, None])
-                    * func_pu_8_jax(int_ulist_jax)[None, :]
+                    * func_pu_8_jax(tilde_u_grid)
                     * uncertainty_dist
                     * float(int_du)
                 )
-                norm_ = jnp.maximum(norm_factor, 1e-10)
-                good_component = jnp.sum(integrand, axis=1) / norm_ + self.p_epsilon / (float(int_umax) / float(int_du))
-
-            from jax.scipy.special import erf as jax_erf
-
-            outlier_gaussian_norm = 1.0 - 0.5 * (1.0 + jax_erf(-outlier_u0 / outlier_sigma / jnp.sqrt(2.0)))
-            outlier_component = outlier_gaussian_jax(tilde_u, outlier_u0, outlier_sigma) / jnp.maximum(
-                outlier_gaussian_norm, 1e-10
-            )
+                outlier_integrand = (
+                    (outlier_gaussian_jax(tilde_u_grid, outlier_u0, outlier_sigma) / outlier_gaussian_norm)
+                    * uncertainty_dist
+                    * float(int_du)
+                )
+                uncertainty_norm = jnp.maximum(norm_factor, 1e-10)
+                good_component = jnp.sum(integrand, axis=1) / uncertainty_norm + self.p_epsilon / (float(int_umax) / float(int_du))
+                outlier_component = jnp.sum(outlier_integrand, axis=1) / uncertainty_norm
 
             total_prob = f_good * good_component + f_outlier * outlier_component + self.p_epsilon
             return jnp.clip(total_prob, 1e-100, 1e10)
 
         def model(u_values, u_sigma_values, absg1_values, absg2_values, feh_values, norm_factor):
             if self.poly_model.feh_model == "linear":
-                a = numpyro.sample("a", dist.Normal(0.0, float(coeff_prior_scale)).expand([n_base]))
+                a = numpyro.sample(
+                    "a",
+                    dist.Uniform(-float(coeff_prior_scale), float(coeff_prior_scale)).expand([n_base]),
+                )
                 b_list = []
                 for i in range(n_base):
                     if not feh_b_mask_list[i]:
                         b_i = jnp.array(0.0)
                     elif i == 0 and feh_b0_positive:
-                        b_i = numpyro.sample(f"b_{i}", dist.HalfNormal(float(feh_coeff_prior_scale)))
+                        b_i = numpyro.sample(
+                            f"b_{i}", dist.Uniform(0.0, float(feh_coeff_prior_scale))
+                        )
                     else:
-                        b_i = numpyro.sample(f"b_{i}", dist.Normal(0.0, float(feh_coeff_prior_scale)))
+                        b_i = numpyro.sample(
+                            f"b_{i}",
+                            dist.Uniform(-float(feh_coeff_prior_scale), float(feh_coeff_prior_scale)),
+                        )
                     b_list.append(b_i)
                 b = jnp.stack(b_list)
                 coeffs = jnp.concatenate([a, b])
@@ -727,7 +916,9 @@ class DifferencePolyFehMLR(PolynomialMLR):
                 def sample_or_zero(name, scale, mask):
                     if not mask:
                         return jnp.array(0.0)
-                    return numpyro.sample(name, dist.Normal(0.0, float(scale)))
+                    return numpyro.sample(
+                        name, dist.Uniform(-float(scale), float(scale))
+                    )
 
                 a0 = sample_or_zero("a0", coeff_prior_scale, quad_mask_list[0])
                 b1 = sample_or_zero("b1", feh_coeff_prior_scale, quad_mask_list[1])
@@ -774,17 +965,16 @@ class DifferencePolyFehMLR(PolynomialMLR):
                 outlier_u0 = self.outlier_u0_init
                 outlier_sigma = self.outlier_sigma_init
 
-            log_likelihood_vec = jnp.log(
-                likelihood_single_u_jax(
-                    u_values,
-                    sqrt_mtot,
-                    u_sigma_values,
-                    norm_factor,
-                    f_outlier=f_outlier,
-                    outlier_u0=outlier_u0,
-                    outlier_sigma=outlier_sigma,
-                )
+            total_prob = likelihood_single_u_jax(
+                u_values,
+                sqrt_mtot,
+                u_sigma_values,
+                norm_factor,
+                f_outlier=f_outlier,
+                outlier_u0=outlier_u0,
+                outlier_sigma=outlier_sigma,
             )
+            log_likelihood_vec = jnp.log(total_prob)
             log_likelihood_sum = jnp.sum(log_likelihood_vec)
             log_likelihood_sum = jnp.where(jnp.isfinite(log_likelihood_sum), log_likelihood_sum, -1e10)
             numpyro.factor("obs", log_likelihood_sum)
