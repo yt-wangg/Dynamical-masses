@@ -193,7 +193,6 @@ class PolyMassAbsgModel:
         return penalty
 
 
-
 class PolynomialMLR:
     """
     Parametric Bayesian inference for mass-luminosity relations using

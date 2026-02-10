@@ -7,7 +7,7 @@ from scipy.stats import norm
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-from .jax_utils import _configure_jax_gpu_fallback
+from ..jax_utils import _configure_jax_gpu_fallback
 
 class NonParametricMLR:
     """
@@ -847,5 +847,4 @@ class NonParametricMLR:
         filename = f'fit{metadata_suffix}.png'
         plt.savefig(f'{output_dir}/{filename}', dpi=300)
         plt.close(fig)
-
 

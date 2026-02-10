@@ -196,7 +196,6 @@ def test_differencepoly_feh_model(
         seed=seed,
         quad_mode=quad_mode,
         quad_mask=quad_mask,
-        save_predictive_metrics_path=None,    
     )
 
     print("5. Saving samples and plots...")

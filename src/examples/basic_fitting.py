@@ -2,7 +2,7 @@
 """
 Basic Fitting Example
 
-This example demonstrates how to use `binary_masses.NonParametricMLR`
+This example demonstrates how to use `binary_masses.depracated.NonParametricMLR`
 to fit a mass-luminosity relation for a single metallicity bin.
 
 Author: Yutong Wang
@@ -17,7 +17,7 @@ import os
 # Add the package to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from binary_masses import NonParametricMLR
+from binary_masses.depracated import NonParametricMLR
 
 
 def generate_mock_data(n_samples=5000, noise_level=0.1):

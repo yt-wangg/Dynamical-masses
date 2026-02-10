@@ -9,31 +9,28 @@ License: MIT
 """
 
 from .core import (
-    NonParametricMLR,
-    MultiMetallicityFitter,
-    BrokenPowerLawMLR,
     PolynomialMLR,
     IsochroneMassModel,
     DifferencePolyMLR,
+    IsochroneMassSurfaceModel,
+    DifferencePolyFehMassAbsgModel,
+    DifferencePolyFehMLR,
     load_interpolated_mass_grid,
     load_interpolated_mass_curve,
     load_interpolated_isochrone_data,
 )
-from .sampling import BinarySystem, BinaryPopulation
 
 __version__ = "1.0.0"
 __author__ = "Yutong Wang"
 
 __all__ = [
-    "NonParametricMLR",
-    "MultiMetallicityFitter",
-    "BrokenPowerLawMLR",
     "PolynomialMLR",
     "IsochroneMassModel",
     "DifferencePolyMLR",
+    "IsochroneMassSurfaceModel",
+    "DifferencePolyFehMassAbsgModel",
+    "DifferencePolyFehMLR",
     "load_interpolated_mass_grid",
     "load_interpolated_mass_curve",
     "load_interpolated_isochrone_data",
-    "BinarySystem",
-    "BinaryPopulation"
 ]

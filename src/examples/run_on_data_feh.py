@@ -145,15 +145,6 @@ def test_differencepoly_feh_model(
         seed=seed,
         feh_b_mask=feh_b_mask_run,
         feh_b0_positive=feh_b0_positive_run,
-        save_predictive_metrics_path=os.path.join(output_dir, f"predictive_metrics{suffix}.npz"),
-        save_predictive_metrics_kwargs={
-            "sample_limit": 500,
-            "data_chunk": 2048,
-            "int_du": 0.02,
-            "num_workers": 2,
-            "sample_chunk": 32,
-            "show_progress": True,
-        },
     )
 
     print("5. Saving samples and plots...")
