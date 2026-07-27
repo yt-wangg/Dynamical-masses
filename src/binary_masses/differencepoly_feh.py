@@ -47,6 +47,20 @@ Outlier handling (fit_outlier_params):
     True  -> these are sampled along with polynomial coefficients
 
 where x is rescaled M_G in [-1, 1] and z is rescaled metallicity in [-1, 1].
+
+
+Outlier model:
+    f_outlier: fraction of systems that are outliers (0 to 1)
+    outlier_u0: scale parameter for the outlier distribution (in km/s)
+    outlier_sigma: shape parameter for the outlier distribution (in km/s)
+
+    priors (if fit_outlier_params=True):
+    f_outlier ~ Beta(alpha, beta) alpha=pi*kappa+1, beta=(1-pi)*kappa+1 to allow mean near pi=f_outlier_init with strength kappa
+    outlier_u0 = numpyro.sample(
+        "outlier_u0",
+        dist.TruncatedNormal(low=30, high=200, loc=self.outlier_u0_init, scale=5.0),
+        )
+    outlier_sigma = numpyro.sample("outlier_sigma", dist.TruncatedNormal(low=10, high=100, loc=self.outlier_sigma_init, scale=3.0))
 """
 
 from __future__ import annotations
@@ -408,11 +422,17 @@ class DifferencePolyFehMLR(PolynomialMLR):
         isochrone_surface_model: IsochroneMassSurfaceModel,
         feh_min: Optional[float],
         feh_max: Optional[float],
-        feh_coeff_prior_scale: float = 1.0, # deriv_penalty_strength=10.0: strength of the penalty. Larger values enforce monotonicity more strongly (in log‑probability units).
+        feh_coeff_prior_scale: float = 1.0,
+        absg_monotone_strength: float = 10.0,
         feh_monotone_strength: float = 0.0,  # 0=off, 0.1–1 weak, 1–10 medium, 10–50 strong (log-prob units)
         monotone_n_feh: int = 5, # monotone_n_feh=5: number of metallicity grid points used when applying the penalty (i.e., how many [Fe/H] slices are checked). More points = more robust monotonicity across metallicity.
         feh_model: str = "quadratic2d",
         cross_mode: str = "product",
+        anchor_enabled: bool = False,
+        anchor_absg: float = 4.67,
+        anchor_feh: float = 0.0,
+        anchor_mass: float = 1.0,
+        anchor_sigma: Optional[float] = None,
         **kwargs,
     ):
         absg_min_given = "absg_min" in kwargs
@@ -423,11 +443,14 @@ class DifferencePolyFehMLR(PolynomialMLR):
         self._auto_absg_min = absg_min_given and absg_min_input is None
         self._auto_absg_max = absg_max_given and absg_max_input is None
 
+        self.absg_monotone_strength = float(absg_monotone_strength)
+
         super_kwargs = dict(kwargs)
         if absg_min_input is not None:
             super_kwargs["absg_min"] = absg_min_input
         if absg_max_input is not None:
             super_kwargs["absg_max"] = absg_max_input
+        super_kwargs["deriv_penalty_strength"] = self.absg_monotone_strength
 
         super().__init__(order=order, **super_kwargs)
 
@@ -445,6 +468,11 @@ class DifferencePolyFehMLR(PolynomialMLR):
         self.iso_surface = isochrone_surface_model
         self.feh_model = feh_model
         self.cross_mode = cross_mode
+        self.anchor_enabled = bool(anchor_enabled)
+        self.anchor_absg = float(anchor_absg)
+        self.anchor_feh = float(anchor_feh)
+        self.anchor_mass = float(anchor_mass)
+        self.anchor_sigma = None if anchor_sigma is None else float(anchor_sigma)
 
         feh_min_init = self.feh_min
         feh_max_init = self.feh_max
@@ -461,7 +489,7 @@ class DifferencePolyFehMLR(PolynomialMLR):
             absg_max=self.absg_max,
             mass_min=self.mass_min,
             pivot=self.poly_model.pivot,
-            deriv_penalty_strength=self.poly_model.deriv_penalty_strength,
+            deriv_penalty_strength=self.absg_monotone_strength,
             feh_monotone_strength=self.feh_monotone_strength,
             isochrone_surface_model=self.iso_surface,
             feh_min=feh_min_init,
@@ -483,7 +511,7 @@ class DifferencePolyFehMLR(PolynomialMLR):
             absg_max=self.absg_max,
             mass_min=self.mass_min,
             pivot=self.poly_model.pivot,
-            deriv_penalty_strength=self.poly_model.deriv_penalty_strength,
+            deriv_penalty_strength=self.absg_monotone_strength,
             feh_monotone_strength=self.feh_monotone_strength,
             isochrone_surface_model=self.iso_surface,
             feh_min=self.feh_min,
@@ -686,6 +714,12 @@ class DifferencePolyFehMLR(PolynomialMLR):
         quad_mode=None,
         quad_mask=None,
         fit_outlier_params=None,
+        absg_monotone_strength=None,
+        anchor_enabled=None,
+        anchor_absg=None,
+        anchor_feh=None,
+        anchor_mass=None,
+        anchor_sigma=None,
         **kwargs,
     ):
         """Run HMC sampling for (a_i, b_i) coefficients and optional outlier params."""
@@ -715,6 +749,21 @@ class DifferencePolyFehMLR(PolynomialMLR):
 
         if fit_outlier_params is not None:
             self.fit_outlier_params = bool(fit_outlier_params)
+
+        if absg_monotone_strength is not None:
+            self.absg_monotone_strength = float(absg_monotone_strength)
+            self.poly_model.deriv_penalty_strength = self.absg_monotone_strength
+
+        if anchor_enabled is not None:
+            self.anchor_enabled = bool(anchor_enabled)
+        if anchor_absg is not None:
+            self.anchor_absg = float(anchor_absg)
+        if anchor_feh is not None:
+            self.anchor_feh = float(anchor_feh)
+        if anchor_mass is not None:
+            self.anchor_mass = float(anchor_mass)
+        if anchor_sigma is not None:
+            self.anchor_sigma = float(anchor_sigma)
 
         # Reset parameter names to the polynomial-only list before applying masks.
         self.param_names = list(self.poly_model.param_names)
@@ -909,12 +958,32 @@ class DifferencePolyFehMLR(PolynomialMLR):
                     coeffs = jnp.stack([a0, b1, a1, b2, a2])
             numpyro.deterministic("coeffs", coeffs)
 
-            if self.poly_model.deriv_penalty_strength > 0:
+            if (
+                self.poly_model.deriv_penalty_strength > 0
+                or self.poly_model.feh_monotone_strength > 0
+            ):
                 numpyro.factor(
                     "mlr_monotonicity",
                     self.poly_model.derivative_penalty_jax(
                         coeffs, n_grid=64, n_feh=self.monotone_n_feh
                     ),
+                )
+
+            if self.anchor_enabled:
+                if self.anchor_sigma is None or self.anchor_sigma <= 0:
+                    raise ValueError("anchor_sigma must be > 0 when anchor_enabled=True.")
+                anchor_pred_mass = self.poly_model.mass_from_absg_feh_jax(
+                    jnp.asarray(self.anchor_absg),
+                    jnp.asarray(self.anchor_feh),
+                    coeffs,
+                )
+                numpyro.deterministic("anchor_pred_mass", anchor_pred_mass)
+                numpyro.factor(
+                    "anchor_mass_constraint",
+                    dist.Normal(
+                        loc=jnp.asarray(self.anchor_mass),
+                        scale=jnp.asarray(self.anchor_sigma),
+                    ).log_prob(anchor_pred_mass),
                 )
 
             m1 = self.poly_model.mass_from_absg_feh_jax(absg1_values, feh_values, coeffs)
@@ -925,21 +994,21 @@ class DifferencePolyFehMLR(PolynomialMLR):
             if self.fit_outlier_params:
                 pi = self.f_outlier_init
                 kappa = self.outlier_kappa
-                alpha = pi * kappa
-                beta_param = (1 - pi) * kappa
+                alpha = pi * kappa + 1
+                beta_param = (1 - pi) * kappa + 1
                 f_outlier = numpyro.sample("f_outlier", dist.Beta(alpha, beta_param))
 
                 u_tail_min = jnp.quantile(u_values / sqrt_mtot, 0.6)
                 u_tail_max = float(int_umax)
                 outlier_u0 = numpyro.sample(
                     "outlier_u0",
-                    dist.TruncatedNormal(low=u_tail_min, high=u_tail_max, loc=u_tail_min + 5.0, scale=5.0),
+                    dist.TruncatedNormal(low=30, high=200, loc=self.outlier_u0_init, scale=5.0),
                 )
-                outlier_sigma = numpyro.sample("outlier_sigma", dist.Normal(15.0, 2.0))
+                outlier_sigma = numpyro.sample("outlier_sigma", dist.TruncatedNormal(low=10, high=100, loc=self.outlier_sigma_init, scale=3.0))
             else:
-                f_outlier = self.f_outlier_init
-                outlier_u0 = self.outlier_u0_init
-                outlier_sigma = self.outlier_sigma_init
+                f_outlier = self.f_outlier_init # 0.1
+                outlier_u0 = self.outlier_u0_init # 35
+                outlier_sigma = self.outlier_sigma_init # 15
 
             total_prob = likelihood_single_u_jax(
                 u_values,

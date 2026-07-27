@@ -42,7 +42,7 @@ def test_differencepoly_feh_model(
     absg_max=None,
     mass_min=0.05,
     mass_max=2.0,
-    deriv_penalty_strength=10.0,
+    absg_monotone_strength=10.0,
     feh_monotone_strength=0.0,
     monotone_n_feh=5,
     coeff_prior_scale=5.0,
@@ -66,6 +66,11 @@ def test_differencepoly_feh_model(
     cross_mode="free",
     quad_mode=None,
     quad_mask=None,
+    anchor_enabled=False,
+    anchor_absg=4.67,
+    anchor_feh=0.0,
+    anchor_mass=1.0,
+    anchor_sigma=0.05,
 ):
     """
     Fit the DifferencePolyFehMLR model on all data (no metallicity binning).
@@ -150,13 +155,18 @@ def test_differencepoly_feh_model(
         outlier_kappa_scale=outlier_kappa_scale,
         fit_outlier_params=fit_outlier_params,
         param_truths=param_truths,
-        deriv_penalty_strength=deriv_penalty_strength,
+        absg_monotone_strength=absg_monotone_strength,
         feh_monotone_strength=feh_monotone_strength,
         coeff_prior_scale=coeff_prior_scale,
         feh_coeff_prior_scale=feh_coeff_prior_scale,
         monotone_n_feh=monotone_n_feh,
         feh_model=feh_model,
         cross_mode=cross_mode,
+        anchor_enabled=anchor_enabled,
+        anchor_absg=anchor_absg,
+        anchor_feh=anchor_feh,
+        anchor_mass=anchor_mass,
+        anchor_sigma=anchor_sigma,
     )
 
     if plot_corner_truths and param_truths is not None:
@@ -187,6 +197,7 @@ def test_differencepoly_feh_model(
         f"_monoz{feh_monotone_strength:.1e}"
         f"_feh[{plot_feh_min:+.2f},{plot_feh_max:+.2f}]"
         f"_fehmodel-{feh_model}_cross-{cross_mode}"
+        f"_skappa{outlier_kappa_scale:.2e}"
     )
 
     fitter.run_numpyro(
@@ -299,7 +310,7 @@ def plot_mlr_multi_feh(
                 absg_max=fitter.poly_model.absg_max,
                 mass_min=fitter.poly_model.mass_min,
                 pivot=fitter.poly_model.pivot,
-                deriv_penalty_strength=fitter.poly_model.deriv_penalty_strength,
+                deriv_penalty_strength=fitter.absg_monotone_strength,
                 feh_monotone_strength=fitter.poly_model.feh_monotone_strength,
                 isochrone_surface_model=fitter.iso_surface,
                 feh_min=fitter.poly_model.feh_min,
@@ -345,7 +356,7 @@ def plot_mlr_multi_feh(
 
         if iso_surface is not None:
             iso_mass = iso_surface.mass_from_absg_mh(absg_range, feh)
-            ax_main.plot(absg_range, iso_mass, color=color, linewidth=1, linestyle="--", alpha=0.8)
+            ax_main.plot(absg_range, iso_mass, color=color, linewidth=1.5, linestyle="--", alpha=1)
 
         if truth_coeffs is not None and truth_mass_fn is not None:
             true_masses = truth_mass_fn(absg_range, feh, truth_coeffs)
@@ -361,6 +372,32 @@ def plot_mlr_multi_feh(
             resid_upper = upper - iso_mass
             ax_resid.fill_between(absg_range, resid_lower, resid_upper, color=color, alpha=0.15)
             ax_resid.plot(absg_range, residual, color=color, linewidth=1.5)
+        
+        if feh==0:
+            # Sun's position
+            MG_sun = 4.67
+            ax_main.scatter(MG_sun, 1.0,
+                        marker='*',
+                        s=180,
+                        facecolor=color,
+                        edgecolor='black',
+                        linewidth=1.2,
+                        zorder=5)
+            
+            ax_main.scatter(MG_sun, 1.0,
+                    marker='o',
+                    s=260,
+                    facecolor='none',
+                    edgecolor='black',
+                    linewidth=1.2,
+                    zorder=4)
+
+            ax_main.annotate('Sun',
+                    (MG_sun, 1.0),
+                    xytext=(5,5),
+                    textcoords='offset points',
+                    fontsize=14)
+
 
     legend_lines = [
         Line2D([0], [0], color="black", linewidth=2, linestyle="-"),
@@ -386,6 +423,7 @@ def plot_mlr_multi_feh(
     fig.align_xlabels([ax_main, ax_resid])
 
     ax_resid.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+    ax_resid.set_yscale('log')
     resid_label = "Derived $-$ Truth [$M_{\odot}$]" if truth_coeffs is not None else "Derived $-$ Isochrone [$M_{\odot}$]"
     ax_resid.set_ylabel(resid_label, fontsize=11)
     ax_resid.set_xlim(absg_min, absg_max)
@@ -417,8 +455,14 @@ def main():
     print("=" * 70)
 
     print("1. Importing data with metallicity...")
-    data_path = os.path.join(REPO_ROOT, "data", "jd_single_1kpc_filtered.fits")
+    data_path = os.path.join(REPO_ROOT, "data", "jd_msms_single_bic_1kpc_filtered_cutb_fehloss.fits")
     data = Table.read(data_path)
+
+    # random sub-sample for testing
+    rng = np.random.default_rng(27)
+    if len(data) > 5000:
+        indices = rng.choice(len(data), size=5000, replace=False)
+        data = data[indices]
 
     print("2. Computing u and u_sigma...")
     data["v"] = (
@@ -431,7 +475,7 @@ def main():
 
     print(f"   Using {len(data)} systems")
 
-    output_dir = os.path.join(REPO_ROOT, "results", "data_diffpoly2d")
+    output_dir = os.path.join(REPO_ROOT, "results", "data_diffpoly2d_anchor")
 
     # Pick the metallicity column that exists in your table.
     # Common choices in this repo: "feh" or "feh_jcaps_1".
@@ -451,25 +495,30 @@ def main():
         absg_max=13.5,
         mass_min=0.05,
         mass_max=2.0,
-        deriv_penalty_strength=0.0,
-        feh_monotone_strength=5,
+        absg_monotone_strength=10.0,
+        feh_monotone_strength=20000,
         monotone_n_feh=5,
         coeff_prior_scale=3.0,
         feh_coeff_prior_scale=3.0,
-        f_outlier_init=0.1,
-        outlier_u0_init=35,
-        outlier_sigma_init=10,
+        f_outlier_init=0.2,
+        outlier_u0_init=40,
+        outlier_sigma_init=13,
         outlier_kappa=None,
-        outlier_kappa_scale=0.9,
+        outlier_kappa_scale=1,
         fit_outlier_params=True,
         param_truths=None,
         num_warmup=800,
         num_samples=6000,
         num_chains=1,
-        seed=11,
+        seed=33,
         iso_data_dir=os.path.join(REPO_ROOT, "data", "interpolated_mass_data"),
         feh_plot_values=[-1.0, -0.5, 0.0, 0.3, 0.6],
         feh_model="quadratic2d",
+        anchor_enabled=True,
+        anchor_absg=4.67,
+        anchor_feh=0.0,
+        anchor_mass=1.0,
+        anchor_sigma=0.01,
         # cross_mode="free",
         # quad_mode=None,
         # quad_mask=None,
