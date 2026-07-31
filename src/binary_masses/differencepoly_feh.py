@@ -743,6 +743,8 @@ class DifferencePolyFehMLR(PolynomialMLR):
         if gpu_devices:
             gpu_names = ", ".join(getattr(device, "device_kind", str(device)) for device in gpu_devices)
             print(f"NumPyro: running on GPU backend ({gpu_names}).")
+        else:
+            print(f"NumPyro: running on CPU backend ({len(devices)} device(s)).")
 
         coeff_prior_scale = coeff_prior_scale or self.coeff_prior_scale
         feh_coeff_prior_scale = feh_coeff_prior_scale or self.feh_coeff_prior_scale

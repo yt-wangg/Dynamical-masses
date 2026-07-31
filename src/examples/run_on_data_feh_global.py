@@ -6,8 +6,6 @@ This script mirrors the mock-data test in:
     Validation/V16. FeH-global model test.ipynb
 but runs on real Gaia binary data. It uses the updated
 DifferencePolyFehMLR interface (feh_model, cross_mode, quad_mode/quad_mask).
-
-Author: Yutong Wang
 """
 
 import os
