@@ -18,9 +18,9 @@ from astropy.table import Table
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-# Add the package to Python path
+# Add the src-layout package to Python path
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 from binary_masses.differencepoly_feh import (  # noqa: E402
     DifferencePolyFehMLR,
@@ -59,6 +59,7 @@ def test_differencepoly_feh_model(
     num_warmup=800,
     num_samples=2000,
     num_chains=1,
+    use_dense_mass=False,
     seed=42,
     iso_data_dir="data/interpolated_mass_data",
     feh_plot_values=None,
@@ -204,6 +205,7 @@ def test_differencepoly_feh_model(
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=num_chains,
+        use_dense_mass=use_dense_mass,
         seed=seed,
         quad_mode=quad_mode,
         quad_mask=quad_mask,
@@ -424,7 +426,11 @@ def plot_mlr_multi_feh(
 
     ax_resid.axhline(0, color="gray", linestyle="--", linewidth=0.8)
     ax_resid.set_yscale('log')
-    resid_label = "Derived $-$ Truth [$M_{\odot}$]" if truth_coeffs is not None else "Derived $-$ Isochrone [$M_{\odot}$]"
+    resid_label = (
+        r"Derived $-$ Truth [$M_{\odot}$]"
+        if truth_coeffs is not None
+        else r"Derived $-$ Isochrone [$M_{\odot}$]"
+    )
     ax_resid.set_ylabel(resid_label, fontsize=11)
     ax_resid.set_xlim(absg_min, absg_max)
     ax_resid.set_xlabel("$M_{\\mathrm{G}}$ [mag]", fontsize=12)
@@ -458,6 +464,9 @@ def main():
     data_path = os.path.join(REPO_ROOT, "data", "jd_msms_single_bic_1kpc_filtered_cutb_fehloss.fits")
     data = Table.read(data_path)
 
+    # cut on a_g_edhf_1
+    data = data[data["a_g_edhf_1"] <= 0.1]
+
     # random sub-sample for testing
     rng = np.random.default_rng(27)
     if len(data) > 5000:
@@ -475,7 +484,7 @@ def main():
 
     print(f"   Using {len(data)} systems")
 
-    output_dir = os.path.join(REPO_ROOT, "results", "data_diffpoly2d_anchor")
+    output_dir = os.path.join(REPO_ROOT, "results", "data_diffpoly2d_anchor_cute")
 
     # Pick the metallicity column that exists in your table.
     # Common choices in this repo: "feh" or "feh_jcaps_1".
@@ -510,6 +519,7 @@ def main():
         num_warmup=800,
         num_samples=6000,
         num_chains=1,
+        use_dense_mass=True,
         seed=33,
         iso_data_dir=os.path.join(REPO_ROOT, "data", "interpolated_mass_data"),
         feh_plot_values=[-1.0, -0.5, 0.0, 0.3, 0.6],
