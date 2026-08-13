@@ -68,7 +68,8 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
-from scipy.stats import norm
+from numpy.polynomial.legendre import leggauss
+from scipy.stats import norm, truncnorm
 
 from .jax_utils import _configure_jax_gpu_fallback
 from .isochrone_grid import load_interpolated_mass_grid
@@ -413,7 +414,17 @@ class DifferencePolyFehMassAbsgModel(PolyMassAbsgModel):
 
 
 class DifferencePolyFehMLR(PolynomialMLR):
-    """DifferencePolyMLR with continuous metallicity (one [M/H] per system)."""
+    """DifferencePolyMLR with continuous metallicity (one [M/H] per system).
+
+    When ``use_feh_uncertainty`` is enabled, each system's likelihood is
+    marginalized over its latent true metallicity.  The measurement model is
+    Gaussian, while the unknown intrinsic metallicity distribution is fitted
+    jointly as a smooth mixture of fixed truncated-Gaussian basis densities on
+    ``[feh_min, feh_max]`` with a Dirichlet prior on their weights.
+    Integration uses Gauss--Legendre quadrature after mapping its nodes through
+    truncated-Normal quantiles; that truncated Normal is only an integration
+    proposal, not an assumed posterior for true metallicity.
+    """
 
     def __init__(
         self,
@@ -433,6 +444,11 @@ class DifferencePolyFehMLR(PolynomialMLR):
         anchor_feh: float = 0.0,
         anchor_mass: float = 1.0,
         anchor_sigma: Optional[float] = None,
+        use_feh_uncertainty: bool = False,
+        feh_quadrature_nodes: int = 11,
+        feh_population_components: int = 10,
+        feh_population_concentration: float = 1.0,
+        feh_population_kernel_scale: float = 1.0,
         **kwargs,
     ):
         absg_min_given = "absg_min" in kwargs
@@ -473,6 +489,19 @@ class DifferencePolyFehMLR(PolynomialMLR):
         self.anchor_feh = float(anchor_feh)
         self.anchor_mass = float(anchor_mass)
         self.anchor_sigma = None if anchor_sigma is None else float(anchor_sigma)
+        self.use_feh_uncertainty = bool(use_feh_uncertainty)
+        self.feh_quadrature_nodes = int(feh_quadrature_nodes)
+        if self.feh_quadrature_nodes < 1:
+            raise ValueError("feh_quadrature_nodes must be at least 1.")
+        self.feh_population_components = int(feh_population_components)
+        if self.feh_population_components < 2:
+            raise ValueError("feh_population_components must be at least 2.")
+        self.feh_population_concentration = float(feh_population_concentration)
+        if self.feh_population_concentration <= 0:
+            raise ValueError("feh_population_concentration must be strictly positive.")
+        self.feh_population_kernel_scale = float(feh_population_kernel_scale)
+        if self.feh_population_kernel_scale <= 0:
+            raise ValueError("feh_population_kernel_scale must be strictly positive.")
 
         feh_min_init = self.feh_min
         feh_max_init = self.feh_max
@@ -499,9 +528,57 @@ class DifferencePolyFehMLR(PolynomialMLR):
         )
 
         self.feh_values = None
+        self.feh_sigma_values = None
+        self.feh_nodes = None
+        self.feh_weights = None
+        self.feh_population_samples = None
         self.feh_plot = None  # used by mass_from_absg when feh is not provided
 
         self.param_names = list(self.poly_model.param_names)
+
+    def _prepare_feh_quadrature(self):
+        """Build truncated-Gaussian proposal nodes for the FeH integral."""
+        if not self.use_feh_uncertainty:
+            self.feh_nodes = self.feh_values[:, None]
+            self.feh_weights = np.ones((self.feh_values.size, 1), dtype=float)
+            return
+
+        if self.feh_sigma_values is None:
+            raise ValueError(
+                "feh_sigma_values is required when use_feh_uncertainty=True."
+            )
+        if self.feh_min is None or self.feh_max is None:
+            raise ValueError("Finite feh_min and feh_max are required for FeH marginalization.")
+
+        # This is the V19 node construction, but here the truncated Gaussian is
+        # only a quadrature proposal q(F_true | F_obs).  In the NumPyro model
+        # the integrand is also multiplied by the inferred population density
+        # p_pop(F_true), yielding
+        #   integral p(u | F_true, theta) p(F_obs | F_true) p_pop(F_true) dF_true.
+        # The omitted truncation normalization depends only on observed data,
+        # not on theta or the population parameters.
+        gl_x, gl_w = leggauss(self.feh_quadrature_nodes)
+        quantiles = 0.5 * (gl_x + 1.0)
+        base_weights = 0.5 * gl_w
+
+        observed = self.feh_values[:, None]
+        sigma = self.feh_sigma_values[:, None]
+        alpha = (self.feh_min - observed) / sigma
+        beta = (self.feh_max - observed) / sigma
+        nodes = truncnorm.ppf(
+            quantiles[None, :],
+            a=alpha,
+            b=beta,
+            loc=observed,
+            scale=sigma,
+        )
+        if not np.all(np.isfinite(nodes)):
+            raise ValueError("Could not construct finite FeH quadrature nodes.")
+
+        self.feh_nodes = np.clip(nodes, self.feh_min, self.feh_max)
+        self.feh_weights = np.broadcast_to(
+            base_weights[None, :], self.feh_nodes.shape
+        ).copy()
 
     def _refresh_poly_model(self):
         """Rebuild the polynomial model after updating absg/feh ranges."""
@@ -528,6 +605,7 @@ class DifferencePolyFehMLR(PolynomialMLR):
         absg1_values=None,
         absg2_values=None,
         feh_values=None,
+        feh_sigma_values=None,
         outlier_kappa=None,
         outlier_kappa_scale=None,
     ):
@@ -538,6 +616,9 @@ class DifferencePolyFehMLR(PolynomialMLR):
         self.absg1_values = np.array(absg1_values)
         self.absg2_values = np.array(absg2_values)
         self.feh_values = np.array(feh_values, dtype=float)
+        self.feh_sigma_values = (
+            None if feh_sigma_values is None else np.array(feh_sigma_values, dtype=float)
+        )
 
         # Auto-derive normalization ranges from data (robust percentiles).
         need_refresh = False
@@ -579,6 +660,17 @@ class DifferencePolyFehMLR(PolynomialMLR):
 
         if self.feh_values.shape[0] != self.u_values.shape[0]:
             raise ValueError("feh_values must have the same length as u_values.")
+        if not np.all(np.isfinite(self.feh_values)):
+            raise ValueError("feh_values must contain only finite values.")
+        if self.feh_sigma_values is not None:
+            if self.feh_sigma_values.shape != self.feh_values.shape:
+                raise ValueError("feh_sigma_values must have the same shape as feh_values.")
+            if not np.all(np.isfinite(self.feh_sigma_values)):
+                raise ValueError("feh_sigma_values must contain only finite values.")
+            if np.any(self.feh_sigma_values <= 0):
+                raise ValueError("feh_sigma_values must be strictly positive.")
+
+        self._prepare_feh_quadrature()
 
         if u_sigma_values is None:
             self.u_sigma_values = None
@@ -720,13 +812,14 @@ class DifferencePolyFehMLR(PolynomialMLR):
         anchor_feh=None,
         anchor_mass=None,
         anchor_sigma=None,
+        collect_diagnostics=False,
         **kwargs,
     ):
         """Run HMC sampling for (a_i, b_i) coefficients and optional outlier params."""
         try:
             jax = _configure_jax_gpu_fallback()
             import jax.numpy as jnp
-            from jax.scipy.special import i0e
+            from jax.scipy.special import i0e, ndtr
             import numpyro
             import numpyro.distributions as dist
             from numpyro.infer import MCMC, NUTS
@@ -737,6 +830,8 @@ class DifferencePolyFehMLR(PolynomialMLR):
             raise ValueError("No data set. Use set_data() first.")
         if self.feh_values is None:
             raise ValueError("No metallicity set. Provide feh_values via set_data().")
+        if self.feh_nodes is None or self.feh_weights is None:
+            raise ValueError("FeH quadrature is not initialized. Call set_data() first.")
 
         devices = jax.devices()
         gpu_devices = [device for device in devices if device.platform == "gpu"]
@@ -817,7 +912,21 @@ class DifferencePolyFehMLR(PolynomialMLR):
         u_values_jax = jnp.array(self.u_values)
         absg1_values_jax = jnp.array(self.absg1_values)
         absg2_values_jax = jnp.array(self.absg2_values)
-        feh_values_jax = jnp.array(self.feh_values)
+        feh_nodes_jax = jnp.array(self.feh_nodes)
+        feh_weights_jax = jnp.array(self.feh_weights)
+        feh_population_edges_jax = jnp.linspace(
+            float(self.feh_min),
+            float(self.feh_max),
+            self.feh_population_components + 1,
+        )
+        feh_population_centers_jax = 0.5 * (
+            feh_population_edges_jax[:-1] + feh_population_edges_jax[1:]
+        )
+        feh_population_kernel_sigma = (
+            (float(self.feh_max) - float(self.feh_min))
+            / self.feh_population_components
+            * self.feh_population_kernel_scale
+        )
         norm_factor_jax = jnp.array(self.norm_factor)
 
         if self.u_sigma_values is not None:
@@ -874,6 +983,10 @@ class DifferencePolyFehMLR(PolynomialMLR):
             # u = jnp.where(valid, u, 1e-10)
             #  sqrt_mtot = jnp.where(valid, sqrt_mtot, 1e-10)
 
+            # sqrt_mtot has shape (n_systems, n_feh_nodes).  Reshape the
+            # per-system observations so they broadcast over the FeH axis.
+            system_shape = (u.shape[0],) + (1,) * (sqrt_mtot.ndim - 1)
+            u = jnp.reshape(u, system_shape)
             valid = (u > 0) & (sqrt_mtot > 0)
             u = jnp.where(valid, u, 1e-10)
             sqrt_mtot = jnp.where(valid, sqrt_mtot, 1e-10)
@@ -886,13 +999,19 @@ class DifferencePolyFehMLR(PolynomialMLR):
 
             if u_sigma is None:
                 good_component = (1.0 / sqrt_mtot) * func_pu_8_jax(tilde_u_obs)
-                outlier_component = outlier_gaussian_jax(tilde_u_obs, outlier_u0, outlier_sigma) / outlier_gaussian_norm
+                outlier_component = (
+                    (1.0 / sqrt_mtot)
+                    * outlier_gaussian_jax(tilde_u_obs, outlier_u0, outlier_sigma)
+                    / outlier_gaussian_norm
+                )
             else:
-                u_sigma = jnp.maximum(u_sigma, 1e-10)
+                u_sigma = jnp.reshape(jnp.maximum(u_sigma, 1e-10), system_shape)
 
-                tilde_u_obs_grid = (u / sqrt_mtot)[:, None]
-                tilde_u_sigma_grid = (u_sigma / sqrt_mtot)[:, None]
-                tilde_u_grid = int_ulist_jax[None, :]
+                tilde_u_obs_grid = (u / sqrt_mtot)[..., None]
+                tilde_u_sigma_grid = (u_sigma / sqrt_mtot)[..., None]
+                tilde_u_grid = jnp.reshape(
+                    int_ulist_jax, (1,) * sqrt_mtot.ndim + (int_ulist_jax.size,)
+                )
 
                 if self.uncertainty_model == "rice":
                     uncertainty_dist = rice_distribution_jax(tilde_u_obs_grid, tilde_u_grid, tilde_u_sigma_grid)
@@ -900,24 +1019,36 @@ class DifferencePolyFehMLR(PolynomialMLR):
                     uncertainty_dist = gaussian_jax(tilde_u_obs_grid, tilde_u_grid, tilde_u_sigma_grid)
 
                 integrand = (
-                    (1.0 / sqrt_mtot[:, None])
+                    (1.0 / sqrt_mtot[..., None])
                     * func_pu_8_jax(tilde_u_grid)
                     * uncertainty_dist
                     * float(int_du)
                 )
                 outlier_integrand = (
-                    (outlier_gaussian_jax(tilde_u_grid, outlier_u0, outlier_sigma) / outlier_gaussian_norm)
+                    (1.0 / sqrt_mtot[..., None])
+                    * (outlier_gaussian_jax(tilde_u_grid, outlier_u0, outlier_sigma) / outlier_gaussian_norm)
                     * uncertainty_dist
                     * float(int_du)
                 )
-                uncertainty_norm = jnp.maximum(norm_factor, 1e-10)
-                good_component = jnp.sum(integrand, axis=1) / uncertainty_norm + self.p_epsilon / (float(int_umax) / float(int_du))
-                outlier_component = jnp.sum(outlier_integrand, axis=1) / uncertainty_norm
+                uncertainty_norm = jnp.reshape(
+                    jnp.maximum(norm_factor, 1e-10), system_shape
+                )
+                good_component = jnp.sum(integrand, axis=-1) / uncertainty_norm + self.p_epsilon / (float(int_umax) / float(int_du))
+                outlier_component = jnp.sum(outlier_integrand, axis=-1) / uncertainty_norm
 
             total_prob = f_good * good_component + f_outlier * outlier_component + self.p_epsilon
             return jnp.clip(total_prob, 1e-100, 1e10)
 
-        def model(u_values, u_sigma_values, absg1_values, absg2_values, feh_values, norm_factor):
+        def model(
+            u_values,
+            u_sigma_values,
+            absg1_values,
+            absg2_values,
+            feh_nodes,
+            feh_weights,
+            norm_factor,
+            record_log_likelihood=False,
+        ):
             if self.poly_model.feh_model == "linear":
                 a = numpyro.sample(
                     "a",
@@ -960,6 +1091,40 @@ class DifferencePolyFehMLR(PolynomialMLR):
                     coeffs = jnp.stack([a0, b1, a1, b2, a2])
             numpyro.deterministic("coeffs", coeffs)
 
+            if self.use_feh_uncertainty:
+                population_weights = numpyro.sample(
+                    "feh_population_weights",
+                    dist.Dirichlet(
+                        jnp.full(
+                            (self.feh_population_components,),
+                            self.feh_population_concentration,
+                        )
+                    ),
+                )
+                standardized = (
+                    feh_nodes[..., None] - feh_population_centers_jax
+                ) / feh_population_kernel_sigma
+                component_norm = ndtr(
+                    (float(self.feh_max) - feh_population_centers_jax)
+                    / feh_population_kernel_sigma
+                ) - ndtr(
+                    (float(self.feh_min) - feh_population_centers_jax)
+                    / feh_population_kernel_sigma
+                )
+                component_density = (
+                    jnp.exp(-0.5 * standardized**2)
+                    / (
+                        jnp.sqrt(2.0 * jnp.pi)
+                        * feh_population_kernel_sigma
+                        * component_norm
+                    )
+                )
+                population_density = jnp.sum(
+                    component_density * population_weights, axis=-1
+                )
+            else:
+                population_density = jnp.ones_like(feh_nodes)
+
             if (
                 self.poly_model.deriv_penalty_strength > 0
                 or self.poly_model.feh_monotone_strength > 0
@@ -988,8 +1153,12 @@ class DifferencePolyFehMLR(PolynomialMLR):
                     ).log_prob(anchor_pred_mass),
                 )
 
-            m1 = self.poly_model.mass_from_absg_feh_jax(absg1_values, feh_values, coeffs)
-            m2 = self.poly_model.mass_from_absg_feh_jax(absg2_values, feh_values, coeffs)
+            m1 = self.poly_model.mass_from_absg_feh_jax(
+                absg1_values[:, None], feh_nodes, coeffs
+            )
+            m2 = self.poly_model.mass_from_absg_feh_jax(
+                absg2_values[:, None], feh_nodes, coeffs
+            )
             mtot = m1 + m2
             sqrt_mtot = jnp.sqrt(jnp.maximum(mtot, 1e-12))
 
@@ -1000,8 +1169,6 @@ class DifferencePolyFehMLR(PolynomialMLR):
                 beta_param = (1 - pi) * kappa + 1
                 f_outlier = numpyro.sample("f_outlier", dist.Beta(alpha, beta_param))
 
-                u_tail_min = jnp.quantile(u_values / sqrt_mtot, 0.6)
-                u_tail_max = float(int_umax)
                 outlier_u0 = numpyro.sample(
                     "outlier_u0",
                     dist.TruncatedNormal(low=30, high=200, loc=self.outlier_u0_init, scale=5.0),
@@ -1012,7 +1179,7 @@ class DifferencePolyFehMLR(PolynomialMLR):
                 outlier_u0 = self.outlier_u0_init # 35
                 outlier_sigma = self.outlier_sigma_init # 15
 
-            total_prob = likelihood_single_u_jax(
+            conditional_prob = likelihood_single_u_jax(
                 u_values,
                 sqrt_mtot,
                 u_sigma_values,
@@ -1021,7 +1188,14 @@ class DifferencePolyFehMLR(PolynomialMLR):
                 outlier_u0=outlier_u0,
                 outlier_sigma=outlier_sigma,
             )
+            total_prob = jnp.sum(
+                feh_weights * population_density * conditional_prob, axis=1
+            )
             log_likelihood_vec = jnp.log(total_prob)
+            if record_log_likelihood:
+                # Kept out of the MCMC state (which can be very large), but
+                # exposed to Predictive for held-out log-score evaluation.
+                numpyro.deterministic("log_likelihood", log_likelihood_vec)
             log_likelihood_sum = jnp.sum(log_likelihood_vec)
             log_likelihood_sum = jnp.where(jnp.isfinite(log_likelihood_sum), log_likelihood_sum, -1e10)
             numpyro.factor("obs", log_likelihood_sum)
@@ -1036,20 +1210,37 @@ class DifferencePolyFehMLR(PolynomialMLR):
         )
 
         rng_key = jax.random.PRNGKey(seed if seed is not None else 42)
+        run_kwargs = {}
+        if collect_diagnostics:
+            run_kwargs["extra_fields"] = (
+                "diverging",
+                "energy",
+                "potential_energy",
+                "num_steps",
+                "accept_prob",
+            )
         mcmc.run(
             rng_key,
             u_values_jax,
             u_sigma_values_jax,
             absg1_values_jax,
             absg2_values_jax,
-            feh_values_jax,
+            feh_nodes_jax,
+            feh_weights_jax,
             norm_factor_jax,
+            **run_kwargs,
         )
 
         self.sampler = mcmc
+        self._numpyro_model = model
         samples_dict = mcmc.get_samples()
 
         coeffs_samples = np.array(samples_dict["coeffs"])
+        self.feh_population_samples = (
+            np.array(samples_dict["feh_population_weights"])
+            if self.use_feh_uncertainty
+            else None
+        )
 
         if self.fit_outlier_params:
             f_outlier_samples = np.array(samples_dict["f_outlier"])
@@ -1063,3 +1254,80 @@ class DifferencePolyFehMLR(PolynomialMLR):
         self.results = type("obj", (object,), {"samples": self.samples, "logz": None, "logzerr": None})()
         mcmc.print_summary()
         return mcmc
+
+    def heldout_log_likelihood_draws(
+        self,
+        *,
+        posterior_samples=None,
+        max_posterior_samples=None,
+        seed=0,
+    ):
+        """Evaluate pointwise held-out log likelihood for posterior draws.
+
+        Call ``set_data`` with the held-out systems after fitting, then call
+        this method.  It reuses exactly the likelihood and FeH quadrature from
+        the fitted NumPyro model.  The returned array has shape
+        ``(posterior_draw, heldout_system)``.
+        """
+        if self.sampler is None or not hasattr(self, "_numpyro_model"):
+            raise ValueError("Run run_numpyro() before held-out evaluation.")
+        if self.feh_nodes is None or self.feh_weights is None:
+            raise ValueError("Call set_data() with held-out data before evaluation.")
+
+        try:
+            jax = _configure_jax_gpu_fallback()
+            import jax.numpy as jnp
+            from numpyro.infer import Predictive
+        except ImportError as exc:
+            raise ImportError("JAX and NumPyro are required for held-out evaluation.") from exc
+
+        samples = (
+            self.sampler.get_samples()
+            if posterior_samples is None
+            else {name: np.asarray(values) for name, values in posterior_samples.items()}
+        )
+        if not samples:
+            raise ValueError("posterior_samples is empty.")
+
+        sample_count = next(iter(samples.values())).shape[0]
+        if any(np.asarray(values).shape[0] != sample_count for values in samples.values()):
+            raise ValueError("All posterior arrays must have the same leading sample dimension.")
+        if max_posterior_samples is not None:
+            requested = int(max_posterior_samples)
+            if requested < 1:
+                raise ValueError("max_posterior_samples must be at least 1.")
+            if sample_count > requested:
+                indices = np.random.default_rng(seed).choice(
+                    sample_count, size=requested, replace=False
+                )
+                indices.sort()
+                samples = {
+                    name: np.asarray(values)[indices]
+                    for name, values in samples.items()
+                }
+
+        predictive = Predictive(
+            self._numpyro_model,
+            posterior_samples=samples,
+            return_sites=["log_likelihood"],
+            parallel=False,
+            exclude_deterministic=False,
+        )
+        result = predictive(
+            jax.random.PRNGKey(int(seed)),
+            jnp.asarray(self.u_values),
+            None if self.u_sigma_values is None else jnp.asarray(self.u_sigma_values),
+            jnp.asarray(self.absg1_values),
+            jnp.asarray(self.absg2_values),
+            jnp.asarray(self.feh_nodes),
+            jnp.asarray(self.feh_weights),
+            jnp.asarray(self.norm_factor),
+            record_log_likelihood=True,
+        )
+        values = np.asarray(result["log_likelihood"])
+        if values.ndim != 2:
+            raise ValueError(
+                "Expected held-out log likelihood with shape (draw, system); "
+                f"got {values.shape}."
+            )
+        return values
