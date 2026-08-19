@@ -612,12 +612,19 @@ class DifferencePolyFehMLR(PolynomialMLR):
         if feh_values is None:
             raise ValueError("DifferencePolyFehMLR requires `feh_values` (one value per system).")
 
-        self.u_values = np.array(u_values)
-        self.absg1_values = np.array(absg1_values)
-        self.absg2_values = np.array(absg2_values)
-        self.feh_values = np.array(feh_values, dtype=float)
+        # FITS columns read by Astropy can retain a non-native byte order
+        # (for example ``>f8``).  JAX rejects such dtypes when the held-out
+        # predictive path sends these arrays to a device.  Normalize all
+        # numerical inputs at the data boundary so both MCMC and predictive
+        # evaluation receive native-endian float64 arrays.
+        self.u_values = np.asarray(u_values, dtype=np.float64)
+        self.absg1_values = np.asarray(absg1_values, dtype=np.float64)
+        self.absg2_values = np.asarray(absg2_values, dtype=np.float64)
+        self.feh_values = np.asarray(feh_values, dtype=np.float64)
         self.feh_sigma_values = (
-            None if feh_sigma_values is None else np.array(feh_sigma_values, dtype=float)
+            None
+            if feh_sigma_values is None
+            else np.asarray(feh_sigma_values, dtype=np.float64)
         )
 
         # Auto-derive normalization ranges from data (robust percentiles).
@@ -676,7 +683,7 @@ class DifferencePolyFehMLR(PolynomialMLR):
             self.u_sigma_values = None
             self.norm_factor = np.ones(len(u_values))
         else:
-            self.u_sigma_values = np.array(u_sigma_values)
+            self.u_sigma_values = np.asarray(u_sigma_values, dtype=np.float64)
             if self.uncertainty_model == 'rice':
                 self.norm_factor = np.ones(len(u_values))
             elif self.uncertainty_model == 'gaussian':

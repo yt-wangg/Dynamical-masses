@@ -842,7 +842,7 @@ def main():
     # Use only the primary's calibrated metallicity measurement.  The binary
     # components are treated as coeval and therefore share this system-level
     # metallicity in the mass model.
-    feh_column = "jc_m_h_fit_cal_1"
+    feh_column = "jc_m_h_fit_1"
     feh_sigma_column = "jc_sigma_m_h_cal_1"
     stage_settings = quadratic_stage_settings(args.stage)
 
