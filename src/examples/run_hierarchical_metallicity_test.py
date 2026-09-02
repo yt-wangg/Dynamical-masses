@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from binary_masses.hierarchical_metallicity import (  # noqa: E402
+    DynamicsLikelihoodLookup,
     HierarchicalMetallicityCalibrator,
     IsochroneColorSurfaceModel,
     IsochroneMassSurfaceModel,
@@ -341,6 +342,7 @@ def run_calibration(
 def run_mlr(
     arrays: Mapping[str, np.ndarray],
     posterior: MetallicityPosteriorGrid,
+    dynamics_lookup: DynamicsLikelihoodLookup,
     mass_surface: IsochroneMassSurfaceModel,
     output_dir: Path,
     args,
@@ -355,15 +357,35 @@ def run_mlr(
         raise ValueError("Metallicity posterior was created with different observed columns.")
     if metadata.get("feh_sigma_columns") != INPUT_COLUMNS["feh_sigma"]:
         raise ValueError("Metallicity posterior was created with different uncertainty columns.")
-    mlr = ThreeKnotMetallicityMLR(
-        mass_surface, quadrature_nodes=args.velocity_quadrature_nodes
+    baseline_m1 = mass_surface.mass_from_absg_mh(
+        arrays["absg"][:, 0, None], posterior.z_grid[None, :]
     )
+    baseline_m2 = mass_surface.mass_from_absg_mh(
+        arrays["absg"][:, 1, None], posterior.z_grid[None, :]
+    )
+    baseline_sqrt_mass = np.sqrt(baseline_m1 + baseline_m2)
+    lookup_min, lookup_max = dynamics_lookup.sqrt_mtot_grid[[0, -1]]
+    print(
+        "Baseline PARSEC sqrt(total mass) range: "
+        f"[{np.min(baseline_sqrt_mass):.4f}, {np.max(baseline_sqrt_mass):.4f}]; "
+        f"lookup range: [{lookup_min:.4f}, {lookup_max:.4f}]."
+    )
+    if np.min(baseline_sqrt_mass) < lookup_min or np.max(baseline_sqrt_mass) > lookup_max:
+        raise ValueError(
+            "The uncorrected PARSEC mass surface lies outside the dynamics lookup domain; "
+            "rebuild the lookup with wider --lookup-sqrt-mass-min/max values."
+        )
+    (output_dir / "mlr_lookup_metadata.json").write_text(
+        json.dumps(dict(dynamics_lookup.metadata), indent=2), encoding="utf-8"
+    )
+    mlr = ThreeKnotMetallicityMLR(mass_surface)
     mlr.set_data(
         row_indices=arrays["row_indices"],
         u=arrays["u"],
         u_sigma=arrays["u_sigma"],
         absg=arrays["absg"],
         metallicity_grid=posterior,
+        dynamics_lookup=dynamics_lookup,
     )
     print("Running stage-two dynamical MLR correction...")
     sampler = mlr.run_mcmc(
@@ -396,9 +418,49 @@ def run_mlr(
         )
 
 
+def run_lookup(
+    arrays: Mapping[str, np.ndarray], output_dir: Path, args
+) -> DynamicsLikelihoodLookup:
+    """Precompute the expensive Rice convolution independently of the MCMC."""
+    print("Building per-system dynamics likelihood lookup...")
+    lookup = DynamicsLikelihoodLookup.precompute(
+        row_indices=arrays["row_indices"],
+        u=arrays["u"],
+        u_sigma=arrays["u_sigma"],
+        sqrt_mtot_min=args.lookup_sqrt_mass_min,
+        sqrt_mtot_max=args.lookup_sqrt_mass_max,
+        sqrt_mtot_points=args.lookup_mass_points,
+        velocity_quadrature_nodes=args.lookup_velocity_nodes,
+        velocity_sigma_extent=args.lookup_sigma_extent,
+        outlier_u0=args.outlier_u0,
+        outlier_sigma=args.outlier_sigma,
+        system_chunk=args.lookup_system_chunk,
+    )
+    lookup_path = lookup.save(output_dir / "dynamics_likelihood_lookup.npz")
+    diagnostics = dict(lookup.metadata)
+    diagnostics.update(
+        {
+            "n_systems": int(lookup.row_indices.size),
+            "file": str(lookup_path),
+            "file_size_bytes": int(lookup_path.stat().st_size),
+            "log_good_min": float(np.min(lookup.log_good)),
+            "log_good_max": float(np.max(lookup.log_good)),
+            "log_bad_min": float(np.min(lookup.log_bad)),
+            "log_bad_max": float(np.max(lookup.log_bad)),
+        }
+    )
+    (output_dir / "dynamics_likelihood_lookup_diagnostics.json").write_text(
+        json.dumps(diagnostics, indent=2), encoding="utf-8"
+    )
+    print(f"Saved dynamics lookup: {lookup_path}")
+    return lookup
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=("calibration", "mlr", "all"), default="all")
+    parser.add_argument(
+        "--stage", choices=("calibration", "lookup", "mlr", "all"), default="all"
+    )
     parser.add_argument(
         "--data",
         type=Path,
@@ -409,6 +471,15 @@ def parse_args():
         type=Path,
         default=REPO_ROOT / "results" / "hierarchical_metallicity_minimal",
     )
+    parser.add_argument(
+        "--metallicity-posterior",
+        type=Path,
+        default=None,
+        help=(
+            "Existing latent_metallicity_weights.npz to reuse for lookup/MLR; "
+            "allows a new output directory without copying or overwriting old results."
+        ),
+    )
     parser.add_argument("--quick", action="store_true", help="Use 2,000 systems, 200 warmup, 300 draws, and one chain.")
     parser.add_argument("--mock", action="store_true", help="Use a generated recovery data set instead of the real FITS table.")
     parser.add_argument("--mock-systems", type=int, default=300)
@@ -418,7 +489,14 @@ def parse_args():
     parser.add_argument("--chains", type=int, default=None)
     parser.add_argument("--seed", type=int, default=20260819)
     parser.add_argument("--posterior-grid-draws", type=int, default=128)
-    parser.add_argument("--velocity-quadrature-nodes", type=int, default=64)
+    parser.add_argument("--lookup-mass-points", type=int, default=None)
+    parser.add_argument("--lookup-sqrt-mass-min", type=float, default=0.25)
+    parser.add_argument("--lookup-sqrt-mass-max", type=float, default=2.5)
+    parser.add_argument("--lookup-velocity-nodes", type=int, default=64)
+    parser.add_argument("--lookup-sigma-extent", type=float, default=10.0)
+    parser.add_argument("--lookup-system-chunk", type=int, default=128)
+    parser.add_argument("--outlier-u0", type=float, default=40.0)
+    parser.add_argument("--outlier-sigma", type=float, default=13.0)
     parser.add_argument("--target-accept", type=float, default=0.9)
     args = parser.parse_args()
     if args.quick:
@@ -427,12 +505,30 @@ def parse_args():
         args.warmup = 200 if args.warmup is None else args.warmup
         args.samples = 300 if args.samples is None else args.samples
         args.chains = 1 if args.chains is None else args.chains
+        args.lookup_mass_points = (
+            512 if args.lookup_mass_points is None else args.lookup_mass_points
+        )
     else:
         args.warmup = 1000 if args.warmup is None else args.warmup
         args.samples = 1000 if args.samples is None else args.samples
         args.chains = 4 if args.chains is None else args.chains
-    if min(args.warmup, args.samples, args.chains, args.posterior_grid_draws) < 1:
-        parser.error("warmup, samples, chains, and posterior-grid-draws must be positive.")
+        args.lookup_mass_points = (
+            1024 if args.lookup_mass_points is None else args.lookup_mass_points
+        )
+    if min(
+        args.warmup,
+        args.samples,
+        args.chains,
+        args.posterior_grid_draws,
+        args.lookup_mass_points,
+        args.lookup_velocity_nodes,
+        args.lookup_system_chunk,
+    ) < 1:
+        parser.error("Sampling and lookup sizes must be positive.")
+    if not (0 < args.lookup_sqrt_mass_min < args.lookup_sqrt_mass_max):
+        parser.error("Require 0 < --lookup-sqrt-mass-min < --lookup-sqrt-mass-max.")
+    if args.lookup_sigma_extent <= 0 or args.outlier_sigma <= 0:
+        parser.error("Lookup sigma extent and outlier sigma must be positive.")
     return args
 
 
@@ -451,7 +547,11 @@ def main():
     else:
         arrays = load_real_data(args.data)
 
-    posterior_path = args.output_dir / "latent_metallicity_weights.npz"
+    posterior_path = (
+        args.metallicity_posterior
+        if args.metallicity_posterior is not None
+        else args.output_dir / "latent_metallicity_weights.npz"
+    )
     if args.stage in {"calibration", "all"}:
         arrays = filter_data(
             arrays, max_systems=args.max_systems, seed=args.seed
@@ -468,8 +568,25 @@ def main():
             fixed_rows=posterior.row_indices,
         )
 
+    lookup_path = args.output_dir / "dynamics_likelihood_lookup.npz"
+    if args.stage in {"lookup", "all"}:
+        dynamics_lookup = run_lookup(arrays, args.output_dir, args)
+    elif args.stage == "mlr":
+        dynamics_lookup = DynamicsLikelihoodLookup.load(lookup_path)
+        dynamics_lookup.validate_for(
+            row_indices=arrays["row_indices"], u=arrays["u"], u_sigma=arrays["u_sigma"]
+        )
+
     if args.stage in {"mlr", "all"}:
-        run_mlr(arrays, posterior, mass_surface, args.output_dir, args, truth)
+        run_mlr(
+            arrays,
+            posterior,
+            dynamics_lookup,
+            mass_surface,
+            args.output_dir,
+            args,
+            truth,
+        )
     print(f"Done. Outputs: {args.output_dir}")
 
 

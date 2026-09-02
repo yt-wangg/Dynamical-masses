@@ -13,12 +13,12 @@ existing DifferencePolyFehMLR implementation is not modified or subclassed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
-from numpy.polynomial.legendre import leggauss
 from scipy.special import gammaln, logsumexp, ndtr
 
 from .differencepoly_feh import IsochroneMassSurfaceModel
@@ -97,6 +97,17 @@ def marginalize_dynamics(log_conditional: np.ndarray, z_probabilities: np.ndarra
     if not np.allclose(sums, 1.0, atol=1e-6):
         raise ValueError("Every z_probabilities row must sum to one.")
     return logsumexp(np.log(np.maximum(z_probabilities, 1e-300)) + log_conditional, axis=-1)
+
+
+def array_digest(*arrays) -> str:
+    """Stable SHA-256 digest for row/data validation across model stages."""
+    digest = hashlib.sha256()
+    for value in arrays:
+        array = np.ascontiguousarray(value)
+        digest.update(str(array.shape).encode("ascii"))
+        digest.update(array.dtype.str.encode("ascii"))
+        digest.update(array.view(np.uint8))
+    return digest.hexdigest()
 
 
 class IsochroneColorSurfaceModel:
@@ -604,6 +615,259 @@ class HierarchicalMetallicityCalibrator:
         return result
 
 
+@dataclass(frozen=True)
+class DynamicsLikelihoodLookup:
+    """Per-system dynamics likelihood tabulated against sqrt(total mass).
+
+    ``log_good[j, l]`` and ``log_bad[j, l]`` contain the accurately integrated
+    likelihood for system ``j`` at ``sqrt_mtot_grid[l]``.  The outlier shape is
+    fixed when the table is constructed; only its mixture fraction remains a
+    free parameter in the MLR fit.
+    """
+
+    row_indices: np.ndarray
+    sqrt_mtot_grid: np.ndarray
+    log_good: np.ndarray
+    log_bad: np.ndarray
+    metadata: Mapping[str, object]
+
+    def validate(self) -> None:
+        rows = np.asarray(self.row_indices)
+        grid = np.asarray(self.sqrt_mtot_grid)
+        good = np.asarray(self.log_good)
+        bad = np.asarray(self.log_bad)
+        if rows.ndim != 1 or grid.ndim != 1:
+            raise ValueError("Lookup row_indices and sqrt_mtot_grid must be one-dimensional.")
+        if grid.size < 2 or np.any(~np.isfinite(grid)) or np.any(np.diff(grid) <= 0):
+            raise ValueError("sqrt_mtot_grid must be finite and strictly increasing.")
+        expected = (rows.size, grid.size)
+        if good.shape != expected or bad.shape != expected:
+            raise ValueError(
+                f"Lookup tables must have shape {expected}; got {good.shape} and {bad.shape}."
+            )
+        if np.any(~np.isfinite(good)) or np.any(~np.isfinite(bad)):
+            raise ValueError("Lookup log likelihoods must be finite.")
+
+    def validate_for(self, *, row_indices, u, u_sigma) -> None:
+        """Verify that a saved table belongs to the exact stage-two data."""
+        self.validate()
+        rows = np.asarray(row_indices, dtype=np.int64)
+        u = np.asarray(u, dtype=np.float64)
+        u_sigma = np.asarray(u_sigma, dtype=np.float64)
+        if not np.array_equal(rows, np.asarray(self.row_indices, dtype=np.int64)):
+            raise ValueError("Dynamics lookup row indices do not match the selected data.")
+        expected_digest = array_digest(rows, u, u_sigma)
+        if self.metadata.get("data_digest") != expected_digest:
+            raise ValueError("Dynamics lookup u/u_sigma digest does not match the selected data.")
+
+    def save(self, path) -> Path:
+        self.validate()
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Deliberately uncompressed: these smooth float32 tables are large, and
+        # fast server-side save/load is more useful than modest compression.
+        np.savez(
+            path,
+            row_indices=np.asarray(self.row_indices, dtype=np.int64),
+            sqrt_mtot_grid=np.asarray(self.sqrt_mtot_grid, dtype=np.float64),
+            log_good=np.asarray(self.log_good, dtype=np.float32),
+            log_bad=np.asarray(self.log_bad, dtype=np.float32),
+            metadata_json=np.asarray(json.dumps(dict(self.metadata), sort_keys=True)),
+        )
+        return path
+
+    @classmethod
+    def load(cls, path) -> "DynamicsLikelihoodLookup":
+        with np.load(path, allow_pickle=False) as saved:
+            result = cls(
+                row_indices=np.asarray(saved["row_indices"], dtype=np.int64),
+                sqrt_mtot_grid=np.asarray(saved["sqrt_mtot_grid"], dtype=np.float64),
+                log_good=np.asarray(saved["log_good"], dtype=np.float32),
+                log_bad=np.asarray(saved["log_bad"], dtype=np.float32),
+                metadata=json.loads(str(saved["metadata_json"].item())),
+            )
+        result.validate()
+        return result
+
+    def interpolate_numpy(self, sqrt_mtot, *, component: str = "good") -> np.ndarray:
+        """Row-wise linear interpolation in log likelihood for diagnostics."""
+        values = np.asarray(sqrt_mtot, dtype=np.float64)
+        if values.ndim != 2 or values.shape[0] != len(self.row_indices):
+            raise ValueError("sqrt_mtot must have shape (n_systems, n_evaluations).")
+        table = self.log_good if component == "good" else self.log_bad
+        if component not in {"good", "bad"}:
+            raise ValueError("component must be 'good' or 'bad'.")
+        if np.any(values < self.sqrt_mtot_grid[0]) or np.any(values > self.sqrt_mtot_grid[-1]):
+            raise ValueError("Requested sqrt(total mass) lies outside the lookup domain.")
+        output = np.empty_like(values)
+        for row in range(values.shape[0]):
+            output[row] = np.interp(values[row], self.sqrt_mtot_grid, table[row])
+        return output
+
+    @classmethod
+    def precompute(
+        cls,
+        *,
+        row_indices,
+        u,
+        u_sigma,
+        sqrt_mtot_min: float = 0.25,
+        sqrt_mtot_max: float = 2.5,
+        sqrt_mtot_points: int = 1024,
+        velocity_quadrature_nodes: int = 64,
+        velocity_sigma_extent: float = 10.0,
+        tilde_u_max: float = 80.0,
+        outlier_u0: float = 40.0,
+        outlier_sigma: float = 13.0,
+        system_chunk: int = 256,
+        floor: float = 1e-30,
+    ) -> "DynamicsLikelihoodLookup":
+        """Precompute accurate Rice-convolved likelihood tables on a GPU/CPU.
+
+        The expensive integral is expressed in observed velocity ``v``.  Each
+        system gets Gauss--Legendre nodes over ``u +/- velocity_sigma_extent *
+        u_sigma`` (clipped at zero).  These local nodes resolve a narrow Rice
+        kernel; the old 64 nodes were instead spread over the full [0, 80]
+        normalized-velocity interval and could completely miss that kernel.
+        """
+        rows = np.asarray(row_indices, dtype=np.int64)
+        u = _as_native_f64(u, name="u", ndim=1)
+        u_sigma = _as_native_f64(u_sigma, name="u_sigma", ndim=1)
+        if rows.shape != u.shape or u.shape != u_sigma.shape:
+            raise ValueError("row_indices, u, and u_sigma must have identical shapes.")
+        if np.any(~np.isfinite(u)) or np.any(~np.isfinite(u_sigma)):
+            raise ValueError("u and u_sigma must be finite.")
+        if np.any(u <= 0) or np.any(u_sigma <= 0):
+            raise ValueError("u and u_sigma must be strictly positive.")
+        if not (0 < sqrt_mtot_min < sqrt_mtot_max):
+            raise ValueError("Require 0 < sqrt_mtot_min < sqrt_mtot_max.")
+        if (
+            int(sqrt_mtot_points) < 2
+            or int(velocity_quadrature_nodes) < 8
+            or velocity_sigma_extent <= 0
+            or tilde_u_max <= 0
+        ):
+            raise ValueError("Lookup grid sizes and spacings must be positive.")
+        if outlier_sigma <= 0 or system_chunk < 1:
+            raise ValueError("outlier_sigma and system_chunk must be positive.")
+
+        jax = _configure_jax_gpu_fallback()
+        import jax.numpy as jnp
+        from jax.scipy.special import i0e
+        from jax.scipy.special import ndtr as jax_ndtr
+
+        sqrt_grid = np.geomspace(
+            float(sqrt_mtot_min), float(sqrt_mtot_max), int(sqrt_mtot_points)
+        ).astype(np.float64)
+        sqrt_jax = jnp.asarray(sqrt_grid, dtype=jnp.float32)
+        gl_x, gl_w = np.polynomial.legendre.leggauss(int(velocity_quadrature_nodes))
+        gl_x_jax = jnp.asarray(gl_x, dtype=jnp.float32)
+        gl_w_jax = jnp.asarray(gl_w, dtype=jnp.float32)
+        outlier_norm = jax_ndtr(float(outlier_u0) / float(outlier_sigma))
+
+        def calculate_chunk(u_chunk, sigma_chunk):
+            lower = jnp.maximum(0.0, u_chunk - float(velocity_sigma_extent) * sigma_chunk)
+            upper = u_chunk + float(velocity_sigma_extent) * sigma_chunk
+            midpoint = 0.5 * (lower + upper)
+            half_width = 0.5 * (upper - lower)
+            velocity = midpoint[:, None] + half_width[:, None] * gl_x_jax[None, :]
+            quadrature_weight = half_width[:, None] * gl_w_jax[None, :]
+            observed = u_chunk[:, None]
+            sigma = sigma_chunk[:, None]
+            sigma_sq = sigma**2
+            argument = observed * velocity / sigma_sq
+            log_rice = (
+                jnp.log(observed)
+                - jnp.log(sigma_sq)
+                - (observed**2 + velocity**2) / (2.0 * sigma_sq)
+                + jnp.log(i0e(argument) + 1e-30)
+                + jnp.abs(argument)
+            )
+            kernel = jnp.exp(log_rice) * quadrature_weight
+
+            tilde_u = velocity[:, :, None] / sqrt_jax[None, None, :]
+            tilde_for_eval = jnp.clip(tilde_u, 1e-12, float(tilde_u_max))
+            log_good_basis = (
+                jnp.log(5.434e-3)
+                + jnp.log(tilde_for_eval)
+                - 2.544e-3 * tilde_for_eval**2
+                - jnp.exp((tilde_for_eval - 35.67) / 3.100)
+                - jnp.log(sqrt_jax[None, None, :])
+            )
+            good_basis = jnp.where(
+                (tilde_u > 0.0) & (tilde_u <= float(tilde_u_max)),
+                jnp.exp(log_good_basis),
+                0.0,
+            )
+            log_bad_basis = (
+                -0.5 * ((tilde_for_eval - float(outlier_u0)) / float(outlier_sigma)) ** 2
+                - jnp.log(float(outlier_sigma) * jnp.sqrt(2.0 * jnp.pi))
+                - jnp.log(outlier_norm)
+                - jnp.log(sqrt_jax[None, None, :])
+            )
+            bad_basis = jnp.where(
+                (tilde_u >= 0.0) & (tilde_u <= float(tilde_u_max)),
+                jnp.exp(log_bad_basis),
+                0.0,
+            )
+            return (
+                jnp.sum(kernel[:, :, None] * good_basis, axis=1),
+                jnp.sum(kernel[:, :, None] * bad_basis, axis=1),
+            )
+
+        calculate_chunk = jax.jit(calculate_chunk)
+        n_systems = rows.size
+        log_good = np.empty((n_systems, sqrt_grid.size), dtype=np.float32)
+        log_bad = np.empty_like(log_good)
+        devices = ", ".join(str(device) for device in jax.devices())
+        print(
+            "Precomputing dynamics lookup: "
+            f"{n_systems} systems x {sqrt_grid.size} mass nodes, "
+            f"{int(velocity_quadrature_nodes)} local velocity nodes on {devices}."
+        )
+        for start in range(0, n_systems, int(system_chunk)):
+            stop = min(start + int(system_chunk), n_systems)
+            count = stop - start
+            u_chunk = np.empty(int(system_chunk), dtype=np.float32)
+            sigma_chunk = np.empty(int(system_chunk), dtype=np.float32)
+            u_chunk[:count] = u[start:stop]
+            sigma_chunk[:count] = u_sigma[start:stop]
+            if count < int(system_chunk):
+                u_chunk[count:] = u[start]
+                sigma_chunk[count:] = u_sigma[start]
+            good_chunk, bad_chunk = calculate_chunk(
+                jnp.asarray(u_chunk), jnp.asarray(sigma_chunk)
+            )
+            good_chunk = np.asarray(jax.device_get(good_chunk))[:count]
+            bad_chunk = np.asarray(jax.device_get(bad_chunk))[:count]
+            log_good[start:stop] = np.log(np.maximum(good_chunk, float(floor)))
+            log_bad[start:stop] = np.log(np.maximum(bad_chunk, float(floor)))
+            print(f"  lookup systems {stop}/{n_systems}", flush=True)
+
+        metadata = {
+            "model": "dynamics_likelihood_lookup_local_gl_v2",
+            "data_digest": array_digest(rows, u, u_sigma),
+            "sqrt_mtot_min": float(sqrt_mtot_min),
+            "sqrt_mtot_max": float(sqrt_mtot_max),
+            "sqrt_mtot_points": int(sqrt_mtot_points),
+            "velocity_quadrature_nodes": int(velocity_quadrature_nodes),
+            "velocity_sigma_extent": float(velocity_sigma_extent),
+            "tilde_u_max": float(tilde_u_max),
+            "outlier_u0": float(outlier_u0),
+            "outlier_sigma": float(outlier_sigma),
+            "floor": float(floor),
+        }
+        result = cls(
+            row_indices=rows,
+            sqrt_mtot_grid=sqrt_grid,
+            log_good=log_good,
+            log_bad=log_bad,
+            metadata=metadata,
+        )
+        result.validate()
+        return result
+
+
 class ThreeKnotMetallicityMLR:
     """Stage-two PARSEC-relative MLR with two three-knot correction curves."""
 
@@ -612,16 +876,11 @@ class ThreeKnotMetallicityMLR:
         mass_surface: IsochroneMassSurfaceModel,
         *,
         mg_knots: Sequence[float] = DEFAULT_MG_KNOTS,
-        quadrature_nodes: int = 64,
-        int_umax: float = 80.0,
     ):
         self.mass_surface = mass_surface
         self.mg_knots = _as_native_f64(mg_knots, name="mg_knots", ndim=1)
         if self.mg_knots.shape != (3,) or np.any(np.diff(self.mg_knots) <= 0):
             raise ValueError("mg_knots must contain exactly three increasing values.")
-        gl_x, gl_w = leggauss(int(quadrature_nodes))
-        self.velocity_nodes = 0.5 * (gl_x + 1.0) * float(int_umax)
-        self.velocity_weights = 0.5 * gl_w * float(int_umax)
         self.sampler = None
         self.posterior_samples = None
         self._data_set = False
@@ -646,6 +905,7 @@ class ThreeKnotMetallicityMLR:
         u_sigma,
         absg,
         metallicity_grid: MetallicityPosteriorGrid,
+        dynamics_lookup: DynamicsLikelihoodLookup,
     ) -> None:
         metallicity_grid.validate()
         self.row_indices = np.asarray(row_indices, dtype=np.int64)
@@ -661,6 +921,15 @@ class ThreeKnotMetallicityMLR:
             raise ValueError("Stage-two arrays must contain only finite values.")
         if np.any(self.u <= 0) or np.any(self.u_sigma <= 0):
             raise ValueError("u and u_sigma must be strictly positive.")
+        dynamics_lookup.validate_for(
+            row_indices=self.row_indices, u=self.u, u_sigma=self.u_sigma
+        )
+        self.dynamics_lookup = dynamics_lookup
+        self.sqrt_mtot_grid = np.asarray(
+            dynamics_lookup.sqrt_mtot_grid, dtype=np.float64
+        )
+        self.log_good_lookup = np.asarray(dynamics_lookup.log_good, dtype=np.float32)
+        self.log_bad_lookup = np.asarray(dynamics_lookup.log_bad, dtype=np.float32)
         self.z_grid = np.asarray(metallicity_grid.z_grid, dtype=np.float64)
         self.z_probabilities = np.asarray(metallicity_grid.probabilities, dtype=np.float64)
         if self.z_probabilities.shape != (n, self.z_grid.size):
@@ -668,71 +937,30 @@ class ThreeKnotMetallicityMLR:
         self._data_set = True
 
     def _build_numpyro_model(self):
-        import jax
         import jax.numpy as jnp
-        from jax.scipy.special import i0e
         from jax.scipy.special import logsumexp as jax_logsumexp
         import numpyro
         import numpyro.distributions as dist
 
         mg_knots = jnp.asarray(self.mg_knots)
         z_grid = jnp.asarray(self.z_grid)
-        velocity_nodes = jnp.asarray(self.velocity_nodes)
-        velocity_weights = jnp.asarray(self.velocity_weights)
+        sqrt_grid = jnp.asarray(self.sqrt_mtot_grid)
 
-        def func_pu(tilde_u, A=5.434e-3, B=2.544e-3, C=3.100, u0=35.67):
-            return A * tilde_u * jnp.exp(-(B * tilde_u**2 + jnp.exp((tilde_u - u0) / C)))
+        def interpolate_lookup(sqrt_mtot, log_table):
+            """Interpolate each system's table at every metallicity node."""
+            upper = jnp.searchsorted(sqrt_grid, sqrt_mtot, side="right")
+            upper = jnp.clip(upper, 1, sqrt_grid.size - 1)
+            lower = upper - 1
+            y_lower = jnp.take_along_axis(log_table, lower, axis=1)
+            y_upper = jnp.take_along_axis(log_table, upper, axis=1)
+            x_lower = sqrt_grid[lower]
+            x_upper = sqrt_grid[upper]
+            weight = (sqrt_mtot - x_lower) / (x_upper - x_lower)
+            interpolated = y_lower + weight * (y_upper - y_lower)
+            in_domain = (sqrt_mtot >= sqrt_grid[0]) & (sqrt_mtot <= sqrt_grid[-1])
+            return jnp.where(in_domain, interpolated, -jnp.inf)
 
-        def rice_pdf(observed, true, sigma):
-            sigma = jnp.maximum(sigma, 1e-10)
-            sigma_sq = sigma**2
-            argument = observed * true / sigma_sq
-            log_pdf = (
-                jnp.log(jnp.maximum(observed, 1e-100))
-                - jnp.log(sigma_sq)
-                - (observed**2 + true**2) / (2.0 * sigma_sq)
-                + jnp.log(i0e(argument) + 1e-100)
-                + jnp.abs(argument)
-            )
-            return jnp.exp(log_pdf)
-
-        def outlier_pdf(tilde_u, center, sigma):
-            return jnp.exp(-0.5 * ((tilde_u - center) / sigma) ** 2) / (
-                sigma * jnp.sqrt(2.0 * jnp.pi)
-            )
-
-        def conditional_dynamics(u, u_sigma, sqrt_mtot, f_outlier, outlier_u0, outlier_sigma):
-            observed = u[:, None] / sqrt_mtot
-            observed_sigma = u_sigma[:, None] / sqrt_mtot
-            outlier_norm = 0.5 * (
-                1.0 + jax.lax.erf(outlier_u0 / (outlier_sigma * jnp.sqrt(2.0)))
-            )
-
-            def integrate_one(carry, node_weight):
-                good_sum, bad_sum = carry
-                node, weight = node_weight
-                measurement = rice_pdf(observed, node, observed_sigma)
-                scale_jacobian = 1.0 / sqrt_mtot
-                good_sum = good_sum + scale_jacobian * func_pu(node) * measurement * weight
-                bad_sum = bad_sum + (
-                    scale_jacobian
-                    * outlier_pdf(node, outlier_u0, outlier_sigma)
-                    / jnp.maximum(outlier_norm, 1e-10)
-                    * measurement
-                    * weight
-                )
-                return (good_sum, bad_sum), None
-
-            zeros = jnp.zeros_like(sqrt_mtot)
-            (good, bad), _ = jax.lax.scan(
-                jax.checkpoint(integrate_one),
-                (zeros, zeros),
-                (velocity_nodes, velocity_weights),
-            )
-            probability = (1.0 - f_outlier) * good + f_outlier * bad + 1e-20
-            return jnp.clip(probability, 1e-100, 1e10)
-
-        def model(u, u_sigma, absg, z_probabilities):
+        def model(absg, z_probabilities, log_good_lookup, log_bad_lookup):
             f0_knots = numpyro.sample("f0_knots", dist.Normal(0.0, 0.10).expand([3]))
             fz_knots = numpyro.sample("fz_knots", dist.Normal(0.0, 0.15).expand([3]))
             numpyro.factor(
@@ -744,12 +972,6 @@ class ThreeKnotMetallicityMLR:
                 dist.Normal(0.0, 0.05).log_prob(fz_knots[0] - 2.0 * fz_knots[1] + fz_knots[2]),
             )
             f_outlier = numpyro.sample("f_outlier", dist.Beta(3.0, 12.0))
-            outlier_u0 = numpyro.sample(
-                "outlier_u0", dist.TruncatedNormal(loc=40.0, scale=5.0, low=30.0, high=200.0)
-            )
-            outlier_sigma = numpyro.sample(
-                "outlier_sigma", dist.TruncatedNormal(loc=13.0, scale=3.0, low=5.0, high=100.0)
-            )
 
             absg1 = absg[:, 0, None]
             absg2 = absg[:, 1, None]
@@ -765,11 +987,15 @@ class ThreeKnotMetallicityMLR:
                 10.0, f0_2 + mh * fz_2
             )
             sqrt_mtot = jnp.sqrt(jnp.maximum(m1 + m2, 1e-12))
-            conditional = conditional_dynamics(
-                u, u_sigma, sqrt_mtot, f_outlier, outlier_u0, outlier_sigma
+            log_good = interpolate_lookup(sqrt_mtot, log_good_lookup)
+            log_bad = interpolate_lookup(sqrt_mtot, log_bad_lookup)
+            log_conditional = jnp.logaddexp(
+                jnp.log1p(-f_outlier) + log_good,
+                jnp.log(f_outlier) + log_bad,
             )
             log_likelihood = jax_logsumexp(
-                jnp.log(jnp.maximum(z_probabilities, 1e-30)) + jnp.log(conditional), axis=1
+                jnp.log(jnp.maximum(z_probabilities, 1e-30)) + log_conditional,
+                axis=1,
             )
             numpyro.factor("dynamics", jnp.sum(log_likelihood))
 
@@ -811,10 +1037,10 @@ class ThreeKnotMetallicityMLR:
         )
         mcmc.run(
             jax.random.PRNGKey(int(seed)),
-            jnp.asarray(self.u),
-            jnp.asarray(self.u_sigma),
             jnp.asarray(self.absg),
             jnp.asarray(self.z_probabilities),
+            jnp.asarray(self.log_good_lookup),
+            jnp.asarray(self.log_bad_lookup),
             extra_fields=("diverging", "energy", "potential_energy", "num_steps", "accept_prob"),
         )
         self.sampler = mcmc
@@ -838,9 +1064,13 @@ class ThreeKnotMetallicityMLR:
             z_grid = np.array([-1.0, -0.5, 0.0, 0.3, 0.6])
         absg_grid = np.asarray(absg_grid, dtype=float)
         z_grid = np.asarray(z_grid, dtype=float)
-        count = min(max_draws, self.posterior_samples["f0_knots"].shape[0])
-        f0_samples = self.posterior_samples["f0_knots"][:count]
-        fz_samples = self.posterior_samples["fz_knots"][:count]
+        n_available = self.posterior_samples["f0_knots"].shape[0]
+        count = min(max_draws, n_available)
+        # Even spacing covers every chain after NumPyro flattens grouped draws;
+        # taking [:count] silently selected only chain 0 in long multi-chain runs.
+        draw_indices = np.linspace(0, n_available - 1, count, dtype=np.int64)
+        f0_samples = self.posterior_samples["f0_knots"][draw_indices]
+        fz_samples = self.posterior_samples["fz_knots"][draw_indices]
         correction = np.empty((count, z_grid.size, absg_grid.size), dtype=np.float64)
         mass = np.empty_like(correction)
         baseline = self.mass_surface.mass_from_absg_mh(

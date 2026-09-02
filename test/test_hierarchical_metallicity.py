@@ -9,16 +9,20 @@ import tempfile
 import unittest
 
 import numpy as np
+from scipy.integrate import quad
+from scipy.special import i0e
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from binary_masses.differencepoly_feh import IsochroneMassSurfaceModel
 from binary_masses.hierarchical_metallicity import (
+    DynamicsLikelihoodLookup,
     HierarchicalMetallicityCalibrator,
     IsochroneColorSurfaceModel,
     MetallicityPosteriorGrid,
     ThreeKnotMetallicityMLR,
+    array_digest,
     color_uncertainty_from_flux_snr,
     marginalize_dynamics,
     normalize_log_weights,
@@ -58,6 +62,23 @@ def set_small_calibrator(surface):
         color_sigma=np.full((3, 2), 0.01),
     )
     return calibrator
+
+
+def simple_dynamics_lookup(rows, u, u_sigma):
+    rows = np.asarray(rows, dtype=np.int64)
+    u = np.asarray(u, dtype=np.float64)
+    u_sigma = np.asarray(u_sigma, dtype=np.float64)
+    grid = np.array([0.25, 0.75, 1.25, 2.5])
+    row_term = np.arange(rows.size, dtype=float)[:, None] * 0.01
+    log_good = -0.5 * (grid[None, :] - 1.2) ** 2 + row_term
+    log_bad = -0.1 * (grid[None, :] - 1.0) ** 2 + row_term
+    return DynamicsLikelihoodLookup(
+        row_indices=rows,
+        sqrt_mtot_grid=grid,
+        log_good=log_good,
+        log_bad=log_bad,
+        metadata={"data_digest": array_digest(rows, u, u_sigma)},
+    )
 
 
 class HierarchicalMetallicityTests(unittest.TestCase):
@@ -145,8 +166,88 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             marginalize_dynamics(log_conditional, probabilities, np.ones_like(probabilities))
 
+    def test_dynamics_lookup_round_trip_interpolation_and_digest(self):
+        rows = np.array([2, 9])
+        u = np.array([10.0, 12.0])
+        u_sigma = np.array([1.0, 1.5])
+        lookup = simple_dynamics_lookup(rows, u, u_sigma)
+        lookup.validate_for(row_indices=rows, u=u, u_sigma=u_sigma)
+        query = np.array([[0.5, 1.0], [0.8, 2.0]])
+        expected = lookup.interpolate_numpy(query, component="good")
+        with tempfile.TemporaryDirectory() as directory:
+            loaded = DynamicsLikelihoodLookup.load(
+                lookup.save(Path(directory) / "dynamics_lookup.npz")
+            )
+        self.assertTrue(np.allclose(loaded.interpolate_numpy(query), expected, atol=1e-6))
+        with self.assertRaisesRegex(ValueError, "digest"):
+            loaded.validate_for(row_indices=rows, u=u + 0.01, u_sigma=u_sigma)
+        with self.assertRaisesRegex(ValueError, "outside"):
+            loaded.interpolate_numpy(np.array([[0.1], [1.0]]))
+
+    def test_local_velocity_lookup_precomputation_is_finite(self):
+        lookup = DynamicsLikelihoodLookup.precompute(
+            row_indices=np.array([1, 4]),
+            u=np.array([10.0, 18.0]),
+            u_sigma=np.array([0.2, 2.0]),
+            sqrt_mtot_min=0.5,
+            sqrt_mtot_max=2.0,
+            sqrt_mtot_points=8,
+            velocity_quadrature_nodes=16,
+            system_chunk=2,
+        )
+        self.assertEqual(lookup.log_good.shape, (2, 8))
+        self.assertTrue(np.all(np.isfinite(lookup.log_good)))
+        self.assertTrue(np.all(np.isfinite(lookup.log_bad)))
+        self.assertEqual(lookup.metadata["velocity_quadrature_nodes"], 16)
+
+    def test_local_velocity_lookup_matches_adaptive_integral_for_narrow_kernel(self):
+        u, u_sigma = 10.0, 0.2
+        lookup = DynamicsLikelihoodLookup.precompute(
+            row_indices=np.array([7]),
+            u=np.array([u]),
+            u_sigma=np.array([u_sigma]),
+            sqrt_mtot_min=0.5,
+            sqrt_mtot_max=2.0,
+            sqrt_mtot_points=65,
+            velocity_quadrature_nodes=64,
+            system_chunk=1,
+        )
+        indices = np.array([8, 31, 57])
+        sqrt_mass = lookup.sqrt_mtot_grid[indices]
+        tabulated = np.exp(lookup.log_good[0, indices])
+
+        def rice_pdf(observed, true_velocity, sigma):
+            argument = observed * true_velocity / sigma**2
+            return np.exp(
+                np.log(observed / sigma**2)
+                - (observed**2 + true_velocity**2) / (2.0 * sigma**2)
+                + np.log(i0e(argument))
+                + abs(argument)
+            )
+
+        def physical_pdf(tilde_u):
+            return 5.434e-3 * tilde_u * np.exp(
+                -(2.544e-3 * tilde_u**2 + np.exp((tilde_u - 35.67) / 3.100))
+            )
+
+        reference = np.array(
+            [
+                quad(
+                    lambda velocity: rice_pdf(u, velocity, u_sigma)
+                    * physical_pdf(velocity / scale)
+                    / scale,
+                    max(0.0, u - 12.0 * u_sigma),
+                    u + 12.0 * u_sigma,
+                    epsabs=1e-12,
+                    epsrel=1e-10,
+                )[0]
+                for scale in sqrt_mass
+            ]
+        )
+        self.assertTrue(np.allclose(tabulated, reference, rtol=2e-4, atol=1e-8))
+
     def test_three_knot_correction_and_row_validation(self):
-        mlr = ThreeKnotMetallicityMLR(simple_mass_surface(), quadrature_nodes=4)
+        mlr = ThreeKnotMetallicityMLR(simple_mass_surface())
         f0 = np.array([0.0, 0.1, 0.2])
         fz = np.array([-0.1, 0.0, 0.1])
         correction = mlr.correction_log10(
@@ -168,10 +269,13 @@ class HierarchicalMetallicityTests(unittest.TestCase):
                 u_sigma=np.array([1.0, 1.0]),
                 absg=np.array([[5.0, 7.0], [6.0, 8.0]]),
                 metallicity_grid=posterior,
+                dynamics_lookup=simple_dynamics_lookup(
+                    np.array([1, 4]), np.array([10.0, 12.0]), np.array([1.0, 1.0])
+                ),
             )
 
     def test_stage_two_correction_postprocessing(self):
-        mlr = ThreeKnotMetallicityMLR(simple_mass_surface(), quadrature_nodes=4)
+        mlr = ThreeKnotMetallicityMLR(simple_mass_surface())
         mlr.posterior_samples = {
             "f0_knots": np.array([[0.0, 0.0, 0.0], [0.01, 0.0, -0.01]]),
             "fz_knots": np.array([[0.0, 0.0, 0.0], [-0.05, 0.0, 0.05]]),
@@ -219,19 +323,22 @@ class HierarchicalMetallicityTests(unittest.TestCase):
             bad_probabilities=np.zeros((3, 2)),
             metadata={},
         )
-        mlr = ThreeKnotMetallicityMLR(simple_mass_surface(), quadrature_nodes=4)
+        mlr = ThreeKnotMetallicityMLR(simple_mass_surface())
+        u = np.array([10.0, 12.0, 14.0])
+        u_sigma = np.array([1.0, 1.2, 1.4])
         mlr.set_data(
             row_indices=posterior.row_indices,
-            u=np.array([10.0, 12.0, 14.0]),
-            u_sigma=np.array([1.0, 1.2, 1.4]),
+            u=u,
+            u_sigma=u_sigma,
             absg=calibrator.absg,
             metallicity_grid=posterior,
+            dynamics_lookup=simple_dynamics_lookup(posterior.row_indices, u, u_sigma),
         )
         mlr_trace = handlers.trace(handlers.seed(mlr._build_numpyro_model(), rng_seed=5)).get_trace(
-            jnp.asarray(mlr.u),
-            jnp.asarray(mlr.u_sigma),
             jnp.asarray(mlr.absg),
             jnp.asarray(mlr.z_probabilities),
+            jnp.asarray(mlr.log_good_lookup),
+            jnp.asarray(mlr.log_bad_lookup),
         )
         self.assertIn("dynamics", mlr_trace)
         self.assertIn("solar_anchor", mlr_trace)
