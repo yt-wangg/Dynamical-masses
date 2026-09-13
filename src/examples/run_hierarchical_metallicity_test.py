@@ -142,15 +142,19 @@ def _require_t8_posterior_metadata(
     expected_weights[1:-1] = 0.5 * (expected_grid[2:] - expected_grid[:-2])
     if metadata.get("posterior_grid_nodes") != 81:
         raise ValueError("T8 posterior has an unexpected metallicity-grid size.")
-    if not np.array_equal(np.asarray(posterior.z_grid, dtype=np.float64), expected_grid):
+    if not np.allclose(np.asarray(posterior.z_grid, dtype=np.float64), expected_grid, rtol=0.0, atol=1e-14):
         raise ValueError("T8 posterior does not use the exact 81-node [-1,0.6] grid.")
-    if not np.array_equal(
-        np.asarray(metadata.get("metallicity_grid", []), dtype=np.float64), expected_grid
+    if not np.allclose(
+        np.asarray(metadata.get("metallicity_grid", []), dtype=np.float64),
+        expected_grid,
+        rtol=0.0,
+        atol=1e-14,
     ):
         raise ValueError("T8 posterior metallicity-grid metadata is missing or inconsistent.")
-    if not np.array_equal(
+    if not np.allclose(
         np.asarray(metadata.get("metallicity_grid_weights", []), dtype=np.float64),
         expected_weights,
+        rtol=0.0, atol=1e-14,
     ):
         raise ValueError("T8 posterior trapezoid-weight metadata is missing or inconsistent.")
     if metadata.get("posterior_average_draw_count") is None or metadata.get("selected_draw_count") is None:

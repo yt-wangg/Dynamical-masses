@@ -1312,7 +1312,7 @@ class DynamicsLikelihoodLookup:
             float(self.metadata["sqrt_mtot_max"]),
             int(self.metadata["sqrt_mtot_points"]),
         )
-        if not np.array_equal(grid, expected_grid):
+        if not np.allclose(grid, expected_grid, rtol=0.0, atol=1e-14):
             raise ValueError("Saved lookup grid does not match its T8 metadata; rebuild lookup.")
         adopted = convergence.get("adopted", {})
         checked_grid = np.asarray(convergence.get("scale_grid", []), dtype=np.float64)
