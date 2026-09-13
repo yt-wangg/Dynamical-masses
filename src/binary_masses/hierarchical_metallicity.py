@@ -1255,7 +1255,8 @@ class DynamicsLikelihoodLookup:
                 rtol=0.0, atol=0.0,
             )
             or requested_systems < 1
-            or actual_systems != min(requested_systems, len(self.row_indices))
+            or actual_systems < 1
+            or actual_systems > min(requested_systems, len(self.row_indices))
             or selected_rows.size != actual_systems
             or np.unique(selected_rows).size != actual_systems
             or not np.all(np.isin(selected_rows, np.asarray(self.row_indices, dtype=np.int64)))

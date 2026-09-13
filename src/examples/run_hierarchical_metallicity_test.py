@@ -313,13 +313,34 @@ def select_cmd_anchored_systems(
     selected_posterior.validate()
 
     lookup_metadata = dict(dynamics_lookup.metadata)
+    selected_lookup_digest = array_digest(
+        selected_arrays["row_indices"], selected_arrays["u"], selected_arrays["u_sigma"]
+    )
+    selected_convergence = dict(lookup_metadata["convergence_check"])
+    tested_rows = np.asarray(
+        selected_convergence.get("selected_row_indices", []), dtype=np.int64
+    )
+    surviving_tested_rows = tested_rows[
+        np.isin(tested_rows, selected_arrays["row_indices"])
+    ]
+    if surviving_tested_rows.size == 0:
+        raise ValueError(
+            "CMD-anchored selection removed every row used by the saved Rice "
+            "convergence check; rebuild lookup for this subset."
+        )
+    selected_convergence.update(
+        {
+            "source_data_digest": selected_lookup_digest,
+            "sample_system_count": int(surviving_tested_rows.size),
+            "selected_row_indices": surviving_tested_rows.tolist(),
+            "selected_row_indices_digest": array_digest(surviving_tested_rows),
+            "source_subset": "cmd_anchored_selection_of_converged_lookup",
+        }
+    )
     lookup_metadata.update(
         {
-            "data_digest": array_digest(
-                selected_arrays["row_indices"],
-                selected_arrays["u"],
-                selected_arrays["u_sigma"],
-            ),
+            "data_digest": selected_lookup_digest,
+            "convergence_check": selected_convergence,
             "subset": f"{selection_text} a CMD-anchored warm classification",
             "n_systems": int(np.sum(keep)),
         }
