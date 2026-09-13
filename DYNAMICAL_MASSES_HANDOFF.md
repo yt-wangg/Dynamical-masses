@@ -10,10 +10,13 @@
 results/data_diffpoly2d_anchor_cute_tfeherr
 ```
 
-模型使用真实测量的金属丰度误差，主要配置包括：
+模型使用未校正 XP 测量及其未校正误差，主要配置包括：
 
 - `use_feh_uncertainty=True`
-- `feh_sigma_column="jc_sigma_m_h_cal_1"`
+- `feh_column="feh_jcaps_1"`
+- `feh_sigma_column="jc_sigma_m_h_1"`
+
+不得使用 `jc_m_h_fit_cal_*` 或 `jc_sigma_m_h_cal_*`。这些列已经利用双星金属丰度相等假设，和当前模型的 calibration likelihood 重复。
 - `feh_quadrature_nodes=11`
 - `feh_min=-1`
 - `feh_max=0.6`
@@ -120,7 +123,7 @@ data/jd_msms_single_bic_1kpc_filtered_cmdcut_cutb_jcaps_err_mhcal_good.fits
 
 ```text
 jc_m_h_fit_1
-jc_sigma_m_h_cal_1
+jc_sigma_m_h_1
 ```
 
 新输出目录：
@@ -266,4 +269,3 @@ PID 只对当时那次运行有效，重新启动后需要用 `pgrep -af run_on_
    - 速度积分分辨率参数
    - 可选训练子样本数
 8. 正式长时间运行前，可以先用 2 chains 和较少 warmup/samples 做性能与模型 smoke run。
-

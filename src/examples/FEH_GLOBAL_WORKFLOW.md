@@ -2,13 +2,17 @@
 
 ## Input and metallicity convention
 
+The project uses the uncorrected XP metallicity measurements and errors only.
+The calibrated columns must not be used: their construction already uses the
+wide-binary equal-metallicity assumption that this model is intended to fit.
+
 The runner reads
 `data/jd_msms_single_bic_1kpc_filtered_cmdcut_cutb_jcaps_err_mhcal_good.fits`.
 This table is already quality-selected.  One system metallicity is used for both
 components:
 
-- observed value: `jc_m_h_fit_cal_1`;
-- 1-sigma error: `jc_sigma_m_h_cal_1`.
+- observed value: `feh_jcaps_1`;
+- 1-sigma error: `jc_sigma_m_h_1`.
 
 This is the primary's measurement, not an average of the two component fits.
 The mass model nevertheless treats it as the shared metallicity of the coeval
@@ -179,4 +183,3 @@ Before replacing the current polynomial, validate the constrained model with:
 3. recovery on mock data, including boundary metallicities;
 4. the same fixed held-out split used for the three polynomial stages;
 5. divergence, BFMI, tree-depth, and posterior predictive checks.
-

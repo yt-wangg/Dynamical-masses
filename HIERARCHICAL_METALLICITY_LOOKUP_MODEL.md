@@ -4,6 +4,17 @@
 
 这个实验保持两阶段 modular/cut inference。第一阶段的后验只通过每个系统的离散金属丰度概率 $P_{jq}$ 传给第二阶段；第二阶段不会重复加入光谱、CMD 或总体金属丰度 likelihood。
 
+## 当前数据前提：只使用未校正 XP 金属丰度
+
+本项目只使用输入表中的未校正 XP 金属丰度及其未校正误差：
+
+- `feh_jcaps_1`, `feh_jcaps_2`
+- `jc_sigma_m_h_1`, `jc_sigma_m_h_2`
+
+不得使用 `jc_m_h_fit_cal_*`、`jc_sigma_m_h_cal_*` 或其他基于双星金属丰度相等假设得到的校正列。那些列已经使用了本模型要重新估计的双星一致性信息；再次使用会重复计算同一信息，并使 calibration 与输入数据循环耦合。
+
+如果输入表缺少上述四列，运行应直接报告缺失列。不能静默替换为 calibrated、inflated 或其他误差列。
+
 ```mermaid
 flowchart LR
     A["双星两分量光谱 [M/H]"] --> D["第一阶段：共享 Z_j"]
@@ -26,8 +37,8 @@ flowchart LR
 | $Z_j$ | 系统 $j$ 的共享潜在金属丰度，单位 dex |
 | $Z_q$ | 固定网格 $[-1,0.6]$ 上第 $q$ 个值 |
 | $G_{jk}$ | 第 $k$ 个分量的绝对 Gaia $G$ 星等，即代码中的 `absg` |
-| $\hat z_{jk}$ | 光谱金属丰度中心值，读取 `jc_m_h_fit_1/2` |
-| $\sigma_{z,jk}$ | 光谱金属丰度误差，读取 `jc_sigma_m_h_cal_1/2` |
+| $\hat z_{jk}$ | 光谱金属丰度中心值，读取 `feh_jcaps_1/2` |
+| $\sigma_{z,jk}$ | 未校正 XP 光谱金属丰度误差，读取 `jc_sigma_m_h_1/2` |
 | $C_{jk}$ | 消光改正后的观测颜色 `bp_rp0_1/2` |
 | $\sigma_{C,jk}$ | 由 BP/RP flux-over-error 传播得到的 formal 颜色误差 |
 | $t_\nu(x\mid\mu,\sigma)$ | 位置为 $\mu$、尺度为 $\sigma$、自由度为 $\nu$ 的 Student-t 密度 |
@@ -329,6 +340,8 @@ $$
 
 其中 $\theta$ 表示 MLR 结点和 $f_b$。这个式子没有再次乘入 $p_{\rm pop}$、光谱或 CMD likelihood。
 
+NUTS 从无校正的 PARSEC 基线初始化：$f_0=f_Z=0$、$f_b=0.2$。这是因为 NumPyro 默认的无界参数初值范围远宽于这里的 $0.10$--$0.15$ dex 先验尺度，可能把初始质量推到 lookup 范围之外，使初始 log likelihood 变成 $-\infty$。运行采样前，代码会直接计算并打印这个零校正基线的动力学 log likelihood；如果它仍非有限，程序会报告对应的原始数据行号。
+
 ```mermaid
 flowchart LR
     A["当前 MLR 结点 theta"] --> B["M(G_jk,Z_q)"]
@@ -379,6 +392,14 @@ conda run -n dyn python src/examples/run_hierarchical_metallicity_test.py \
 从头执行全部阶段可使用 `--stage all`，执行顺序为 calibration → lookup → MLR。
 如果确实希望在原目录内更新第二阶段，也可以省略 `--metallicity-posterior` 并把 `--output-dir` 设为原目录。
 
+如果 MCMC 已经完成、只需要重新生成 MLR 图和 corner 图，不必重跑采样：
+
+```bash
+conda run -n dyn python src/examples/run_hierarchical_metallicity_test.py \
+  --stage plot \
+  --output-dir results/hierarchical_metallicity_minimal_lookup
+```
+
 主要 lookup 调节参数：
 
 | 参数 | 默认值 | 作用 |
@@ -397,6 +418,7 @@ conda run -n dyn python src/examples/run_hierarchical_metallicity_test.py \
 - `dynamics_likelihood_lookup.npz`：逐系统 good/bad log likelihood 表；
 - `dynamics_likelihood_lookup_diagnostics.json`：网格、积分和文件信息；
 - `mlr_lookup_metadata.json`：MLR 使用的 lookup 配置副本；
+- `mlr_corner.png`：六个 MLR 结点参数和动力学异常比例的 corner 图；
 - 原有 `mlr_mcmc.npz`、`mlr_summary.csv`、`mlr_diagnostics.json`、`mlr_correction_grid.*`、`mlr_correction.png` 和单调性诊断。
 
 ## 9. 检查建议

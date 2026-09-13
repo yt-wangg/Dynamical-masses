@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
@@ -14,20 +15,37 @@ from scipy.special import i0e
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "examples"))
 
 from binary_masses.differencepoly_feh import IsochroneMassSurfaceModel
 from binary_masses.hierarchical_metallicity import (
     DynamicsLikelihoodLookup,
     HierarchicalMetallicityCalibrator,
     IsochroneColorSurfaceModel,
+    JCAPS_BIAS_MG_KNOTS,
+    JCAPS_BIAS_VALUES,
+    JCAPS_EXTRA_SCALE,
+    JCAPS_STUDENT_DF,
     MetallicityPosteriorGrid,
+    MonotoneTensorSplineMLR,
     ThreeKnotMetallicityMLR,
+    _bspline_basis_numpy,
     array_digest,
+    assess_rice_lookup_convergence,
     color_uncertainty_from_flux_snr,
+    jcaps_magnitude_bias,
     marginalize_dynamics,
     normalize_log_weights,
     simulate_mock_dataset,
     trapezoid_weights,
+    rice_outlier_normalization,
+)
+from run_hierarchical_metallicity_test import (
+    INPUT_COLUMNS,
+    T8_MODEL_ID,
+    T8_WORKFLOW_ID,
+    _require_t8_posterior_metadata,
+    _require_t8_lookup_metadata,
 )
 
 
@@ -36,6 +54,14 @@ def simple_color_surface():
     mh = np.array([-1.0, -0.2, 0.6])
     color = 0.2 * absg[None, :] + 0.4 * mh[:, None]
     return IsochroneColorSurfaceModel(absg, mh, color)
+
+
+def simple_color_temperature_surface():
+    absg = np.array([3.5, 8.5, 13.5])
+    mh = np.array([-1.0, -0.2, 0.6])
+    color = 0.2 * absg[None, :] + 0.4 * mh[:, None]
+    teff = np.broadcast_to(np.array([6200.0, 5000.0, 3800.0]), color.shape).copy()
+    return IsochroneColorSurfaceModel(absg, mh, color, teff_grid=teff)
 
 
 def simple_mass_surface():
@@ -48,7 +74,8 @@ def simple_mass_surface():
 
 def set_small_calibrator(surface):
     calibrator = HierarchicalMetallicityCalibrator(
-        surface, z_grid=np.linspace(-1.0, 0.6, 9), population_components=3
+        surface, z_grid=np.linspace(-1.0, 0.6, 9), population_components=3,
+        cmd_min_teff=None,
     )
     absg = np.array([[5.0, 8.0], [7.0, 10.0], [9.0, 12.0]])
     true_z = np.array([-0.7, -0.2, 0.3])
@@ -68,7 +95,7 @@ def simple_dynamics_lookup(rows, u, u_sigma):
     rows = np.asarray(rows, dtype=np.int64)
     u = np.asarray(u, dtype=np.float64)
     u_sigma = np.asarray(u_sigma, dtype=np.float64)
-    grid = np.array([0.25, 0.75, 1.25, 2.5])
+    grid = np.geomspace(0.25, 2.5, 4)
     row_term = np.arange(rows.size, dtype=float)[:, None] * 0.01
     log_good = -0.5 * (grid[None, :] - 1.2) ** 2 + row_term
     log_bad = -0.1 * (grid[None, :] - 1.0) ** 2 + row_term
@@ -77,7 +104,50 @@ def simple_dynamics_lookup(rows, u, u_sigma):
         sqrt_mtot_grid=grid,
         log_good=log_good,
         log_bad=log_bad,
-        metadata={"data_digest": array_digest(rows, u, u_sigma)},
+        metadata={
+            "model": "dynamics_likelihood_lookup_t8",
+            "schema": "t8c-rice-lookup-v1",
+            "data_digest": array_digest(rows, u, u_sigma),
+            "sqrt_mtot_min": 0.25, "sqrt_mtot_max": 2.5, "sqrt_mtot_points": 4,
+            "scale_grid": "geometric",
+            "velocity_quadrature_nodes": 64, "velocity_sigma_extent": 10.0,
+            "tilde_u_max": 80.0, "outlier_u0": 40.0, "outlier_sigma": 13.0,
+            "outlier_support": [0.0, 80.0],
+            "outlier_normalization": "Phi((U-mu)/sigma)-Phi(-mu/sigma)",
+            "outlier_normalization_value": rice_outlier_normalization(),
+            "C_out": rice_outlier_normalization(),
+            "C_good": 0.9978600946,
+            "normalization_version": "finite_support_v1",
+            "good_basis_normalized": False,
+            "good_basis_support": [0.0, 80.0],
+            "good_basis_constant": 5.434e-3,
+            "good_basis_quadratic": 2.544e-3,
+            "good_basis_turnover": 35.67,
+            "good_basis_scale": 3.100,
+            "good_basis_support_integral": 0.9978600946,
+            "jacobian": "1/s",
+            "scale_definition": "s=sqrt(Mtot/Msun)",
+            "integration_coordinate": "v=s*tilde_u",
+            "velocity_units": "km s^-1 sqrt(AU)",
+            "interpolation": "linear_log_likelihood_in_raw_s",
+            "row_order": "row_indices order",
+            "mixture_weight_semantics": "basis weight; not a physical outlier fraction",
+            "floor": 1e-30,
+            "migration_applied": False,
+            "convergence_check": {
+                "passed": True,
+                "source": "test fixture",
+                "source_data_digest": array_digest(rows, u, u_sigma),
+                "floor": 1e-30,
+                "sample_systems_requested": 4,
+                "sample_system_count": int(rows.size),
+                "scale_points_requested": int(grid.size),
+                "selected_row_indices": rows.tolist(),
+                "selected_row_indices_digest": array_digest(rows),
+                "scale_grid": grid.tolist(),
+                "adopted": {"velocity_sigma_extent": 10.0, "quadrature_nodes": 64},
+            },
+        },
     )
 
 
@@ -105,15 +175,102 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         expected = 0.2 * np.clip(absg, 3.5, 13.5) + 0.4 * np.clip(mh, -1.0, 0.6)
         self.assertTrue(np.allclose(numpy_value, expected))
 
+    def test_t6d_fixed_observation_parameters_and_bias_anchor(self):
+        self.assertTrue(
+            np.allclose(jcaps_magnitude_bias(JCAPS_BIAS_MG_KNOTS), JCAPS_BIAS_VALUES)
+        )
+        self.assertAlmostEqual(float(jcaps_magnitude_bias(8.5)), 0.0)
+        self.assertAlmostEqual(JCAPS_EXTRA_SCALE, 0.04646502063846824)
+        self.assertAlmostEqual(JCAPS_STUDENT_DF, 2.5236494464371377)
+
+    def test_t8_delta_z_sign_matches_observed_minus_latent_metallicity(self):
+        surface = simple_color_surface()
+        calibrator = HierarchicalMetallicityCalibrator(
+            surface, z_grid=np.array([-0.2, 0.0, 0.2]),
+            population_components=3, cmd_min_teff=None,
+        )
+        calibrator.set_data(
+            row_indices=np.array([1]),
+            absg=np.array([[8.5, 8.5]]),
+            feh_observed=np.array([[0.2, 0.2]]),
+            feh_sigma=np.array([[0.03, 0.03]]),
+            color_observed=np.array([[1.7, 1.7]]),
+            color_sigma=np.array([[0.02, 0.02]]),
+        )
+        common = {"s_C": 0.03, "population_weights": np.ones(3) / 3.0}
+        positive = calibrator.log_joint_numpy({**common, "delta_z": 0.2})[0, 1]
+        negative = calibrator.log_joint_numpy({**common, "delta_z": -0.2})[0, 1]
+        self.assertGreater(positive, negative)
+
+    def test_cmd_temperature_cut_is_fixed_and_excludes_cool_color_likelihood(self):
+        surface = simple_color_temperature_surface()
+        self.assertGreater(float(surface.teff_from_absg_mh(5.0, 0.0)), 4800.0)
+        self.assertLess(float(surface.teff_from_absg_mh(12.0, 0.0)), 4800.0)
+        calibrator = HierarchicalMetallicityCalibrator(
+            surface,
+            z_grid=np.linspace(-1.0, 0.6, 9),
+            population_components=3,
+            cmd_min_teff=4730.0,
+        )
+        base_color = surface.color_from_absg_mh(np.array([[5.0, 12.0]]), 0.0)
+        calibrator.set_data(
+            row_indices=np.array([1]),
+            absg=np.array([[5.0, 12.0]]),
+            feh_observed=np.array([[0.0, 0.0]]),
+            feh_sigma=np.array([[0.1, 0.1]]),
+            color_observed=base_color,
+            color_sigma=np.array([[0.01, 0.01]]),
+        )
+        self.assertTrue(np.array_equal(calibrator.cmd_mask, [[True, False]]))
+        params = {
+            "z_offset": 0.0,
+            "cmd_scatter": 0.03,
+            "population_weights": np.ones(3) / 3.0,
+        }
+        reference = calibrator.log_joint_numpy(params)
+        calibrator.color_observed[0, 1] += 100.0
+        self.assertTrue(np.allclose(calibrator.log_joint_numpy(params), reference))
+        calibrator.color_observed[0, 0] += 1.0
+        self.assertFalse(np.allclose(calibrator.log_joint_numpy(params), reference))
+
+    def test_t8_default_cmd_threshold_is_4000_k(self):
+        calibrator = HierarchicalMetallicityCalibrator(simple_color_temperature_surface())
+        self.assertEqual(calibrator.cmd_min_teff, 4000.0)
+
+    def test_t8_cmd_threshold_requires_temperature_grid(self):
+        calibrator = HierarchicalMetallicityCalibrator(simple_color_surface())
+        with self.assertRaisesRegex(ValueError, "temperature grid"):
+            calibrator.set_data(
+                row_indices=np.array([1]),
+                absg=np.array([[5.0, 7.0]]),
+                feh_observed=np.array([[0.0, 0.0]]),
+                feh_sigma=np.array([[0.1, 0.1]]),
+                color_observed=np.array([[1.0, 1.2]]),
+                color_sigma=np.array([[0.01, 0.01]]),
+            )
+
+    def test_t8_table_input_never_substitutes_corrected_metallicity(self):
+        calibrator = HierarchicalMetallicityCalibrator(simple_color_surface())
+        corrected_only = {
+            "jc_m_h_fit_cal_1": np.zeros(2),
+            "jc_m_h_fit_cal_2": np.zeros(2),
+            "jc_sigma_m_h_cal_1": np.ones(2),
+            "jc_sigma_m_h_cal_2": np.ones(2),
+        }
+        with self.assertRaisesRegex(ValueError, "raw JCAPS columns"):
+            calibrator.set_data_from_table(
+                table=corrected_only,
+                row_indices=np.arange(2),
+                absg=np.full((2, 2), 6.0),
+                color_observed=np.full((2, 2), 1.0),
+                color_sigma=np.full((2, 2), 0.02),
+            )
+
     def test_calibration_log_joint_is_finite_and_normalizable(self):
         calibrator = set_small_calibrator(simple_color_surface())
         log_joint = calibrator.log_joint_numpy(
             {
                 "z_offset": 0.0,
-                "z_scale": 1.0,
-                "z_mag_slope": 0.0,
-                "z_extra_scatter": 0.1,
-                "bad_fraction": 0.15,
                 "cmd_scatter": 0.03,
                 "population_weights": np.ones(3) / 3.0,
             }
@@ -128,17 +285,21 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         draws = 4
         calibrator.posterior_samples = {
             "z_offset": np.zeros(draws),
-            "z_scale": np.ones(draws),
-            "z_mag_slope": np.zeros(draws),
-            "z_extra_scatter": np.full(draws, 0.1),
-            "bad_fraction": np.full(draws, 0.15),
             "cmd_scatter": np.full(draws, 0.03),
             "population_weights": np.full((draws, 3), 1.0 / 3.0),
         }
         posterior = calibrator.posterior_grid(max_draws=draws, system_chunk=2)
         posterior.validate()
         self.assertEqual(posterior.probabilities.shape, (3, 9))
-        self.assertTrue(np.all((posterior.bad_probabilities >= 0) & (posterior.bad_probabilities <= 1)))
+        self.assertTrue(np.allclose(posterior.probabilities.sum(axis=1), 1.0))
+        self.assertTrue(np.all(posterior.bad_probabilities == 0.0))
+        self.assertEqual(posterior.metadata["selected_draw_count"], draws)
+        self.assertEqual(posterior.metadata["selected_draw_seed"], 0)
+        self.assertEqual(posterior.metadata["selected_draw_indices"], list(range(draws)))
+        self.assertEqual(
+            posterior.metadata["selected_draw_indices_digest"],
+            array_digest(np.arange(draws, dtype=np.int64)),
+        )
 
     def test_posterior_grid_round_trip(self):
         probabilities = np.array([[0.25, 0.75], [0.6, 0.4]])
@@ -183,6 +344,80 @@ class HierarchicalMetallicityTests(unittest.TestCase):
             loaded.validate_for(row_indices=rows, u=u + 0.01, u_sigma=u_sigma)
         with self.assertRaisesRegex(ValueError, "outside"):
             loaded.interpolate_numpy(np.array([[0.1], [1.0]]))
+        invalid_metadata = {**dict(loaded.metadata), "migration_applied": True}
+        migrated = DynamicsLikelihoodLookup(
+            loaded.row_indices, loaded.sqrt_mtot_grid, loaded.log_good,
+            loaded.log_bad, invalid_metadata,
+        )
+        with self.assertRaisesRegex(ValueError, "Migrated"):
+            migrated.validate_t8_schema()
+
+    def test_formal_profile_rejects_quick_lookup(self):
+        rows = np.array([2, 9])
+        u = np.array([10.0, 12.0])
+        u_sigma = np.array([1.0, 1.5])
+        lookup = simple_dynamics_lookup(rows, u, u_sigma)
+        args = SimpleNamespace(
+            quick=True,
+            lookup_mass_points=4,
+            lookup_velocity_nodes=64,
+            lookup_sqrt_mass_min=0.25,
+            lookup_sqrt_mass_max=2.5,
+            lookup_sigma_extent=10.0,
+        )
+        _require_t8_lookup_metadata(lookup, args=args)
+        args.quick = False
+        with self.assertRaisesRegex(ValueError, "formal execution profile"):
+            _require_t8_lookup_metadata(lookup, args=args)
+
+    def test_t8_posterior_rejects_stale_input_digest(self):
+        rows = np.array([2, 7])
+        arrays = {
+            "row_indices": rows,
+            "feh_observed": np.array([[-0.2, -0.1], [0.1, 0.05]]),
+            "feh_sigma": np.full((2, 2), 0.1),
+            "absg": np.array([[5.0, 7.0], [6.0, 8.0]]),
+            "color_observed": np.array([[1.0, 1.3], [1.1, 1.4]]),
+            "color_sigma": np.full((2, 2), 0.02),
+        }
+        grid = np.linspace(-1.0, 0.6, 81)
+        metadata = {
+            "schema": "t8a-metallicity-posterior-v1",
+            "workflow": T8_WORKFLOW_ID,
+            "model": T8_MODEL_ID,
+            "mock": True,
+            "feh_columns": INPUT_COLUMNS["feh_observed"],
+            "feh_sigma_columns": INPUT_COLUMNS["feh_sigma"],
+            "cmd_min_parsec_teff_k": 4000.0,
+            "posterior_grid_nodes": 81,
+            "metallicity_grid": grid.tolist(),
+            "metallicity_grid_weights": trapezoid_weights(grid).tolist(),
+            "posterior_average_draw_count": 2,
+            "selected_draw_count": 2,
+            "posterior_draw_indices": [0, 1],
+            "posterior_draw_indices_digest": array_digest(np.array([0, 1], dtype=np.int64)),
+            "forbidden_metallicity_columns": [
+                "jc_m_h_fit_1", "jc_m_h_fit_2", "jc_m_h_fit_cal_1",
+                "jc_m_h_fit_cal_2", "jc_sigma_m_h_cal_1", "jc_sigma_m_h_cal_2",
+            ],
+            "input_data_digest": array_digest(
+                arrays["row_indices"], arrays["feh_observed"], arrays["feh_sigma"],
+                arrays["absg"], arrays["color_observed"], arrays["color_sigma"],
+            ),
+        }
+        posterior = MetallicityPosteriorGrid(
+            row_indices=rows,
+            z_grid=grid,
+            probabilities=np.full((2, 81), 1.0 / 81.0),
+            z_quantiles=np.zeros((2, 3)),
+            bad_probabilities=np.zeros((2, 2)),
+            metadata=metadata,
+        )
+        _require_t8_posterior_metadata(posterior, mock=True, arrays=arrays)
+        stale = {key: np.array(value, copy=True) for key, value in arrays.items()}
+        stale["feh_observed"][0, 0] += 1e-5
+        with self.assertRaisesRegex(ValueError, "digest"):
+            _require_t8_posterior_metadata(posterior, mock=True, arrays=stale)
 
     def test_local_velocity_lookup_precomputation_is_finite(self):
         lookup = DynamicsLikelihoodLookup.precompute(
@@ -246,6 +481,37 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         )
         self.assertTrue(np.allclose(tabulated, reference, rtol=2e-4, atol=1e-8))
 
+    def test_rice_convergence_compares_coordinates_and_reports_floor_state(self):
+        result = assess_rice_lookup_convergence(
+            row_indices=np.array([3]),
+            u=np.array([10.0]),
+            u_sigma=np.array([0.5]),
+            sqrt_mtot_min=0.5,
+            sqrt_mtot_max=2.0,
+            sample_systems=1,
+            scale_points=2,
+            velocity_quadrature_nodes=64,
+        )
+        self.assertTrue(result["passed"])
+        for component in ("good", "outlier"):
+            diagnostics = result["components"][component]
+            self.assertLessEqual(diagnostics["adaptive_coordinate_max_abs_log"], 1e-3)
+            self.assertEqual(diagnostics["unsafe_floor_count"], 0)
+            self.assertIn("safe_floor_locations", diagnostics)
+        floored = assess_rice_lookup_convergence(
+            row_indices=np.array([3]),
+            u=np.array([10.0]),
+            u_sigma=np.array([0.5]),
+            sqrt_mtot_min=0.5,
+            sqrt_mtot_max=2.0,
+            sample_systems=1,
+            scale_points=2,
+            velocity_quadrature_nodes=64,
+            floor=1.0,
+        )
+        self.assertTrue(floored["passed"])
+        self.assertEqual(floored["components"]["good"]["safe_floor_count"], 2)
+
     def test_three_knot_correction_and_row_validation(self):
         mlr = ThreeKnotMetallicityMLR(simple_mass_surface())
         f0 = np.array([0.0, 0.1, 0.2])
@@ -260,7 +526,7 @@ class HierarchicalMetallicityTests(unittest.TestCase):
             probabilities=np.full((2, 2), 0.5),
             z_quantiles=np.zeros((2, 3)),
             bad_probabilities=np.zeros((2, 2)),
-            metadata={},
+            metadata={"model": "t8_jcaps_student_t_independent_members"},
         )
         with self.assertRaisesRegex(ValueError, "row indices"):
             mlr.set_data(
@@ -274,6 +540,118 @@ class HierarchicalMetallicityTests(unittest.TestCase):
                 ),
             )
 
+    def test_t8_monotone_tensor_spline_parameter_count_and_surface_order(self):
+        mlr = MonotoneTensorSplineMLR(simple_mass_surface())
+        self.assertEqual(mlr.n_params, 35)
+        rng = np.random.default_rng(42)
+        params = {
+            "c0": 0.0,
+            "a": rng.normal(size=3),
+            "b": rng.normal(size=7),
+            "r": rng.normal(size=(7, 3)),
+            "log_lambda_x": 0.0,
+            "log_lambda_z": 0.0,
+        }
+        values = mlr.g_from_raw(
+            np.linspace(3.5, 13.5, 101)[:, None],
+            np.linspace(-1.0, 0.6, 31)[None, :],
+            params,
+        )
+        self.assertLessEqual(float(np.max(np.diff(values, axis=0))), 1e-10)
+        self.assertGreaterEqual(float(np.min(np.diff(values, axis=1))), -1e-10)
+
+    def test_t8_bspline_boundaries_projection_and_spacing_penalties(self):
+        mlr = MonotoneTensorSplineMLR(simple_mass_surface())
+        for values, knots, degree in (
+            (np.array([3.5, 4.0, 13.5]), mlr.knots_x, mlr.degree_x),
+            (np.array([-1.0, -0.2, 0.6]), mlr.knots_z, mlr.degree_z),
+        ):
+            basis = _bspline_basis_numpy(values, knots, degree)
+            self.assertTrue(np.all(basis >= 0.0))
+            self.assertTrue(np.allclose(np.sum(basis, axis=-1), 1.0))
+            self.assertEqual(float(basis[-1, -1]), 1.0)
+
+        x = np.linspace(3.5, 13.5, 31)
+        z = np.linspace(-1.0, 0.6, 17)
+        residual = mlr.g_parsec_projection(x[None, :], z[:, None]) - np.log10(
+            mlr.mass_surface.mass_from_absg_mh(x[None, :], z[:, None])
+        )
+        self.assertLess(float(np.sqrt(np.mean(residual**2))), 0.1)
+        self.assertIn("projection_grid_digest", mlr.projection_metadata)
+
+        affine = 0.02 * mlr.greville_x[:, None] + 0.03 * mlr.greville_z[None, :]
+        d2x, d2z, dxz = mlr.spacing_aware_penalties(affine)
+        self.assertTrue(np.allclose(d2x, 0.0, atol=1e-12))
+        self.assertTrue(np.allclose(d2z, 0.0, atol=1e-12))
+        self.assertTrue(np.allclose(dxz, 0.0, atol=1e-12))
+
+        mixed = np.sin(mlr.greville_x[:, None]) * np.cos(3.0 * mlr.greville_z[None, :])
+        _, _, mixed_difference = mlr.spacing_aware_penalties(mixed)
+        self.assertLess(float(np.min(mixed_difference)), 0.0)
+        self.assertGreater(float(np.max(mixed_difference)), 0.0)
+
+    def test_t8_feasible_initialization_is_monotone_and_solar_anchored(self):
+        mlr = MonotoneTensorSplineMLR(simple_mass_surface())
+        params = mlr.initial_raw_parameters()
+        for value in params.values():
+            self.assertTrue(np.all(np.isfinite(value)))
+        raw_normal = np.concatenate([params["a"], params["b"], params["r"].ravel()])
+        self.assertLessEqual(float(np.max(np.abs(raw_normal))), 4.0 + 1e-12)
+        self.assertLess(float(np.sum(raw_normal**2)), 300.0)
+        theta = mlr.theta_from_raw(params)
+        self.assertLessEqual(float(np.max(np.diff(theta, axis=0))), 1e-10)
+        self.assertGreaterEqual(float(np.min(np.diff(theta, axis=1))), -1e-10)
+        self.assertAlmostEqual(float(mlr.g_from_theta(4.67, 0.0, theta)), 0.0, places=11)
+
+    def test_t8_numpyro_trace_contains_all_35_sampled_scalars(self):
+        import jax.numpy as jnp
+        from numpyro import handlers
+
+        rows = np.array([4, 8, 10])
+        z_grid = np.linspace(-1.0, 0.6, 9)
+        posterior = MetallicityPosteriorGrid(
+            row_indices=rows,
+            z_grid=z_grid,
+            probabilities=np.full((rows.size, z_grid.size), 1.0 / z_grid.size),
+            z_quantiles=np.zeros((rows.size, 3)),
+            bad_probabilities=np.zeros((rows.size, 2)),
+            metadata={"model": "t8_jcaps_student_t_independent_members"},
+        )
+        u = np.array([10.0, 12.0, 14.0])
+        u_sigma = np.array([1.0, 1.2, 1.4])
+        mlr = MonotoneTensorSplineMLR(simple_mass_surface())
+        mlr.set_data(
+            row_indices=rows,
+            u=u,
+            u_sigma=u_sigma,
+            absg=np.array([[5.0, 7.0], [6.0, 8.0], [7.0, 9.0]]),
+            metallicity_grid=posterior,
+            dynamics_lookup=simple_dynamics_lookup(rows, u, u_sigma),
+        )
+        trace = handlers.trace(handlers.seed(mlr._build_numpyro_model(), rng_seed=9)).get_trace(
+            jnp.asarray(mlr.absg),
+            jnp.asarray(mlr.z_probabilities),
+            jnp.asarray(mlr.log_good_lookup),
+            jnp.asarray(mlr.log_bad_lookup),
+        )
+        shapes = {
+            name: np.shape(trace[name]["value"])
+            for name in mlr.sample_parameter_names
+        }
+        self.assertEqual(shapes["c0"], ())
+        self.assertEqual(shapes["a"], (3,))
+        self.assertEqual(shapes["b"], (7,))
+        self.assertEqual(shapes["r"], (7, 3))
+        self.assertEqual(shapes["log_lambda_x"], ())
+        self.assertEqual(shapes["log_lambda_z"], ())
+        self.assertEqual(shapes["f_outlier"], ())
+        self.assertEqual(sum(max(1, int(np.prod(shape))) for shape in shapes.values()), 35)
+        self.assertIn("dynamics", trace)
+        self.assertIn("solar_anchor", trace)
+
+    def test_t8_outlier_normalization_is_finite_support(self):
+        self.assertAlmostEqual(rice_outlier_normalization(), 0.9979085073395224, places=12)
+
     def test_stage_two_correction_postprocessing(self):
         mlr = ThreeKnotMetallicityMLR(simple_mass_surface())
         mlr.posterior_samples = {
@@ -285,7 +663,9 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         )
         self.assertEqual(grid["correction_percent"].shape, (3, 3, 11))
         self.assertEqual(grid["mass"].shape, (3, 3, 11))
+        self.assertEqual(grid["parsec_mass"].shape, (3, 11))
         self.assertTrue(np.all(np.isfinite(grid["correction_percent"])))
+        self.assertTrue(np.all(np.isfinite(grid["parsec_mass"])))
 
     def test_mock_generator_shapes(self):
         data, truth = simulate_mock_dataset(
@@ -296,7 +676,8 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         self.assertEqual(data["color_observed"].shape, (24, 2))
         self.assertEqual(data["u"].shape, (24,))
         self.assertTrue(np.all(data["u"] > 0))
-        self.assertEqual(np.sign(truth["z_mag_slope"]), -1)
+        self.assertAlmostEqual(truth["extra_scale"], JCAPS_EXTRA_SCALE)
+        self.assertAlmostEqual(truth["student_df"], JCAPS_STUDENT_DF)
 
     def test_numpyro_models_execute_without_sampling(self):
         import jax.numpy as jnp
@@ -313,6 +694,18 @@ class HierarchicalMetallicityTests(unittest.TestCase):
             jnp.asarray(calibrator.color_sigma),
         )
         self.assertIn("observations", calibration_trace)
+        self.assertIn("delta_z", calibration_trace)
+        self.assertIn("s_C", calibration_trace)
+        self.assertIn("z_offset", calibration_trace)
+        self.assertIn("cmd_scatter", calibration_trace)
+        self.assertIn("population_weights", calibration_trace)
+        for removed_parameter in (
+            "z_scale",
+            "z_mag_slope",
+            "z_extra_scatter",
+            "bad_fraction",
+        ):
+            self.assertNotIn(removed_parameter, calibration_trace)
 
         z_grid = np.linspace(-1.0, 0.6, 9)
         posterior = MetallicityPosteriorGrid(
@@ -334,6 +727,9 @@ class HierarchicalMetallicityTests(unittest.TestCase):
             metallicity_grid=posterior,
             dynamics_lookup=simple_dynamics_lookup(posterior.row_indices, u, u_sigma),
         )
+        baseline_log_likelihood = mlr.baseline_dynamics_log_likelihood()
+        self.assertEqual(baseline_log_likelihood.shape, (3,))
+        self.assertTrue(np.all(np.isfinite(baseline_log_likelihood)))
         mlr_trace = handlers.trace(handlers.seed(mlr._build_numpyro_model(), rng_seed=5)).get_trace(
             jnp.asarray(mlr.absg),
             jnp.asarray(mlr.z_probabilities),

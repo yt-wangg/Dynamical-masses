@@ -2,6 +2,15 @@
 
 ## 1. 项目与运行环境
 
+### 当前金属丰度输入前提（2026-09-10）
+
+当前项目只使用未校正 XP 金属丰度和未校正误差：
+
+- `feh_jcaps_1`, `feh_jcaps_2`
+- `jc_sigma_m_h_1`, `jc_sigma_m_h_2`
+
+`jc_m_h_fit_cal_*` 和 `jc_sigma_m_h_cal_*` 已经使用双星金属丰度相等假设，因此不再作为本项目的输入。本文档中较早的 calibrated 列引用属于历史诊断记录，不代表当前运行约定。
+
 项目目录：
 
 `/Users/ytwang/Library/CloudStorage/OneDrive-Personal/Files/postgraduate/PyProjects/Dyn`
@@ -192,7 +201,8 @@ Notebook JSON 和代码语法检查已通过，但旧输出图尚未重新执行
 - `absg1`, `absg2`
 - `jc_m_h_fit_1`, `jc_m_h_fit_2`
 - `jc_m_h_fit_cal_1`, `jc_m_h_fit_cal_2`
-- 对应 formal/calibrated/inflated uncertainty
+- `jc_sigma_m_h_1`, `jc_sigma_m_h_2`
+- 旧表中还存在 calibrated/inflated uncertainty 列，但它们不属于当前输入
 - S/N、flux、alpha 等信息
 
 双星两个分量的金属丰度一致性较差。
@@ -222,9 +232,9 @@ Notebook JSON 和代码语法检查已通过，但旧输出图尚未重新执行
 
 因此不能只使用 formal error，必须加入额外 CMD scatter 或稳健 likelihood。
 
-## 7. 一个待确认的代码不一致
+## 7. 已解决的代码列选择问题
 
-当前 `run_on_data_feh_global.py` 中疑似使用：
+旧版本 `run_on_data_feh_global.py` 曾经使用：
 
 ```python
 feh_column = "jc_m_h_fit_1"
@@ -236,13 +246,14 @@ feh_sigma_column = "jc_sigma_m_h_cal_1"
 - 中心值使用未经 calibration 的 `jc_m_h_fit_1`
 - 误差却使用 calibrated sigma
 
-而之前的工作流描述似乎希望使用：
+当前项目约定已经改为：
 
 ```python
-jc_m_h_fit_cal_1
+feh_column = "jc_m_h_fit_1"
+feh_sigma_column = "jc_sigma_m_h_1"
 ```
 
-这需要在下一阶段明确确认，可能是一个重要 bug 或变量选择错误。目前尚未修改。
+原因是 calibrated 列已经使用双星金属丰度相等假设，会和当前 hierarchical calibration likelihood 重复。现有结果中引用 calibrated 列的部分只作为历史结果保留，重新运行必须使用未校正列。
 
 ## 8. 建议的新层次模型
 
@@ -568,16 +579,15 @@ $$
 
 ## 14. 下一次对话最值得先处理的事项
 
-1. 确认代码到底应该使用 `jc_m_h_fit_1` 还是 `jc_m_h_fit_cal_1`。
-2. 阅读现有 metallicity quadrature 和 `feh_weights` 的具体实现，判断当前 likelihood 是否已经包含观测金属丰度项。
-3. 设计最小可识别版本：
+1. 阅读现有 metallicity quadrature 和 `feh_weights` 的具体实现，判断当前 likelihood 是否已经包含观测金属丰度项。
+2. 设计最小可识别版本：
    - 共享 $Z_j$
    - metallicity good/bad mixture
    - $\delta C=0$
    - 一个额外 $s_C$
    - 固定全局 metallicity grid
-4. 先做阶段 A 的双星 metallicity calibration，而不是直接把全部新参数塞进现有 MCMC。
-5. 用模拟数据做 recovery test，确认：
+3. 先做阶段 A 的双星 metallicity calibration，而不是直接把全部新参数塞进现有 MCMC。
+4. 用模拟数据做 recovery test，确认：
    - 能识别 catastrophic outliers；
    - 不会把颜色 discrepancy 误认为 metallicity correction；
    - 能恢复已知的 MLR metallicity dependence。

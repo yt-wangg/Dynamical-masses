@@ -839,11 +839,11 @@ def main():
 
     print(f"   Using {len(data)} systems")
 
-    # Use only the primary's calibrated metallicity measurement.  The binary
-    # components are treated as coeval and therefore share this system-level
-    # metallicity in the mass model.
-    feh_column = "jc_m_h_fit_1"
-    feh_sigma_column = "jc_sigma_m_h_cal_1"
+    # Use the uncorrected primary metallicity measurement and its uncorrected
+    # error.  Corrected columns use the same binary-equality information as
+    # this model and would duplicate that likelihood.
+    feh_column = "feh_jcaps_1"
+    feh_sigma_column = "jc_sigma_m_h_1"
     stage_settings = quadratic_stage_settings(args.stage)
 
     test_differencepoly_feh_model(
