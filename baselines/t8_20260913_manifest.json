@@ -1,7 +1,7 @@
 {
   "baseline_id": "T8_SERVER_20260913",
   "status": "frozen",
-  "code_commit": "f9595f68fc431b4592c3e42a4f8da8471f5f3e9f",
+  "code_commit": "2fab9de",
   "result_dir": "results/hierarchical_metallicity_t8_20260913",
   "input_data": {
     "path": "data/jd_msms_single_bic_1kpc_filtered_cmdcut_cutb_jcaps_err_mhcal_good.fits",
@@ -51,8 +51,8 @@
     }
   },
   "code_sha256": {
-    "src/binary_masses/hierarchical_metallicity.py": "d914bea16f0ba8bf8f6c8b091f7f190b7efac6a93fdea1e7a594e2372c4ad85d",
-    "src/examples/run_hierarchical_metallicity_test.py": "fbb26429568eb36a95b78ec247ab26068d6b3ce09bbb30fa4e1b41fdf3fe6e1f",
+    "src/binary_masses/hierarchical_metallicity.py": "62c58ac308f59d6d21cc497c6e1ad4f34fc07a160ff211394c5831804dd1cb3a",
+    "src/examples/run_hierarchical_metallicity_test.py": "42383b26e06a3847bbdfa67dac071ee809105ed9c6ebbea2f7c6cec2315abc23",
     "scripts/run_t8_hierarchical_metallicity.slurm": "e53fb7a16e87c79492474afade734fc04fc6f7e0682b9f93f6b9522813d90bad",
     "docs/T8_SERVER_RUN.md": "d8bf1442cda0f7ee6d4efc7d443f1e2d60456164efe6414504a1f6c1e9bdf775"
   },
