@@ -1,7 +1,7 @@
 {
   "baseline_id": "T8_SERVER_20260913",
   "status": "frozen",
-  "code_commit": "2fab9de",
+  "code_commit": "2fab9de86ab942b34e53d7e3af865f4190b09258",
   "result_dir": "results/hierarchical_metallicity_t8_20260913",
   "input_data": {
     "path": "data/jd_msms_single_bic_1kpc_filtered_cmdcut_cutb_jcaps_err_mhcal_good.fits",
