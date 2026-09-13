@@ -1,0 +1,82 @@
+{
+  "baseline_id": "T8_SERVER_20260913",
+  "status": "frozen",
+  "code_commit": "f9595f68fc431b4592c3e42a4f8da8471f5f3e9f",
+  "result_dir": "results/hierarchical_metallicity_t8_20260913",
+  "input_data": {
+    "path": "data/jd_msms_single_bic_1kpc_filtered_cmdcut_cutb_jcaps_err_mhcal_good.fits",
+    "source_path_recorded_in_metadata": "/home/wyt/Dyn/Dynamical-masses/data/jd_msms_single_bic_1kpc_filtered_cmdcut_cutb_jcaps_err_mhcal_good.fits",
+    "sha256": "af74486dad34f487509e1ca2fcac2604ca0a0c27b7f33215cca0a38399966cf3",
+    "n_input_rows": 15036,
+    "n_retained_systems": 14876
+  },
+  "static_model_data": {
+    "data/PARSEC_logAge_6to10_0p5_MH_n1to0p6_0p2.csv": "c8fc6d2e005830a5c8d5d851e18a5065127cfed1c745820a2f044e06f5253820",
+    "data/interpolated_mass_data/gmag_grid.npy": "660049559d04a836930d430f4884110a6327c21acf04a3ea2643621c904b338e",
+    "data/interpolated_mass_data/mass_interp_MH_-1.00.npy": "d5a038ba34adf37f30a7be1b2c244430a7b7c9dbcb09b5ddeaad7d380abc5007",
+    "data/interpolated_mass_data/mass_interp_MH_-0.80.npy": "504698ad978e24afe762016331117a3a1f821fe7c465a92d0897fa2ad5b8652a",
+    "data/interpolated_mass_data/mass_interp_MH_-0.60.npy": "ea0da8341fcde7388dfad85e4bc0f7e2ab9b06ce6497dcac36c0c1617f48e265",
+    "data/interpolated_mass_data/mass_interp_MH_-0.40.npy": "e0a4a783f145dfd28e68556bc9ebde0d0e03314b562a904c42ef507387f5aa43",
+    "data/interpolated_mass_data/mass_interp_MH_-0.20.npy": "b770df76d967bf016ab619f296121b7dd439d2f046b6b7358e9f9619280bb7e6",
+    "data/interpolated_mass_data/mass_interp_MH_-0.00.npy": "03ec0f6edb48468f9022c2c1209808b90dc520b2f4586c01831259769924ab7e",
+    "data/interpolated_mass_data/mass_interp_MH_0.20.npy": "1e0580dfcf32f0ab3b05e1eedf36f2dbb8cd5eb91f32237e22c8eb2134af00c6",
+    "data/interpolated_mass_data/mass_interp_MH_0.40.npy": "ec551d68b245b077e297fb167be334c35acf6ad814c7eb1a93fba614dc3304eb",
+    "data/interpolated_mass_data/mass_interp_MH_0.60.npy": "c891a2734b1a1adb46ee46ba324c58f6cae4370d6662f7df258d877c78610360"
+  },
+  "model_snapshot": {
+    "calibration_schema": "t8a-metallicity-posterior-v1",
+    "lookup_schema": "t8c-rice-lookup-v1",
+    "mlr_schema": "t8b-monotone-tensor-spline-mlr-v1",
+    "workflow": "hierarchical_metallicity_t8_jcaps_student_t_teff4000_v1",
+    "raw_feh_columns": ["feh_jcaps_1", "feh_jcaps_2"],
+    "raw_feh_sigma_columns": ["jc_sigma_m_h_1", "jc_sigma_m_h_2"],
+    "cmd_min_teff_k": 4000.0,
+    "metallicity_grid": {"nodes": 81, "min": -1.0, "max": 0.6, "quadrature": "trapezoid"},
+    "mlr_knots": {"K_x": 8, "K_Z": 4, "degree_x": 3, "degree_Z": 3},
+    "mlr_sampled_scalar_count": 35,
+    "lookup": {
+      "sqrt_mtot_min": 0.25,
+      "sqrt_mtot_max": 2.5,
+      "sqrt_mtot_points": 1024,
+      "velocity_sigma_extent": 14.0,
+      "velocity_quadrature_nodes": 128,
+      "floor": 1e-30
+    },
+    "priors": {
+      "tau_D": 0.1,
+      "tau_x": 0.05,
+      "tau_Z": 0.05,
+      "tau_xZ": 0.05,
+      "solar_anchor_sigma_log10_mass": 0.0043429448190325185
+    }
+  },
+  "code_sha256": {
+    "src/binary_masses/hierarchical_metallicity.py": "d914bea16f0ba8bf8f6c8b091f7f190b7efac6a93fdea1e7a594e2372c4ad85d",
+    "src/examples/run_hierarchical_metallicity_test.py": "fbb26429568eb36a95b78ec247ab26068d6b3ce09bbb30fa4e1b41fdf3fe6e1f",
+    "scripts/run_t8_hierarchical_metallicity.slurm": "e53fb7a16e87c79492474afade734fc04fc6f7e0682b9f93f6b9522813d90bad",
+    "docs/T8_SERVER_RUN.md": "d8bf1442cda0f7ee6d4efc7d443f1e2d60456164efe6414504a1f6c1e9bdf775"
+  },
+  "artifact_sha256": {
+    "calibration_diagnostics_t8.json": "cc24c6dc8b6cd97664cac6142167e21a5b8a809f259655382743220568e57a60",
+    "calibration_mcmc_t8.npz": "53f6b707b9dfc65e129584d9c369b3f49733b4ba71f80f98ab31f85e8f7041b0",
+    "calibration_model.json": "031569819a289c6ad9328fc34c2cc33e530fcbaefae2d4bbd225c9072d1ac604",
+    "calibration_summary_t8.csv": "13a3bba45162a95f7d8123007c7e716076bf237b9797da25cb7742bd2c50e40a",
+    "cmd_residuals.png": "af5db6f351c9d566c38c77841a4ab7ce39a045a0ab7e5b9db5235dd8b32dd575",
+    "dynamics_likelihood_lookup_diagnostics.json": "4ef20c5dffb14262fef31351ec9358e9cb97289a3744feeac9736f7c0dac0ca1",
+    "dynamics_likelihood_lookup_t8.npz": "c1dcca3bdfe69d8f958dd34ebb9c41e17c0f79fc70c30036f3ed5f2a5b5e65f9",
+    "latent_metallicity_summary_t8.csv": "cf02e03dfb3af65a78c820f9b9807f5903c083314bed9cc7da6a36bb24a0f3bb",
+    "latent_metallicity_weights_t8.npz": "bf7b8326c151764dcae8f30c8b5687768471d67c4d3a4f8e4c14c51a5c7c15bb",
+    "lookup_convergence_t8.json": "af15e6d069dbbd007bc5dbb6e90f44aec49c4a6cfe10b00fe140f32d27ef5ef1",
+    "metallicity_systematics.png": "afe07f2e19fef2fee4a1a5ef7c96287c01ae2ce244fed3bd5b94ec4a5a979041",
+    "mlr_corner.png": "cf41d57f9b0e25b9439017df17cd808a07227ac3fad6a88e7ccf4fe02fc07688",
+    "mlr_correction.png": "fe73470ee4ff1b7e3332f30cd0ecdb670b6dc356be5c28ec5de3f8dca6dfecb8",
+    "mlr_derived_grid_t8.csv": "c9c0c59c5ea2228c25b3c501f41fac60514368eb60599712737b1b42fc98f4a8",
+    "mlr_derived_grid_t8.npz": "1d74854981d35b8c70e0e88f266f25cb53de05756a25897e52ed4be13c30fd70",
+    "mlr_diagnostics_t8.json": "8d06ef04b548f0a7fe83061496ff2dddea0912263a7ea425771c099c617f7bb3",
+    "mlr_lookup_metadata_t8.json": "4fff81939f596467b3924c0e424d7e36ba14fa9eaeb67929ee3cff312b2d8bed",
+    "mlr_mcmc_t8.npz": "49a55a9270981486466d1f18997783e5bcdae2943b967cf2652c854fe64b5776",
+    "mlr_model.json": "0bb954265823094bb9da6f437d22ad13ac08d5b7ec40a557373379405de7f476",
+    "mlr_monotonicity.json": "3a7fed57890748c82f5f9ffac525ae25fc62fa14fcc957d7ca7ad3c1cf21b03a",
+    "mlr_summary_t8.csv": "615ee3291ca17b38e9daea5b1037d099c9c804b2c26a03d8aa61b88f0fa7906b"
+  }
+}
