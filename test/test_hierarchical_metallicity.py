@@ -47,6 +47,13 @@ from run_hierarchical_metallicity_test import (
     _require_t8_posterior_metadata,
     _require_t8_lookup_metadata,
 )
+from run_t8_holdout_validation import (
+    evaluate_heldout,
+    fit_parsec_outlier_posterior,
+    posterior_predictive_log_likelihood,
+    split_system_positions,
+    subset_inputs,
+)
 
 
 def simple_color_surface():
@@ -666,6 +673,103 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         self.assertEqual(grid["parsec_mass"].shape, (3, 11))
         self.assertTrue(np.all(np.isfinite(grid["correction_percent"])))
         self.assertTrue(np.all(np.isfinite(grid["parsec_mass"])))
+
+    def test_t8_holdout_split_is_reproducible_and_system_disjoint(self):
+        rows = np.arange(100, 200, dtype=np.int64)
+        checked = rows[[2, 18, 36, 54, 72, 90]]
+        train_a, test_a = split_system_positions(
+            rows, test_fraction=0.20, seed=17, convergence_rows=checked
+        )
+        train_b, test_b = split_system_positions(
+            rows, test_fraction=0.20, seed=17, convergence_rows=checked
+        )
+        self.assertTrue(np.array_equal(train_a, train_b))
+        self.assertTrue(np.array_equal(test_a, test_b))
+        self.assertEqual(train_a.size, 80)
+        self.assertEqual(test_a.size, 20)
+        self.assertEqual(np.intersect1d(train_a, test_a).size, 0)
+        self.assertTrue(np.any(np.isin(rows[train_a], checked)))
+        self.assertTrue(np.any(np.isin(rows[test_a], checked)))
+
+    def test_t8_holdout_subset_preserves_lookup_validation(self):
+        rows = np.arange(10, 20, dtype=np.int64)
+        u = np.linspace(8.0, 17.0, rows.size)
+        u_sigma = np.full(rows.size, 1.0)
+        z_grid = np.linspace(-1.0, 0.6, 9)
+        posterior = MetallicityPosteriorGrid(
+            row_indices=rows,
+            z_grid=z_grid,
+            probabilities=np.full((rows.size, z_grid.size), 1.0 / z_grid.size),
+            z_quantiles=np.zeros((rows.size, 3)),
+            bad_probabilities=np.zeros((rows.size, 2)),
+            metadata={"model": T8_MODEL_ID},
+        )
+        arrays = {
+            "row_indices": rows,
+            "u": u,
+            "u_sigma": u_sigma,
+            "absg": np.column_stack(
+                [np.linspace(4.0, 9.0, rows.size), np.linspace(4.5, 9.5, rows.size)]
+            ),
+        }
+        lookup = simple_dynamics_lookup(rows, u, u_sigma)
+        selected_arrays, selected_posterior, selected_lookup = subset_inputs(
+            arrays, posterior, lookup, np.array([0, 2, 5, 8]), label="unit_test"
+        )
+        self.assertTrue(np.array_equal(selected_arrays["row_indices"], rows[[0, 2, 5, 8]]))
+        self.assertTrue(np.array_equal(selected_posterior.row_indices, rows[[0, 2, 5, 8]]))
+        selected_lookup.validate_for(
+            row_indices=selected_arrays["row_indices"],
+            u=selected_arrays["u"],
+            u_sigma=selected_arrays["u_sigma"],
+        )
+
+    def test_t8_heldout_likelihood_is_paired_by_draw_and_system(self):
+        rows = np.arange(4, dtype=np.int64)
+        u = np.linspace(9.0, 12.0, rows.size)
+        u_sigma = np.full(rows.size, 1.0)
+        z_grid = np.linspace(-1.0, 0.6, 9)
+        posterior = MetallicityPosteriorGrid(
+            row_indices=rows,
+            z_grid=z_grid,
+            probabilities=np.full((rows.size, z_grid.size), 1.0 / z_grid.size),
+            z_quantiles=np.zeros((rows.size, 3)),
+            bad_probabilities=np.zeros((rows.size, 2)),
+            metadata={"model": T8_MODEL_ID},
+        )
+        arrays = {
+            "row_indices": rows,
+            "u": u,
+            "u_sigma": u_sigma,
+            "absg": np.array([[4.0, 4.5], [5.0, 5.5], [7.0, 7.5], [9.0, 9.5]]),
+        }
+        lookup = simple_dynamics_lookup(rows, u, u_sigma)
+        model = MonotoneTensorSplineMLR(simple_mass_surface())
+        initial = model.initial_raw_parameters()
+        samples = {
+            name: np.repeat(np.asarray(value)[None, ...], 3, axis=0)
+            for name, value in initial.items()
+        }
+        samples["f_outlier"] = np.full(3, 0.15)
+        result = evaluate_heldout(
+            model, samples, arrays, posterior, lookup, max_draws=2
+        )
+        self.assertEqual(result["delta_log_likelihood"].shape, (2, 4))
+        self.assertTrue(np.all(np.isfinite(result["parsec_log_likelihood"])))
+        self.assertTrue(np.all(np.isfinite(result["mlr_log_likelihood"])))
+        predictive = posterior_predictive_log_likelihood(
+            np.log(np.array([[0.2, 0.8], [0.6, 0.4]]))
+        )
+        self.assertTrue(np.allclose(predictive, np.log([0.4, 0.6])))
+        parsec_posterior = fit_parsec_outlier_posterior(
+            model.mass_surface,
+            arrays,
+            posterior,
+            lookup,
+            quadrature_nodes=16,
+        )
+        self.assertAlmostEqual(float(np.sum(parsec_posterior["posterior_weights"])), 1.0)
+        self.assertTrue(np.all(parsec_posterior["posterior_weights"] > 0.0))
 
     def test_mock_generator_shapes(self):
         data, truth = simulate_mock_dataset(
