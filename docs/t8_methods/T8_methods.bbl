@@ -1,0 +1,63 @@
+\begin{thebibliography}{9}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Bressan et~al.(2012)Bressan, Marigo, Girardi, Salasnich, Dal~Cero, Rubele, and Nanni]{Bressan2012PARSEC}
+Alessandro Bressan, Paola Marigo, L{\'e}o Girardi, Bernardo Salasnich, Claudia Dal~Cero, Stefano Rubele, and Ambra Nanni.
+\newblock {PARSEC}: stellar tracks and isochrones with the {PAdova} and {TRieste} stellar evolution code.
+\newblock \emph{Monthly Notices of the Royal Astronomical Society}, 427\penalty0 (1):\penalty0 127--145, 2012.
+\newblock \doi{10.1111/j.1365-2966.2012.21948.x}.
+
+\bibitem[de~Boor(2001)]{deBoor2001Splines}
+Carl de~Boor.
+\newblock \emph{A Practical Guide to Splines}, volume~27 of \emph{Applied Mathematical Sciences}.
+\newblock Springer, New York, revised edition, 2001.
+\newblock ISBN 978-0-387-95366-3.
+\newblock \doi{10.1007/978-1-4612-6333-3}.
+
+\bibitem[El-Badry et~al.(2021)El-Badry, Rix, and Heintz]{ElBadry2021MillionBinaries}
+Kareem El-Badry, Hans-Walter Rix, and Tyler~M. Heintz.
+\newblock A million binaries from {Gaia} {eDR3}: sample selection and validation of {Gaia} parallax uncertainties.
+\newblock \emph{Monthly Notices of the Royal Astronomical Society}, 506\penalty0 (2):\penalty0 2269--2295, 2021.
+\newblock \doi{10.1093/mnras/stab323}.
+
+\bibitem[{Gaia Collaboration} et~al.(2023){Gaia Collaboration}, Vallenari, et~al.]{GaiaCollaboration2023DR3}
+{Gaia Collaboration}, A.~Vallenari, et~al.
+\newblock {Gaia Data Release 3}: Summary of the content and survey properties.
+\newblock \emph{Astronomy \& Astrophysics}, 674:\penalty0 A1, 2023.
+\newblock \doi{10.1051/0004-6361/202243940}.
+
+\bibitem[Hoffman and Gelman(2014)]{HoffmanGelman2014NUTS}
+Matthew~D. Hoffman and Andrew Gelman.
+\newblock The {No-U-Turn} sampler: Adaptively setting path lengths in {Hamiltonian Monte Carlo}.
+\newblock \emph{Journal of Machine Learning Research}, 15\penalty0 (47):\penalty0 1593--1623, 2014.
+\newblock URL \url{https://www.jmlr.org/papers/v15/hoffman14a.html}.
+
+\bibitem[Li et~al.(2026)]{Li2026JCaPS}
+Jiadong Li et~al.
+\newblock Variations in the {Milky Way}'s stellar mass function at {$[\mathrm{Fe}/\mathrm{H}]<-1$}.
+\newblock \emph{The Astrophysical Journal Letters}, 998\penalty0 (2):\penalty0 L33, 2026.
+\newblock \doi{10.3847/2041-8213/ae3d39}.
+
+\bibitem[Liu et~al.(2009)Liu, Bayarri, and Berger]{LiuBayarriBerger2009Modularization}
+Fei Liu, M.~J. Bayarri, and James~O. Berger.
+\newblock Modularization in {Bayesian} analysis, with emphasis on analysis of computer models.
+\newblock \emph{Bayesian Analysis}, 4\penalty0 (1):\penalty0 119--150, 2009.
+\newblock \doi{10.1214/09-BA404}.
+
+\bibitem[Plummer(2015)]{Plummer2015Cuts}
+Martyn Plummer.
+\newblock Cuts in {Bayesian} graphical models.
+\newblock \emph{Statistics and Computing}, 25\penalty0 (1):\penalty0 37--43, 2015.
+\newblock \doi{10.1007/s11222-014-9503-z}.
+
+\bibitem[Riello et~al.(2021)]{Riello2021GaiaEDR3Photometry}
+M.~Riello et~al.
+\newblock {Gaia Early Data Release 3}: Photometric content and validation.
+\newblock \emph{Astronomy \& Astrophysics}, 649:\penalty0 A3, 2021.
+\newblock \doi{10.1051/0004-6361/202039587}.
+
+\end{thebibliography}

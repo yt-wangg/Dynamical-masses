@@ -1,0 +1,45 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=25mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs,tabularx,array}
+\usepackage{placeins}
+\usepackage{siunitx}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc}
+\usepackage[round,authoryear]{natbib}
+\usepackage{xurl}
+\usepackage[colorlinks=true,allcolors=blue!55!black,
+  pdftitle={Dynamical Calibration of a Metallicity-Dependent Mass--Luminosity Relation from Gaia Wide Binaries}]{hyperref}
+\usepackage[nameinlink,noabbrev]{cleveref}
+
+\newcommand{\mh}{[\mathrm{M}/\mathrm{H}]}
+\newcommand{\msun}{M_{\odot}}
+\newcommand{\Normal}{\mathcal{N}}
+\newcommand{\StudentT}{\mathcal{T}}
+\newcommand{\indicator}{\mathbb{I}}
+\newcommand{\softplus}{\operatorname{softplus}}
+\newcommand{\sigmoid}{\operatorname{sigmoid}}
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\kmsau}{\mathrm{km}\,\mathrm{s}^{-1}\sqrt{\mathrm{AU}}}
+
+\title{Dynamical Calibration of a Metallicity-Dependent Mass--Luminosity Relation\\
+from Gaia Wide Binaries}
+\author{}
+\date{Frozen model configuration: 13 September 2026}
+
+\begin{document}
+\maketitle
+
+\input{sections/methods}
+
+\bibliographystyle{plainnat}
+\bibliography{T8_methods}
+
+\end{document}
