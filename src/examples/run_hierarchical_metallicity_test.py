@@ -57,6 +57,15 @@ T8_WORKFLOW_ID = "hierarchical_metallicity_t8_1_jcaps_student_t_teff4000_v1"
 CALIBRATION_MODEL_ID = T8_MODEL_ID
 T8_POSTERIOR_NAME = "latent_metallicity_weights_t8.npz"
 T8_LOOKUP_NAME = "dynamics_likelihood_lookup_t8.npz"
+T8_SHAPESTACK_NAME = "dynamics_likelihood_shapestack_t8.npz"
+# T8.2 shape prior box: uniform over (log B, log uc, log C), covering the T8
+# frozen constants, the published Hwang et al. (2019) constants, and the
+# sample-calibrated fit, each with margin.
+T82_SHAPE_AXES = {
+    "log_b": (np.log(0.7e-3), np.log(1.52e-3), np.log(3.3e-3)),
+    "log_uc": (np.log(33.0), np.log(38.1), np.log(44.0)),
+    "log_c": (np.log(2.5), np.log(5.81), np.log(13.5)),
+}
 T8_MLR_NAME = "mlr_mcmc_t8.npz"
 T8_MLR_DEFAULT_KNOT_X = np.array(
     [3.5, 3.5, 3.5, 3.5, 5.5, 7.5, 9.5, 11.5, 13.5, 13.5, 13.5, 13.5],
@@ -834,11 +843,12 @@ def run_calibration(
 def run_mlr(
     arrays: Mapping[str, np.ndarray],
     posterior: MetallicityPosteriorGrid,
-    dynamics_lookup: DynamicsLikelihoodLookup,
+    dynamics_lookup,
     mass_surface: IsochroneMassSurfaceModel,
     output_dir: Path,
     args,
     truth: Optional[Mapping[str, object]],
+    dynamics_shape_stack=None,
 ) -> None:
     metadata = posterior.metadata
     baseline_m1 = mass_surface.mass_from_absg_mh(
@@ -882,9 +892,15 @@ def run_mlr(
         "metallicity_posterior_source": str(args.metallicity_posterior.resolve()) if args.metallicity_posterior else str(output_dir / T8_POSTERIOR_NAME),
         "schema": "t8b-monotone-tensor-spline-mlr-v1",
         "experimental_shape_sensitivity": bool(args.shape_sensitivity),
+        "sampled_dynamics_shape": bool(args.sample_dynamics_shape),
         "good_shape_constants": {
             "A": _hm.RICE_GOOD_A, "B": _hm.RICE_GOOD_B,
             "uc": _hm.RICE_GOOD_UC, "C": _hm.RICE_GOOD_C,
+            "sampled": bool(args.sample_dynamics_shape),
+            "prior_axes": (
+                {k: list(map(float, v)) for k, v in T82_SHAPE_AXES.items()}
+                if args.sample_dynamics_shape else None
+            ),
         },
         "knot_x": np.asarray(args.mlr_knot_x, dtype=float).tolist(),
         "knot_z": np.asarray(args.mlr_knot_z, dtype=float).tolist(),
@@ -905,8 +921,9 @@ def run_mlr(
             "f_outlier": "Beta(3,12)",
         },
         "f_outlier_semantics": (
-            "physical outlier fraction; T8.1 normalizes the good basis to unit "
-            "support integral so both mixture components integrate to one"
+            "normalized mixture probability; physical interpretation depends on "
+            "the contamination and selection model. T8.1 normalizes the good basis "
+            "to unit support integral so both mixture components integrate to one."
         ),
         "derived_output_definitions": {
             "mass": "final inferred mass in solar masses",
@@ -937,6 +954,7 @@ def run_mlr(
         absg=arrays["absg"],
         metallicity_grid=posterior,
         dynamics_lookup=dynamics_lookup,
+        dynamics_shape_stack=dynamics_shape_stack,
     )
     print("Running stage-two dynamical MLR correction...")
     sampler = mlr.run_mcmc(
@@ -1069,6 +1087,69 @@ def run_lookup(
     return lookup
 
 
+def run_shape_stack(arrays, output_dir, args):
+    """Build the 27-node good-shape lookup stack (T8.2).
+
+    The quadrature convergence gate runs once at the box center: quadrature
+    accuracy depends on the (u, u_sigma, s) sampling, not on which member of
+    the smooth shape family is integrated.
+    """
+    import binary_masses.hierarchical_metallicity as _hm
+    axes = {name: np.asarray(values, dtype=np.float64) for name, values in T82_SHAPE_AXES.items()}
+    center = {name: float(np.mean(values)) for name, values in axes.items()}
+    _hm.set_good_shape_constants(
+        B=float(np.exp(center["log_b"])),
+        C=float(np.exp(center["log_c"])),
+        uc=float(np.exp(center["log_uc"])),
+    )
+    print("Checking Rice lookup convergence at the shape-box center node...")
+    convergence = assess_rice_lookup_convergence(
+        row_indices=arrays["row_indices"],
+        u=arrays["u"],
+        u_sigma=arrays["u_sigma"],
+        sqrt_mtot_min=args.lookup_sqrt_mass_min,
+        sqrt_mtot_max=args.lookup_sqrt_mass_max,
+        sample_systems=4 if args.quick else 32,
+        scale_points=4 if args.quick else 16,
+        velocity_sigma_extent=args.lookup_sigma_extent,
+        velocity_quadrature_nodes=args.lookup_velocity_nodes,
+        tolerance_log_likelihood=args.lookup_convergence_tolerance,
+        outlier_u0=args.outlier_u0,
+        outlier_sigma=args.outlier_sigma,
+    )
+    if not convergence["passed"]:
+        raise ValueError("Rice convergence failed at the shape-box center; widen the quadrature settings.")
+    print("Building the 27-node good-shape lookup stack...")
+    stack = _hm.DynamicsLikelihoodShapeStack.build(
+        row_indices=arrays["row_indices"],
+        u=arrays["u"],
+        u_sigma=arrays["u_sigma"],
+        axes=axes,
+        sqrt_mtot_min=args.lookup_sqrt_mass_min,
+        sqrt_mtot_max=args.lookup_sqrt_mass_max,
+        sqrt_mtot_points=args.lookup_mass_points,
+        velocity_quadrature_nodes=args.lookup_velocity_nodes,
+        velocity_sigma_extent=args.lookup_sigma_extent,
+        outlier_u0=args.outlier_u0,
+        outlier_sigma=args.outlier_sigma,
+        system_chunk=args.lookup_system_chunk,
+    )
+    metadata = dict(stack.metadata)
+    metadata["convergence_check"] = convergence
+    stack.metadata = metadata
+    (output_dir / "shapestack_convergence_t8.json").write_text(
+        json.dumps(convergence, indent=2), encoding="utf-8"
+    )
+    (output_dir / "shapestack_nodes_t8.json").write_text(
+        json.dumps({"axes": {k: list(map(float, v)) for k, v in axes.items()},
+                    "nodes": stack.node_constants}, indent=2),
+        encoding="utf-8",
+    )
+    stack_path = stack.save(output_dir / T8_SHAPESTACK_NAME)
+    print(f"Saved dynamics shape stack: {stack_path}")
+    return stack
+
+
 def regenerate_mlr_plots(
     mass_surface: IsochroneMassSurfaceModel, output_dir: Path
 ) -> None:
@@ -1198,6 +1279,9 @@ def parse_args():
                         help="Override the fixed good-basis C constant (shape sensitivity).")
     parser.add_argument("--shape-sensitivity", action="store_true",
                         help="Opt in to an experimental good-shape sensitivity run.")
+    parser.add_argument("--sample-dynamics-shape", action="store_true",
+                        help="T8.2: build a 27-node good-shape lookup stack and sample "
+                             "(log B, log uc, log C) jointly with the MLR surface.")
     parser.add_argument("--target-accept", type=float, default=0.9)
     args = parser.parse_args()
     if args.cmd_anchored_only and args.both_cmd_anchored_only:
@@ -1284,6 +1368,12 @@ def parse_args():
     shape_overrides = {
         "B": args.good_shape_b, "uc": args.good_shape_uc, "C": args.good_shape_c,
     }
+    if args.sample_dynamics_shape and any(v is not None for v in shape_overrides.values()):
+        parser.error("--sample-dynamics-shape samples the shape; drop --good-shape-b/uc/c.")
+    if args.sample_dynamics_shape and (args.cmd_anchored_only or args.both_cmd_anchored_only):
+        parser.error("Shape sampling does not support the cmd-anchored subset yet.")
+    if args.sample_dynamics_shape and args.stage == "plot":
+        parser.error("--sample-dynamics-shape requires lookup and MLR stages (use --stage all, lookup+mlr).")
     if any(v is not None for v in shape_overrides.values()):
         if not args.shape_sensitivity:
             parser.error("Non-default good-shape constants require --shape-sensitivity.")
@@ -1364,14 +1454,26 @@ def main():
         if args.dynamics_lookup is not None
         else args.output_dir / T8_LOOKUP_NAME
     )
+    stack_path = args.output_dir / T8_SHAPESTACK_NAME
+    dynamics_shape_stack = None
+    dynamics_lookup = None
     if args.stage in {"lookup", "all"}:
-        dynamics_lookup = run_lookup(arrays, args.output_dir, args)
+        if args.sample_dynamics_shape:
+            dynamics_shape_stack = run_shape_stack(arrays, args.output_dir, args)
+        else:
+            dynamics_lookup = run_lookup(arrays, args.output_dir, args)
     elif args.stage == "mlr":
-        dynamics_lookup = DynamicsLikelihoodLookup.load(lookup_path)
-        _require_t8_lookup_metadata(dynamics_lookup, args=args)
-        dynamics_lookup.validate_for(
-            row_indices=arrays["row_indices"], u=arrays["u"], u_sigma=arrays["u_sigma"]
-        )
+        if args.sample_dynamics_shape:
+            dynamics_shape_stack = _hm.DynamicsLikelihoodShapeStack.load(stack_path)
+            dynamics_shape_stack.validate_for(
+                row_indices=arrays["row_indices"], u=arrays["u"], u_sigma=arrays["u_sigma"]
+            )
+        else:
+            dynamics_lookup = DynamicsLikelihoodLookup.load(lookup_path)
+            _require_t8_lookup_metadata(dynamics_lookup, args=args)
+            dynamics_lookup.validate_for(
+                row_indices=arrays["row_indices"], u=arrays["u"], u_sigma=arrays["u_sigma"]
+            )
 
     if args.stage in {"mlr", "all"}:
         if args.cmd_anchored_only or args.both_cmd_anchored_only:
@@ -1390,6 +1492,7 @@ def main():
             args.output_dir,
             args,
             truth,
+            dynamics_shape_stack=dynamics_shape_stack,
         )
     print(f"Done. Outputs: {args.output_dir}")
 

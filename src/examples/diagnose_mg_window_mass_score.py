@@ -21,14 +21,24 @@ increase, not the exact finite-step difference; the exact
 
     dlnL10_exact = ln L_j(eps = ln 1.1) - ln L_j(0)
 
-is computed separately over the full mixture and metallicity marginalization.
+is computed separately over the full mixture and metallicity marginalization,
+per draw as well as averaged.
 
 Validation built in:
 - chain-rule scores vs. autodiff jacobian on a random subset;
-- lookup slopes vs. direct adaptive Rice integration (central differences at
-  two step sizes) on selected extreme systems;
-- domain and floor accounting: no evaluation may leave the saved lookup
-  domain with substantial metallicity probability weight.
+- local-slope validation: the chain-rule score is compared against central
+  differences of the DIRECT adaptive Rice integral on the SAME draws and ALL
+  metallicity nodes, with a shrinking step sequence, explicit tolerances and
+  a hard pass/fail gate.  This validates the tabulated slopes of the saved
+  lookup against the production score definition.
+- finite-step likelihood validation at h = 0.1 (secant, not local slope),
+  reported separately.
+- strict domain accounting: every evaluated node (posterior surface, PARSEC
+  projection, both perturbation points) must lie inside the saved lookup
+  domain - there is no small-probability tolerance; responsibilities are
+  NaN-safe by construction; all outputs are asserted finite.
+- floor accounting split by branch, with the marginal weight of floored
+  nodes.
 
 Outputs: per-system CSV, summary JSON, per-draw totals npz, and two figures.
 """
@@ -53,6 +63,10 @@ import binary_masses.hierarchical_metallicity as hm
 
 DRAWS = ("c0", "a", "b", "r", "log_lambda_x", "log_lambda_z", "f_outlier")
 POSTERIOR_NAME = "latent_metallicity_weights_t8.npz"
+MIXTURE_SEMANTICS = (
+    "normalized mixture probability; physical interpretation depends on the "
+    "contamination and selection model"
+)
 
 
 def flatten_chains(value):
@@ -62,6 +76,51 @@ def flatten_chains(value):
         raise ValueError("Expected posterior samples with shape [chain, draw, ...].")
     n_chains = int(arr.shape[0])
     return arr.reshape((arr.shape[0] * arr.shape[1],) + arr.shape[2:]), n_chains
+
+
+def check_draw_consistency(draws: dict) -> dict:
+    """All sampled parameters must agree on the flattened draw count."""
+    lengths = {name: int(np.asarray(value).shape[0]) for name, value in draws.items()}
+    if len(set(lengths.values())) != 1:
+        raise ValueError(f"Posterior parameters disagree on draw counts: {lengths}")
+    return lengths
+
+
+def safe_responsibilities(log_a, log_b, log_cond):
+    """Branch responsibilities that are zero, not NaN, at non-finite nodes."""
+    import jax.numpy as jnp
+
+    finite = jnp.isfinite(log_cond)
+    r_good = jnp.where(finite, jnp.exp(jnp.where(finite, log_a - log_cond, 0.0)), 0.0)
+    r_bad = jnp.where(finite, jnp.exp(jnp.where(finite, log_b - log_cond, 0.0)), 0.0)
+    return r_good, r_bad
+
+
+def assert_group_conservation(summary: dict) -> None:
+    """Window-membership, responsibility and quartile blocks must total up."""
+    total = summary["total"]["S10_linear_total"]
+
+    def check(parts, label):
+        summed = float(sum(parts))
+        if abs(summed - total) > 1e-6 * max(1.0, abs(total)):
+            raise AssertionError(
+                f"{label} blocks sum to {summed:.9f}, total is {total:.9f}."
+            )
+
+    check(
+        [summary["by_category"][k]["S10_linear_total"]
+         for k in ("both", "brighter_only", "fainter_only", "none")],
+        "Window-membership",
+    )
+    check(
+        [summary["by_outlier_responsibility"][k]["S10_linear_total"]
+         for k in ("p_out<0.5", "p_out>=0.5")],
+        "Outlier-responsibility",
+    )
+    check(
+        [block["S10_linear_total"] for block in summary["by_u_ratio_quartile"].values()],
+        "Velocity-quartile",
+    )
 
 
 def load_stage_two(run_dir: Path, data_path: Path, metallicity_posterior: Path | None) -> dict:
@@ -107,6 +166,7 @@ def load_stage_two(run_dir: Path, data_path: Path, metallicity_posterior: Path |
         raise ValueError(f"MLR posterior is missing sampled parameters: {missing}")
     if len(set(chain_counts.values())) != 1:
         raise ValueError("Posterior parameters disagree on the number of chains.")
+    check_draw_consistency(draws)
 
     mg_min_obs, mg_max_obs = float(np.min(absg)), float(np.max(absg))
     if not (
@@ -115,6 +175,7 @@ def load_stage_two(run_dir: Path, data_path: Path, metallicity_posterior: Path |
     ):
         raise ValueError("Observed M_G range does not match the MLR run metadata.")
 
+    n_chains = chain_counts[DRAWS[0]]
     return {
         "rows": rows,
         "u": u,
@@ -124,8 +185,8 @@ def load_stage_two(run_dir: Path, data_path: Path, metallicity_posterior: Path |
         "z_probabilities": np.asarray(posterior.probabilities, dtype=np.float64),
         "z_grid": np.asarray(posterior.z_grid, dtype=np.float64),
         "draws": draws,
-        "n_chains": chain_counts[DRAWS[0]],
-        "chain_ids": np.repeat(np.arange(chain_counts[DRAWS[0]]), draws[DRAWS[0]].shape[0] // chain_counts[DRAWS[0]]),
+        "n_chains": n_chains,
+        "chain_ids": np.repeat(np.arange(n_chains), draws[DRAWS[0]].shape[0] // n_chains),
         "knots_x": np.asarray(mlr_model["knot_x"], dtype=np.float64),
         "knots_z": np.asarray(mlr_model["knot_z"], dtype=np.float64),
         "degree_x": int(mlr_model["degree_x"]),
@@ -137,11 +198,33 @@ def load_stage_two(run_dir: Path, data_path: Path, metallicity_posterior: Path |
             "data_path": str(data_path),
             "metallicity_posterior_path": str(posterior_path),
             "metallicity_posterior_model": posterior_model,
-            "n_chains": chain_counts[DRAWS[0]],
+            "n_chains": n_chains,
             "n_draws_total": int(draws[DRAWS[0]].shape[0]),
-            "u_u_sigma_digest": lookup.metadata.get("data_digest"),
-            "absg_digest": hm.array_digest(absg),
-            "z_probabilities_digest": hm.array_digest(rows, np.asarray(posterior.probabilities, dtype=np.float64)),
+            "digests": {
+                "u_u_sigma": {
+                    "digest": lookup.metadata.get("data_digest"),
+                    "status": "verified",
+                    "verified_against": "dynamics lookup metadata data_digest",
+                },
+                "component_mg": {
+                    "digest": hm.array_digest(absg),
+                    "status": "recorded_unverified",
+                    "note": (
+                        "this run does not store a fit-time component-M_G digest; "
+                        "equality of the observed M_G range with mlr_model.json is "
+                        "checked, which does not prove the trace was fit to these values"
+                    ),
+                },
+                "z_probabilities": {
+                    "digest": hm.array_digest(rows, np.asarray(posterior.probabilities, dtype=np.float64)),
+                    "status": "recorded_unverified",
+                    "note": (
+                        "same row ids and a self-consistent posterior file do not prove "
+                        "these weights were used at MLR-fit time; fit-time binding of the "
+                        "posterior content is pending (legacy_unverified run)"
+                    ),
+                },
+            },
         },
     }
 
@@ -203,7 +286,7 @@ def evaluate_scores(data: dict, *, mg_min: float, mg_max: float, draw_chunk: int
             log_joint = log_ws_j + log_cond
             per_system = jax.nn.logsumexp(log_joint, axis=1)
             p_q = jax.nn.softmax(log_joint, axis=1)
-            r_good, r_bad = jnp.exp(log_a - log_cond), jnp.exp(log_b - log_cond)
+            r_good, r_bad = safe_responsibilities(log_a, log_b, log_cond)
             ds_deps = (m1 * h1s_j + m2 * h2s_j) / (2.0 * s)
             push_good = r_good * slope(good_rows, s) * ds_deps
             push_bad = r_bad * slope(bad_rows, s) * ds_deps
@@ -217,7 +300,8 @@ def evaluate_scores(data: dict, *, mg_min: float, mg_max: float, draw_chunk: int
                 jnp.sum(p_q * ds_deps, axis=1),
             )
 
-        def mixture_loglik(eps_value, thetas, f_values):
+        def mixture_loglik_draws(eps_value, thetas, f_values):
+            """Per-draw marginalized log-likelihood, shape (n_draws, n_systems)."""
             def one(theta, f):
                 _, _, s = scale_from_theta(theta, eps_value)
                 log_cond = jnp.logaddexp(
@@ -225,22 +309,31 @@ def evaluate_scores(data: dict, *, mg_min: float, mg_max: float, draw_chunk: int
                 )
                 return jax.nn.logsumexp(log_ws_j + log_cond, axis=1)
 
-            total = 0.0
+            blocks = []
             for start in range(0, f_values.shape[0], draw_chunk):
                 stop = min(start + draw_chunk, f_values.shape[0])
-                total = total + jnp.sum(jax.vmap(one)(thetas[start:stop], f_values[start:stop]), axis=0)
-            return total / f_values.shape[0]
+                blocks.append(jax.vmap(one)(thetas[start:stop], f_values[start:stop]))
+            return jnp.concatenate(blocks, axis=0)
 
         def domain_stats(eps_value, thetas):
-            """Out-of-domain and floor-hit accounting, per draw and system."""
+            """Out-of-domain and floor accounting with marginal node weights."""
             def one(theta):
                 _, _, s = scale_from_theta(theta, eps_value)
                 outside = (s < grid_j[0]) | (s > grid_j[-1])
-                p_out = jnp.sum(z_ws_j * outside, axis=1)
                 good_ll = interp(good_rows, s)
                 bad_ll = interp(bad_rows, s)
-                floor_hits = jnp.sum((good_ll <= floor_log) | (bad_ll <= floor_log))
-                return jnp.sum(outside), p_out, floor_hits, jnp.min(s), jnp.max(s)
+                good_floor = (good_ll <= floor_log) & ~outside
+                bad_floor = (bad_ll <= floor_log) & ~outside
+                return (
+                    jnp.sum(outside),
+                    jnp.sum(z_ws_j * outside, axis=1),
+                    jnp.sum(good_floor),
+                    jnp.sum(bad_floor),
+                    jnp.sum(z_ws_j * good_floor),
+                    jnp.sum(z_ws_j * bad_floor),
+                    jnp.min(s),
+                    jnp.max(s),
+                )
 
             blocks = [
                 jax.vmap(one)(thetas[start:min(start + draw_chunk, thetas.shape[0])])
@@ -250,17 +343,20 @@ def evaluate_scores(data: dict, *, mg_min: float, mg_max: float, draw_chunk: int
                 np.concatenate([np.asarray(block[k], dtype=np.float64) for block in blocks], axis=0)
                 for k in range(len(blocks[0]))
             ]
-            n_out_draws, p_out, floor_hits, s_min, s_max = stacked
+            n_out_draws, p_out, n_good_floor, n_bad_floor, w_good_floor, w_bad_floor, s_min, s_max = stacked
             return {
                 "eps": float(eps_value),
                 "n_outside_nodes": float(np.sum(n_out_draws)),
                 "max_p_outside_system": float(np.max(p_out)),
-                "n_floor_hits": float(np.sum(floor_hits)),
+                "n_good_floor_nodes": float(np.sum(n_good_floor)),
+                "n_bad_floor_nodes": float(np.sum(n_bad_floor)),
+                "marginal_weight_good_floor": float(np.mean(w_good_floor)),
+                "marginal_weight_bad_floor": float(np.mean(w_bad_floor)),
                 "s_min": float(np.min(s_min)),
                 "s_max": float(np.max(s_max)),
             }
 
-        return per_draw_stats, mixture_loglik, domain_stats
+        return per_draw_stats, mixture_loglik_draws, domain_stats
 
     draws = data["draws"]
     n_draws = draws["c0"].shape[0]
@@ -276,9 +372,27 @@ def evaluate_scores(data: dict, *, mg_min: float, mg_max: float, draw_chunk: int
     )
     parsec_theta = jnp.asarray(data["parsec_projection"])
 
-    per_draw_stats, mixture_loglik, domain_stats = make_scorer(
+    per_draw_stats, mixture_loglik_draws, domain_stats = make_scorer(
         bx1, bx2, log_w, z_prob, h[:, 0:1], h[:, 1:2], np.arange(n)
     )
+
+    # Strict domain guard: every evaluated node must be inside the saved
+    # lookup domain.  No small-probability tolerance is applied.
+    eps10 = float(np.log(1.1))
+    strict = {}
+    for label, thetas, eps_value in (
+        ("posterior_eps0", posterior_thetas, 0.0),
+        ("posterior_eps_ln1p1", posterior_thetas, eps10),
+        ("parsec_eps0", parsec_theta[None, :, :], 0.0),
+    ):
+        stats = domain_stats(jnp.asarray(eps_value), thetas)
+        strict[label] = stats
+        if stats["n_outside_nodes"] > 0:
+            raise RuntimeError(
+                f"Mass scale leaves the lookup domain for {label} "
+                f"(eps={eps_value}): {json.dumps(stats)}. Rebuild a wider lookup "
+                "instead of extrapolating."
+            )
 
     def run_chain_rule(theta_stack):
         theta_is_batched = jnp.ndim(theta_stack) == 3
@@ -301,20 +415,16 @@ def evaluate_scores(data: dict, *, mg_min: float, mg_max: float, draw_chunk: int
     parsec_out, s_draw_parsec = run_chain_rule(parsec_theta)
     out["S_parsec"] = parsec_out["S"]
 
-    # Exact finite-step difference for eps = ln(1.1), with a hard domain guard.
-    eps10 = float(np.log(1.1))
-    stats = {"eps0": domain_stats(jnp.asarray(0.0), posterior_thetas),
-             "eps_ln1p1": domain_stats(jnp.asarray(eps10), posterior_thetas)}
-    if stats["eps0"]["max_p_outside_system"] > 1e-6 or stats["eps_ln1p1"]["max_p_outside_system"] > 1e-6:
-        raise RuntimeError(
-            "Perturbed mass scale leaves the lookup domain with substantial "
-            f"metallicity weight: {json.dumps(stats)}"
-        )
-    ll0 = mixture_loglik(jnp.asarray(0.0), posterior_thetas, f_all)
-    ll10 = mixture_loglik(jnp.asarray(eps10), posterior_thetas, f_all)
-    if not np.all(np.isfinite(np.asarray(ll10, dtype=np.float64))):
-        raise RuntimeError("eps = ln(1.1) evaluation produced non-finite log-likelihoods.")
-    out["dlnL10_exact"] = np.asarray(ll10, dtype=np.float64) - np.asarray(ll0, dtype=np.float64)
+    ll_draws0 = np.asarray(mixture_loglik_draws(jnp.asarray(0.0), posterior_thetas, f_all), dtype=np.float64)
+    ll_draws10 = np.asarray(mixture_loglik_draws(jnp.asarray(eps10), posterior_thetas, f_all), dtype=np.float64)
+    if not np.all(np.isfinite(ll_draws0)) or not np.all(np.isfinite(ll_draws10)):
+        raise RuntimeError("Non-finite marginalized log-likelihood at eps=0 or eps=ln(1.1).")
+    exact_draws = ll_draws10 - ll_draws0
+    out["dlnL10_exact"] = exact_draws.mean(axis=0)
+
+    for key in ("loglik", "S", "S_good", "S_bad", "p_outlier", "s_mean", "ds_deps_mean", "dlnL10_exact", "S_parsec"):
+        if not np.all(np.isfinite(out[key])):
+            raise RuntimeError(f"Score output '{key}' contains non-finite values.")
 
     # Chain-rule vs autodiff on a small random subset (validates the algebra).
     check = np.random.default_rng(0).choice(n, size=min(64, n), replace=False)
@@ -332,108 +442,160 @@ def evaluate_scores(data: dict, *, mg_min: float, mg_max: float, draw_chunk: int
         subset = one if subset is None else tuple(a + b for a, b in zip(subset, one))
     subset = tuple(np.asarray(value, dtype=np.float64) / len(check_draws) for value in subset)
     auto = jax.jacobian(lambda e: check_mixture(e, check_thetas, check_f))(jnp.asarray(0.0))
-    relative = np.abs(np.asarray(auto) - subset[1]) / np.maximum(np.abs(subset[1]), 1e-6)
+    auto = np.asarray(auto, dtype=np.float64)
+    if auto.ndim == 2:  # per-draw jacobian; the subset score averages over draws
+        auto = auto.mean(axis=0)
+    relative = np.abs(auto - subset[1]) / np.maximum(np.abs(subset[1]), 1e-6)
     if not np.all(relative < 1e-4):
         raise RuntimeError(f"Chain-rule score disagrees with autodiff (max rel {np.max(relative):.2e}).")
+
+    # Reference check on the same draws and all metallicity nodes.
+    nonzero = np.flatnonzero(out["S"] != 0)
+    rng = np.random.default_rng(1)
+    check_systems = np.sort(np.array([
+        int(np.argmax(out["S"])),
+        int(nonzero[np.argmin(out["S"][nonzero])]),
+        int(np.argmax(out["p_outlier"])),
+        int(nonzero[np.argmin(np.abs(out["s_mean"][nonzero] - grid[0]))]),
+        int(rng.choice(nonzero, size=1)[0]),
+    ]))
+    ref_draw_idx = np.linspace(0, n_draws - 1, num=3, dtype=np.int64)
+    subset_chain = None
+    for d in ref_draw_idx:
+        one = per_draw_stats(posterior_thetas[d], f_all[d])
+        subset_chain = one if subset_chain is None else tuple(a + b for a, b in zip(subset_chain, one))
+    subset_chain_scores = np.asarray(subset_chain[1], dtype=np.float64) / len(ref_draw_idx)
+
+    reference = reference_derivative_check(
+        data, subset_chain_scores, np.asarray(posterior_thetas, dtype=np.float64),
+        bx1, bx2, bz, h, check_systems, draw_idx=ref_draw_idx,
+    )
 
     extras = {
         "S_draw": s_draw,
         "S_parsec_draw": s_draw_parsec,
+        "dlnL10_exact_draw": exact_draws,
         "chain_ids": data["chain_ids"],
         "n_chains": data["n_chains"],
-        "domain_stats": stats,
-        "reference_check": reference_derivative_check(
-            data, out, np.asarray(posterior_thetas, dtype=np.float64),
-            bx1, bx2, bz, h, mg_max=mg_max,
-        ),
+        "domain_stats": strict,
+        "reference_check": reference,
     }
     return out, h, extras
 
 
 def reference_derivative_check(
-    data, result, thetas, bx1, bx2, bz, h, *, mg_max, n_systems=8, n_draws=3, node_cover=0.9, max_nodes=15,
+    data, subset_chain_scores, thetas, bx1, bx2, bz, h, systems, *, draw_idx,
+    hs_local=(0.01, 0.003), h_finite=0.1,
 ) -> dict:
-    """Lookup slopes vs. direct adaptive Rice integration on extreme systems.
+    """Validate the production local score against the adaptive Rice integral.
 
-    Central differences of the FULL mixture + metallicity marginalization are
-    evaluated twice for the same (draws, nodes, eps): once through the saved
-    lookup, once through hm.rice_component_reference_integral.  Agreement
-    isolates the accuracy of the tabulated slopes themselves.
+    For each validated system the FULL metallicity marginalization (all
+    nodes, same draws as the chain-rule subset score) is differentiated by
+    central differences evaluated through BOTH the saved lookup and the
+    direct adaptive integral.  Small steps test convergence towards the
+    local slope; the h = 0.1 pair is a finite-step likelihood check only.
+    Component parameters come from the lookup metadata, so an experimental
+    outlier shape is audited as itself.
     """
     from scipy.special import logsumexp
 
-    rng = np.random.default_rng(1)
-    z_prob = data["z_probabilities"]
-    n = len(result["S"])
-    picks = [
-        int(np.argmax(result["S"])),
-        int(np.argmin(result["S"])),
-        int(np.argmax(result["p_outlier"])),
-        int(np.argsort(result["p_outlier"])[-2]),
-        int(np.argmax(data["u"] / result["s_mean"])),
-    ]
-    margin = np.minimum(result["s_mean"] - 0.25, 2.5 - result["s_mean"])
-    picks += list(np.argsort(margin)[:2])
-    picks += list(rng.choice(np.flatnonzero(result["S"] != 0), size=1, replace=False))
-    picks = list(dict.fromkeys(picks))[:n_systems]
-    draw_idx = np.linspace(0, thetas.shape[0] - 1, num=n_draws, dtype=np.int64)
-    hs = (0.03, 0.1)
-
+    meta = data["lookup"].metadata
+    ref_kwargs = {
+        "support_max": float(meta["tilde_u_max"]),
+        "outlier_u0": float(meta["outlier_u0"]),
+        "outlier_sigma": float(meta["outlier_sigma"]),
+    }
+    grid_lut = np.asarray(data["lookup"].sqrt_mtot_grid, dtype=np.float64)
     records = []
-    for sys_index in picks:
-        weight = z_prob[sys_index]
-        order = np.argsort(weight)[::-1][:max_nodes]
-        cut = int(np.searchsorted(np.cumsum(weight[order]), node_cover * weight.sum()) + 1)
-        kept = np.sort(order[:min(max_nodes, cut, weight.size)])
-        w_sel = weight[kept] / weight[kept].sum()
+    for sys_index in systems:
+        weight = data["z_probabilities"][sys_index]
+        w_sel = weight / weight.sum()  # all metallicity nodes, no pruning
         bx1_sys, bx2_sys = bx1[sys_index], bx2[sys_index]
-        bz_sel = bz[kept]
         h1, h2 = h[sys_index, 0], h[sys_index, 1]
         u_sys, us_sys = float(data["u"][sys_index]), float(data["u_sigma"][sys_index])
-        record = {"system": int(sys_index), "n_nodes": int(kept.size),
-                  "S_chainrule": float(result["S"][sys_index])}
-        grid_lut = np.asarray(data["lookup"].sqrt_mtot_grid, dtype=np.float64)
         row_good = np.asarray(data["lookup"].log_good[sys_index], dtype=np.float64)
         row_bad = np.asarray(data["lookup"].log_bad[sys_index], dtype=np.float64)
-        for step in hs:
-            ref_diffs, lut_diffs = [], []
+        record = {
+            "system": int(sys_index),
+            "n_nodes": int(weight.size),
+            "S_chainrule_same_draws": float(subset_chain_scores[sys_index]),
+        }
+        for step in (*hs_local, h_finite):
+            ref_scores, lut_scores = [], []
             for d in draw_idx:
                 theta = thetas[d]
                 f = float(data["draws"]["f_outlier"][d])
-                g1 = (bx1_sys @ theta) @ bz_sel.T
-                g2 = (bx2_sys @ theta) @ bz_sel.T
+                g1 = (bx1_sys @ theta) @ bz.T
+                g2 = (bx2_sys @ theta) @ bz.T
                 m1, m2 = np.power(10.0, g1), np.power(10.0, g2)
                 ll_ref, ll_lut = [], []
                 for sign in (1.0, -1.0):
                     s = np.sqrt(m1 * np.exp(h1 * sign * step) + m2 * np.exp(h2 * sign * step))
+                    if np.any(s <= grid_lut[0]) or np.any(s >= grid_lut[-1]):
+                        raise RuntimeError(
+                            f"Reference check system {sys_index} leaves the lookup "
+                            f"domain at eps step {sign * step}; refusing to evaluate."
+                        )
                     good_ref = np.array([
-                        hm.rice_component_reference_integral(u_sys, us_sys, float(s_q), component="good") for s_q in s
+                        hm.rice_component_reference_integral(
+                            u_sys, us_sys, float(s_q), component="good", **ref_kwargs
+                        ) for s_q in s
                     ])
                     bad_ref = np.array([
-                        hm.rice_component_reference_integral(u_sys, us_sys, float(s_q), component="bad") for s_q in s
+                        hm.rice_component_reference_integral(
+                            u_sys, us_sys, float(s_q), component="bad", **ref_kwargs
+                        ) for s_q in s
                     ])
                     ll_ref.append(logsumexp(np.log(w_sel) + np.log((1.0 - f) * good_ref + f * bad_ref)))
                     good_lut = np.exp(np.interp(s, grid_lut, row_good))
                     bad_lut = np.exp(np.interp(s, grid_lut, row_bad))
                     ll_lut.append(logsumexp(np.log(w_sel) + np.log((1.0 - f) * good_lut + f * bad_lut)))
-                ref_diffs.append((ll_ref[0] - ll_ref[1]) / (2.0 * step))
-                lut_diffs.append((ll_lut[0] - ll_lut[1]) / (2.0 * step))
-            record[f"S_reference_h{step}"] = float(np.mean(ref_diffs))
-            record[f"S_lookup_fd_h{step}"] = float(np.mean(lut_diffs))
-        record["reference_over_lookup"] = float(
-            record[f"S_reference_h{hs[0]}"] / record[f"S_lookup_fd_h{hs[0]}"]
-        ) if record[f"S_lookup_fd_h{hs[0]}"] != 0 else None
+                ref_scores.append((ll_ref[0] - ll_ref[1]) / (2.0 * step))
+                lut_scores.append((ll_lut[0] - ll_lut[1]) / (2.0 * step))
+            record[f"S_reference_h{step}"] = float(np.mean(ref_scores))
+            record[f"S_lookup_fd_h{step}"] = float(np.mean(lut_scores))
+
+        s_chain = record["S_chainrule_same_draws"]
+        s_large_local = record[f"S_reference_h{hs_local[0]}"]
+        s_small = record[f"S_reference_h{hs_local[1]}"]
+        record["local_slope_converged"] = bool(
+            abs(s_large_local - s_small) <= max(0.02 * abs(s_small), 5e-3)
+        )
+        record["local_slope_matches_chainrule"] = bool(
+            abs(s_small - s_chain) <= max(0.05 * abs(s_chain), 1e-2)
+        )
+        record["finite_step_matches"] = bool(
+            abs(record[f"S_reference_h{h_finite}"] - record[f"S_lookup_fd_h{h_finite}"])
+            <= max(0.05 * abs(record[f"S_lookup_fd_h{h_finite}"]), 2e-2)
+        )
         records.append(record)
+
+    passed = all(
+        record["local_slope_converged"]
+        and record["local_slope_matches_chainrule"]
+        and record["finite_step_matches"]
+        and all(
+            np.isfinite(record[key])
+            for key in ("S_chainrule_same_draws", f"S_reference_h{hs_local[1]}", f"S_lookup_fd_h{h_finite}")
+        )
+        for record in records
+    )
     return {
         "description": (
-            "Central-difference scores of the full marginalized likelihood via "
-            "direct adaptive Rice integration vs. the saved lookup (same draws, "
-            "nodes and steps). Agreement validates the tabulated slopes."
+            "Local-slope validation: chain-rule score vs. adaptive-integral central "
+            "differences on the same draws and all metallicity nodes, with a shrinking "
+            "step sequence and explicit pass/fail tolerances. The h = 0.1 pair is a "
+            "finite-step likelihood check, not a local-slope claim."
         ),
+        "steps_local": list(hs_local),
+        "step_finite": h_finite,
+        "tolerances": {
+            "step_convergence": "max(0.02*|S|, 5e-3)",
+            "chainrule_agreement": "max(0.05*|S|, 1e-2)",
+            "finite_step": "max(0.05*|S|, 2e-2)",
+        },
+        "passed": bool(passed),
         "systems": records,
-        "max_abs_reference_minus_lookup_h0p03": float(np.max(np.abs([
-            r["S_reference_h0.03"] - r["S_lookup_fd_h0.03"] for r in records
-        ]))),
     }
 
 
@@ -492,6 +654,7 @@ def summarize(data: dict, result: dict, extras: dict, h: np.ndarray, *, mg_min: 
     ]
 
     s10_draw = extras["S_draw"] * ln10p
+    exact_total_draw = extras["dlnL10_exact_draw"].sum(axis=1)
     chain_ids = extras["chain_ids"]
     per_chain = [
         {
@@ -534,6 +697,14 @@ def summarize(data: dict, result: dict, extras: dict, h: np.ndarray, *, mg_min: 
             "min": float(np.min(s10_draw)),
             "max": float(np.max(s10_draw)),
         },
+        "total_dlnL10_exact_per_draw": {
+            "mean": float(np.mean(exact_total_draw)),
+            "std": float(np.std(exact_total_draw)),
+            "q16": float(np.quantile(exact_total_draw, 0.16)),
+            "q84": float(np.quantile(exact_total_draw, 0.84)),
+            "min": float(np.min(exact_total_draw)),
+            "max": float(np.max(exact_total_draw)),
+        },
         "per_chain_total_S10_linear_mean": per_chain,
         "exact_vs_linear": {
             "total_exact": float(np.sum(exact)),
@@ -541,6 +712,10 @@ def summarize(data: dict, result: dict, extras: dict, h: np.ndarray, *, mg_min: 
                 np.median((exact / s10)[np.abs(s10) > 1e-8])
             ),
             "n_sign_flips_exact_vs_linear": int(np.sum(np.sign(exact) != np.sign(s10))),
+            "note": (
+                "Per-system ratios do not represent aggregate accuracy: the total is "
+                "a small difference of large per-system terms."
+            ),
         },
         "domain_and_floor": extras["domain_stats"],
         "reference_derivative_check": extras["reference_check"],
@@ -552,10 +727,23 @@ def summarize(data: dict, result: dict, extras: dict, h: np.ndarray, *, mg_min: 
                 "the mean score vanish overall). Whether the observed pattern "
                 "exceeds model expectation must be judged against simulated ranges."
             ),
+            "cross_table_branch_split": (
+                "The branch split is evaluated under the CURRENT fitted model. After "
+                "changing the contamination model and refitting, responsibilities, f "
+                "and the MLR all readjust, so the split cannot be extrapolated to the "
+                "alternative model."
+            ),
+            "per_draw_positivity": (
+                "All-draws-positive totals are a property of this window-direction "
+                "diagnostic at the fitted surface without prior terms; they are not "
+                "independent evidence of a detected mass bias."
+            ),
             "u_ratio": "u_obs / (s_posterior_mean * <tilde_u>_good); s depends on the fitted MLR, so this is model-conditioned.",
         },
         "provenance": data["provenance"],
     }
+    assert_group_conservation(summary)
+
     per_system = {
         "row_index": data["rows"],
         "u": data["u"],
@@ -721,6 +909,7 @@ def main():
         args.output / "mg_window_score_draws.npz",
         S10_linear_per_draw=extras["S_draw"] * float(np.log(1.1)),
         S10_parsec_per_draw=extras["S_parsec_draw"] * float(np.log(1.1)),
+        dlnL10_exact_per_draw=extras["dlnL10_exact_draw"].sum(axis=1),
         chain_ids=extras["chain_ids"],
     )
     hidden_report = plot_breakdown(per_system, summary, args.output / "mg_window_scores.png",
@@ -734,11 +923,19 @@ def main():
     print(json.dumps({k: summary[k] for k in (
         "total", "S10_linear_at_parsec_projection_with_fitted_f",
         "by_outlier_responsibility", "total_S10_linear_per_draw",
-        "per_chain_total_S10_linear_mean", "exact_vs_linear",
-        "domain_and_floor", "hidden_points_main_panel",
+        "total_dlnL10_exact_per_draw", "domain_and_floor",
+        "hidden_points_main_panel",
     )}, indent=2))
-    print("reference_derivative_check max|ref-lut| h=0.03:",
-          summary["reference_derivative_check"]["max_abs_reference_minus_lookup_h0p03"])
+    reference = summary["reference_derivative_check"]
+    print(f"reference_derivative_check passed: {reference['passed']}")
+    small = reference["steps_local"][1]
+    for record in reference["systems"]:
+        print(
+            f"  sys {record['system']:5d} chain={record['S_chainrule_same_draws']:+.4f} "
+            f"ref(h={small})={record[f'S_reference_h{small}']:+.4f} "
+            f"conv={record['local_slope_converged']} "
+            f"match={record['local_slope_matches_chainrule']}"
+        )
 
 
 if __name__ == "__main__":
