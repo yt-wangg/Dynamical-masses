@@ -202,10 +202,15 @@ def _require_t8_lookup_metadata(lookup: DynamicsLikelihoodLookup, *, args) -> No
         "velocity_quadrature_nodes": int(args.lookup_velocity_nodes),
         "sample_systems_requested": expected_sample_systems,
         "scale_points_requested": expected_scale_points,
+        "outlier_u0": float(getattr(args, "outlier_u0", 40.0)),
+        "outlier_sigma": float(getattr(args, "outlier_sigma", 13.0)),
     }
     mismatches = []
     for name in ("sqrt_mtot_points", "velocity_quadrature_nodes"):
         if int(metadata.get(name, -1)) != expected[name]:
+            mismatches.append(f"{name}={metadata.get(name)!r}, expected {expected[name]}")
+    for name in ("outlier_u0", "outlier_sigma"):
+        if not np.isclose(float(metadata.get(name, np.nan)), expected[name], rtol=0.0, atol=0.0):
             mismatches.append(f"{name}={metadata.get(name)!r}, expected {expected[name]}")
     for name in ("sample_systems_requested", "scale_points_requested"):
         if int(convergence.get(name, -1)) != expected[name]:
@@ -449,6 +454,17 @@ def save_sampler_diagnostics(sampler, path: Path) -> None:
         "num_chains": int(sampler.num_chains),
         "num_samples_per_chain": int(sampler.num_samples),
     }
+    if sampler.num_samples >= 4:
+        from numpyro.diagnostics import summary
+        chain_summary = summary(sampler.get_samples(group_by_chain=True), group_by_chain=True)
+        rhat = np.concatenate([np.asarray(item["r_hat"]).reshape(-1) for item in chain_summary.values()])
+        ess = np.concatenate([np.asarray(item["n_eff"]).reshape(-1) for item in chain_summary.values()])
+        diagnostics.update({
+            "max_r_hat": float(np.max(rhat)) if np.all(np.isfinite(rhat)) else None,
+            "min_n_eff": float(np.min(ess)) if np.all(np.isfinite(ess)) else None,
+            "nonfinite_r_hat_count": int(np.sum(~np.isfinite(rhat))),
+            "nonfinite_n_eff_count": int(np.sum(~np.isfinite(ess))),
+        })
     path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
 
 
@@ -857,6 +873,12 @@ def run_mlr(
         )
     mlr_model_metadata = {
         "n_systems": int(len(arrays["row_indices"])),
+        "experimental_outlier_sensitivity": bool(args.outlier_sensitivity),
+        "outlier_shape": {
+            "mu": float(args.outlier_u0), "sigma": float(args.outlier_sigma),
+            "support": [0.0, 80.0], "units": "km s^-1 sqrt(AU)",
+        },
+        "metallicity_posterior_source": str(args.metallicity_posterior.resolve()) if args.metallicity_posterior else str(output_dir / T8_POSTERIOR_NAME),
         "schema": "t8b-monotone-tensor-spline-mlr-v1",
         "knot_x": np.asarray(args.mlr_knot_x, dtype=float).tolist(),
         "knot_z": np.asarray(args.mlr_knot_z, dtype=float).tolist(),
@@ -986,6 +1008,8 @@ def run_lookup(
         velocity_sigma_extent=args.lookup_sigma_extent,
         velocity_quadrature_nodes=args.lookup_velocity_nodes,
         tolerance_log_likelihood=args.lookup_convergence_tolerance,
+        outlier_u0=args.outlier_u0,
+        outlier_sigma=args.outlier_sigma,
     )
     (output_dir / "lookup_convergence_t8.json").write_text(
         json.dumps(convergence, indent=2), encoding="utf-8"
@@ -1008,6 +1032,7 @@ def run_lookup(
         velocity_sigma_extent=args.lookup_sigma_extent,
         outlier_u0=args.outlier_u0,
         outlier_sigma=args.outlier_sigma,
+        outlier_sensitivity=args.outlier_sensitivity,
         system_chunk=args.lookup_system_chunk,
     )
     lookup = DynamicsLikelihoodLookup(
@@ -1157,6 +1182,8 @@ def parse_args():
     parser.add_argument("--lookup-system-chunk", type=int, default=128)
     parser.add_argument("--outlier-u0", type=float, default=40.0)
     parser.add_argument("--outlier-sigma", type=float, default=13.0)
+    parser.add_argument("--outlier-sensitivity", action="store_true",
+                        help="Opt in to an experimental outlier-shape sensitivity run.")
     parser.add_argument("--target-accept", type=float, default=0.9)
     args = parser.parse_args()
     if args.cmd_anchored_only and args.both_cmd_anchored_only:
@@ -1211,14 +1238,35 @@ def parse_args():
         parser.error("Sampling and lookup sizes must be positive.")
     if not (0 < args.lookup_sqrt_mass_min < args.lookup_sqrt_mass_max):
         parser.error("Require 0 < --lookup-sqrt-mass-min < --lookup-sqrt-mass-max.")
+    if not args.outlier_sensitivity and (
+        args.outlier_u0 != 40.0 or args.outlier_sigma != 13.0
+    ):
+        parser.error("T8 baseline fixes --outlier-u0=40 and --outlier-sigma=13; add --outlier-sensitivity for experiments.")
     if (
         args.lookup_sigma_extent <= 0
         or args.lookup_convergence_tolerance <= 0
         or args.outlier_sigma <= 0
+        or not np.isfinite(args.outlier_u0)
+        or not np.isfinite(args.outlier_sigma)
     ):
         parser.error("Lookup sigma extent and outlier sigma must be positive.")
-    if not np.isclose(args.outlier_u0, 40.0) or not np.isclose(args.outlier_sigma, 13.0):
-        parser.error("T8 fixes --outlier-u0=40 and --outlier-sigma=13.")
+    if args.outlier_sensitivity:
+        if args.stage not in {"lookup", "mlr", "plot"}:
+            parser.error("Outlier sensitivity reuses T8 calibration: use --stage lookup or mlr (or plot).")
+        if args.stage != "plot" and args.metallicity_posterior is None:
+            parser.error("Outlier sensitivity requires --metallicity-posterior from the frozen T8 baseline.")
+        output = args.output_dir.resolve()
+        frozen = REPO_ROOT / "results" / "hierarchical_metallicity_t8_20260913"
+        protected = [frozen.resolve()]
+        if args.metallicity_posterior is not None:
+            protected.append(args.metallicity_posterior.resolve().parent)
+        if any(output == parent or parent in output.parents for parent in protected) or (output / "calibration_model.json").exists():
+            parser.error("Experimental output must be separate from the frozen calibration/baseline directory.")
+        saved_model = output / "mlr_model.json"
+        if saved_model.exists():
+            previous = json.loads(saved_model.read_text())
+            if not previous.get("experimental_outlier_sensitivity") or previous.get("outlier_shape", {}).get("mu") != args.outlier_u0 or previous.get("outlier_shape", {}).get("sigma") != args.outlier_sigma:
+                parser.error("Output directory already contains a different MLR model; choose a new directory.")
     return args
 
 

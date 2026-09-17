@@ -18,10 +18,12 @@ catalogues and their principal selection and astrometric-validation issues are
 described by \citet{ElBadry2021MillionBinaries}.
 
 We use modular inference
-\citep{LiuBayarriBerger2009Modularization,Plummer2015Cuts}.  Stage~1 combines the
-two component-level JCAPS metallicity measurements with the PARSEC
-colour--magnitude diagram (CMD) to infer a probability distribution for the
-shared metallicity of every binary.  Stage~2 treats these distributions as
+\citep{LiuBayarriBerger2009Modularization,Plummer2015Cuts}.  Stage~1a uses
+within-binary metallicity differences to estimate the relative JCAPS
+calibration.  Conditional on that estimate, Stage~1b combines the component
+JCAPS measurements with the PARSEC colour--magnitude diagram (CMD) and a
+hierarchical population distribution to infer a probability distribution for
+the shared metallicity of every binary.  Stage~2 treats these distributions as
 fixed inputs, predicts the two component masses at every metallicity, and
 evaluates the wide-binary dynamical likelihood.  The modular inference deliberately prevents
 the dynamical data from recalibrating the JCAPS zero point, CMD scatter, or
@@ -44,7 +46,7 @@ sample metallicity distribution.  The architecture is summarized in
 ]
 \node[data]   (spec)   at (0, 2.6) {Raw JCAPS measurements\\$\widehat z_{j1},\widehat z_{j2}$ and uncorrected errors};
 \node[data]   (cmd)    at (0, 1.0) {Gaia CMD data\\$M_G,(G_{\rm BP}-G_{\rm RP})_0$};
-\node[model]  (stage1) at (4.1, 1.8) {Stage 1: shared $Z_j$ + \mbox{PARSEC} CMD\\+ population prior};
+\node[model]  (stage1) at (4.1, 1.8) {Stage 1a: relative JCAPS calibration\\Stage 1b: shared $Z_j$ + CMD + population distribution};
 \node[result] (weights)at (8.2, 1.8) {System metallicity posterior mass\\$\overline P_{jq}$};
 
 \node[data]   (phot)   at (0,-0.8) {Component magnitudes\\$x_{j1},x_{j2}$};
@@ -66,11 +68,12 @@ sample metallicity distribution.  The architecture is summarized in
   {metallicity\\marginalization} (rice.east);
 % \node[cutnote] at (8.2,0.45) {cut: no dynamical feedback};
 \end{tikzpicture}
-\caption{Scientific workflow.  The first stage returns a posterior probability
-mass over the shared system metallicity.  The second stage propagates this
-uncertainty into the dynamical MLR fit.  The red cut boundary is a modeling
-choice: the dashed red label emphasizes that the lower-stage data do not update
-the upper-stage calibration.}
+\caption{Scientific workflow.  Stage~1a estimates the relative JCAPS
+calibration from within-binary differences.  Conditional on those fixed
+estimates, Stage~1b returns a posterior probability mass over each shared
+system metallicity.  Stage~2 propagates this uncertainty into the dynamical MLR
+fit but does not update either Stage~1 module.  This one-way flow implements
+the modular cut.}
 \label{fig:workflow}
 \end{figure*}
 
@@ -91,14 +94,15 @@ base-10 logarithm.  The main quantities are listed in \cref{tab:notation}.
 \toprule
 Symbol & Meaning & Unit or range \\
 \midrule
-$\mathcal D_{\rm 1}$ & Stage-1 JCAPS and Gaia CMD data used for metallicity calibration & data set \\
-$\mathcal D_{\rm 2}$ & Stage-2 component-magnitude and wide-binary dynamical data, with $\overline P_{jq}$ supplied from Stage~1 & data set \\
+$\mathcal D_{\rm 1a}$ & Within-binary JCAPS differences used to estimate $\bm\theta_{\rm rel}$ & data set \\
+$\mathcal D_{\rm 1b}$ & JCAPS and Gaia CMD data used for absolute calibration and system posteriors & data set \\
+$\mathcal D_{\rm 2}$ & Stage-2 component-magnitude and wide-binary dynamical data, with $\overline P_{jq}$ supplied from Stage~1b & data set \\
 $x_{jk}$ & Gaia absolute magnitude of component $k$ & mag \\
 $C_{jk}$ & Dereddened colour $(G_{\rm BP}-G_{\rm RP})_0$ & mag \\
 $\widehat z_{jk}$ & Raw JCAPS XP metallicity measurement & dex \\
 $\sigma_{z,jk}$ & Reported, uncorrected JCAPS uncertainty & dex \\
 $Z_j$ & Shared true system metallicity on the PARSEC scale & dex \\
-$\overline P_{jq}$ & Stage-1 posterior probability mass at $Z_q$ & $[0,1]$ \\
+$\overline P_{jq}$ & Stage-1b posterior probability mass at $Z_q$ & $[0,1]$ \\
 $g(x,Z)$ & Final $\log_{10}(M/\msun)$ surface & dex \\
 $u_j$ & Observed $\Delta v_{\rm tan}\sqrt{r_\perp}$ amplitude & $\kmsau$ \\
 $\sigma_{u,j}$ & Component-wise Gaussian error scale entering the Rice model & $\kmsau$ \\
@@ -120,10 +124,10 @@ Such columns already incorporate the equal-composition assumption that appears
 in our likelihood; reusing them would count that information twice and make the
 calibration circular.
 
-\section{Stage 1: shared system metallicities}
+\section{Stage 1: relative and absolute metallicity calibration}
 \label{sec:stage1}
 
-\subsection{Relative JCAPS calibration}
+\subsection{Stage 1a: Relative JCAPS calibration}
 
 Before introducing the PARSEC CMD, the relative behavior of JCAPS is calibrated
 from the difference between the two stars in each binary.  The adopted
@@ -158,15 +162,17 @@ The convolution of two Student-$t$ variables is not, in general, another
 Student-$t$ distribution.  Both $Z_j$ and the common offset $\delta_z$ cancel
 from $d_j$, but the observed differences still constrain the relative-bias
 shape $b_G$, the per-star excess scale $s_z$, and the common tail parameter
-$\nu$.  The inherited calibration maximized
+$\nu$.  Stage~1a obtains the maximum-likelihood estimate
 \begin{equation}
- \widehat{\bm\theta}
- =\arg\max_{\bm\theta}\sum_{j\in\mathcal D_{\rm 1}}
- \log p(d_j\mid\bm\theta),
- \qquad \bm\theta=(b_G,s_z,\nu),
+ \widehat{\bm\theta}_{\rm rel}
+ =\arg\max_{\bm\theta_{\rm rel}}\sum_{j\in\mathcal D_{\rm 1a}}
+ \log p(d_j\mid\bm\theta_{\rm rel}),
+ \qquad \bm\theta_{\rm rel}=(b_G,s_z,\nu),
+ \label{eq:relative-mle}
 \end{equation}
-and checked the same difference distribution on a held-out subset.  They
-cannot determine an absolute metallicity zero point.  We set
+and checks the resulting difference distribution on a held-out subset that is
+not used in this maximization.  The differences cannot determine an absolute
+metallicity zero point.  We set
 $b_G(8.5)=0$ and use the frozen
 plug-in values
 \begin{align}
@@ -175,8 +181,40 @@ plug-in values
  -0.31,-0.53),\\
  s_z &=0.05\ {\rm dex},\qquad \nu=2.5,
 \end{align}
-with linear interpolation between knots.  These are fixed inputs in Stage~1,
-not quantities re-estimated here.  The remaining common offset is assigned
+with linear interpolation between knots.  Stage~1b conditions on
+$\widehat{\bm\theta}_{\rm rel}$: these three quantities are fixed inputs, not
+parameters assigned priors or re-estimated in Stage~1b.
+
+\subsection{Stage 1b: Absolute calibration and system metallicity posteriors}
+
+\subsubsection{Hierarchical population distribution}
+
+The latent metallicities of the selected systems follow
+\begin{equation}
+ p_{\rm pop}(Z\mid\bm\omega)=\sum_{r=1}^{6}\omega_r
+ \varphi_r^{\rm trunc}(Z),\qquad
+ \bm\omega\sim\operatorname{Dirichlet}(1,\ldots,1),
+ \label{eq:pop}
+\end{equation}
+where every $\varphi_r^{\rm trunc}$ is a Gaussian density renormalized on
+$-1.0\le Z\le0.6$ dex.  Writing $\phi$ and $\Phi$ for the standard-normal
+density and cumulative distribution function, respectively,
+\begin{equation}
+ \varphi_r^{\rm trunc}(Z)=
+ \frac{\phi[(Z-\mu_r)/\tau_r]}
+ {\tau_r\!\left\{\Phi[(Z_{\max}-\mu_r)/\tau_r]
+ -\Phi[(Z_{\min}-\mu_r)/\tau_r]\right\}}
+ \indicator(Z_{\min}\le Z\le Z_{\max}).
+ \label{eq:truncated-gaussian-basis}
+\end{equation}
+Here $Z_{\min}=-1.0$ and $Z_{\max}=0.6$ dex, the six centers $\mu_r$ are
+equally spaced between these limits, and every $\tau_r=1.6/6=0.2667$ dex.
+This hierarchical population distribution is learned jointly with the other
+Stage-1b parameters; it is not an independently estimated external prior.
+Because it describes the systems after sample selection, it must not be
+interpreted as the intrinsic Galactic metallicity distribution function.
+
+The remaining common offset is assigned
 \begin{equation}
  \delta_z\sim\Normal(0,0.3^2)\quad\text{dex}.
  \label{eq:delta-prior}
@@ -184,34 +222,7 @@ not quantities re-estimated here.  The remaining common offset is assigned
 Under the sign convention of \cref{eq:spec-model}, positive $\delta_z$ means
 that JCAPS measurements lie above the PARSEC metallicity scale at fixed $Z_j$.
 
-% \subsection{Population distribution of true metallicity}
-
-% The system metallicities are drawn from a flexible density
-% \begin{equation}
-%  p_{\rm pop}(Z\mid\bm\omega)=\sum_{r=1}^{6}\omega_r
-%  \varphi_r^{\rm trunc}(Z),\qquad
-%  \bm\omega\sim\operatorname{Dirichlet}(1,\ldots,1),
-%  \label{eq:pop}
-% \end{equation}
-% where every $\varphi_r^{\rm trunc}$ is a Gaussian density renormalized on
-% $-1.0\le Z\le0.6$ dex.  The six centers are equally spaced from $-1.0$ to
-% $0.6$ dex and all component scales are $1.6/6=0.2667$ dex.  This is a prior for
-% the latent true distribution of the selected systems, not an empirical density
-% formed by treating $\widehat z$ as error-free.
-
-% Writing $\phi$ and $\Phi$ for the standard-normal density and cumulative
-% distribution function, respectively, each normalized basis is
-% \begin{equation}
-%  \varphi_r^{\rm trunc}(Z)=
-%  \frac{\phi[(Z-\mu_r)/\tau_r]}
-%  {\tau_r\!\left\{\Phi[(Z_{\max}-\mu_r)/\tau_r]
-%  -\Phi[(Z_{\min}-\mu_r)/\tau_r]\right\}}
-%  \indicator(Z_{\min}\le Z\le Z_{\max}),
-%  \label{eq:truncated-gaussian-basis}
-% \end{equation}
-% with $Z_{\min}=-1.0$ and $Z_{\max}=0.6$ dex.
-
-\subsection{PARSEC CMD likelihood and the 4000-K mask}
+\subsubsection{PARSEC CMD likelihood and the 4000-K mask}
 
 The PARSEC surface supplies predicted colour $C_{\rm P}(x,Z)$ and effective
 temperature $T_{\rm eff,P}(x,Z)$ \citep{Bressan2012PARSEC}.  The repository
@@ -227,13 +238,13 @@ from the BP and RP signal-to-noise ratios,
 \end{equation}
 For an eligible component, the CMD likelihood is
 \begin{equation}
- C_{jk} \mid Z_j \sim \StudentT_{\nu}\!\left[
+ C_{jk} \mid Z_j \sim \StudentT_{4}\!\left[
  C_{\rm P}(x_{jk},Z_j),
  \sqrt{\sigma_{C,jk}^2+s_C^2}\right] =  \mathcal{L}^{\rm CMD}_{jk}(Z_j).
- %\qquad s_C\sim\operatorname{HalfNormal}(0.1\ {\rm mag}).
  \label{eq:cmd}
 \end{equation}
-The colour zero point is fixed to zero.  To avoid allowing membership in the
+The colour zero point is fixed to zero and
+$s_C\sim\operatorname{HalfNormal}(0.1\ {\rm mag})$.  To avoid allowing membership in the
 CMD term to change with a proposed metallicity, eligibility is fixed over the
 full latent-metallicity domain:
 \begin{equation}
@@ -260,43 +271,55 @@ admits 12,167 stars; 8,247 systems have at least one eligible component and
 3,920 have two.  These counts describe CMD coverage, not evidence that the
 cool-star PARSEC colours are correct.
 
-\subsection{System posterior and the cut object}
+\subsubsection{System posterior and the cut object}
 
-For global Stage-1 parameters
-$\bm\psi=(\delta_z,s_C,b_G,s_z)$, the unnormalized posterior density for one
+The sampled Stage-1b global parameters are exactly
+$\bm\psi=(\delta_z,s_C,\bm\omega)$.  Conditional on
+$\widehat{\bm\theta}_{\rm rel}$, the unnormalized metallicity density for one
 system is
 \begin{equation}
- \widetilde p_j(Z\mid\bm\psi)=p_{\rm pop}(Z) \cdot
- \prod_{k=1}^{2}\mathcal{L}^{\rm spec}_{jk}(Z\mid\bm\psi) \cdot 
- \left[\mathcal{L}^{\rm CMD}_{jk}(Z\mid\bm\psi)\right]^{m_{jk}}.
+ \widetilde p_j(Z\mid\bm\psi,\widehat{\bm\theta}_{\rm rel})
+ =p_{\rm pop}(Z\mid\bm\omega)
+ \prod_{k=1}^{2}\mathcal{L}^{\rm spec}_{jk}
+ (Z\mid\delta_z,\widehat{\bm\theta}_{\rm rel})
+ \left[\mathcal{L}^{\rm CMD}_{jk}(Z\mid s_C)\right]^{m_{jk}}.
  \label{eq:zpost-cont}
 \end{equation}
 The global parameters are inferred from the product of the system-level
 marginal evidences, rather than from separately normalized system posteriors:
 \begin{equation}
- p(\bm\psi\mid\mathcal D_{\rm 1})\propto
- p(\delta_z)\,p(s_C)\,p(b_G)\,p(s_z)
+ p(\bm\psi\mid\mathcal D_{\rm 1b},\widehat{\bm\theta}_{\rm rel})\propto
+ p(\delta_z)\,p(s_C)\,p(\bm\omega)
  \prod_j\left[\sum_{q\in\mathcal Q}w_q^{(Z)}
- \widetilde p_j(Z_q\mid\bm\psi)\right].
+ \widetilde p_j(Z_q\mid\bm\psi,\widehat{\bm\theta}_{\rm rel})\right].
  \label{eq:stage1-global}
 \end{equation}
 The model evaluates this expression at 81 equally spaced nodes
 $Z_q\in[-1.0,0.6]$ dex using trapezoidal integration weights $w_q^{(Z)}$:
 \begin{equation}
- P_{jq}(\bm\psi)=
- \frac{w_q^{(Z)}\widetilde p_j(Z_q\mid\bm\psi)}
- {\sum_{q'}w_{q'}^{(Z)}\widetilde p_j(Z_{q'}\mid\bm\psi)}.
+ P_{jq}(\bm\psi,\widehat{\bm\theta}_{\rm rel})=
+ \frac{w_q^{(Z)}\widetilde p_j
+ (Z_q\mid\bm\psi,\widehat{\bm\theta}_{\rm rel})}
+ {\sum_{q'}w_{q'}^{(Z)}\widetilde p_j
+ (Z_{q'}\mid\bm\psi,\widehat{\bm\theta}_{\rm rel})}.
 \end{equation}
 The saved quantity passed to Stage~2 is the posterior average
 \begin{equation}
- \overline P_{jq}=\mathbb E_{\bm\psi\mid\mathcal D_{\rm 1}}
- \left[P_{jq}(\bm\psi)\right].
+ \overline P_{jq}=\mathbb E_{\bm\psi\mid\mathcal D_{\rm 1b},
+ \widehat{\bm\theta}_{\rm rel}}
+ \left[P_{jq}(\bm\psi,\widehat{\bm\theta}_{\rm rel})\right].
  \label{eq:pbar}
 \end{equation}
-Thus Stage~2 receives a probability distribution rather than a metallicity
-point estimate.  Because $\overline P_{jq}$ already contains the population
-prior, both spectroscopic terms, eligible CMD terms, and metallicity integration
-weights, none of these factors is multiplied in again below.
+Each system helps learn the shared hyperparameters $\bm\psi$ and is then
+partially pooled through their hyperposterior.  This standard hierarchical
+self-influence is not likelihood double-counting: each observation enters the
+joint Stage-1b likelihood once.  The average in \cref{eq:pbar} integrates over
+the global hyperposterior rather than plugging in a single value of
+$\bm\psi$.  Thus Stage~2 receives a probability distribution rather than a
+metallicity point estimate.  Because $\overline P_{jq}$ already includes
+$p_{\rm pop}$, both spectroscopic likelihoods, every eligible CMD likelihood,
+and the metallicity quadrature weights, Stage~2 must not multiply any of these
+population or quadrature factors again.
 
 \section{Stage 2: a PARSEC-relative hard-monotone MLR}
 \label{sec:mlr}
@@ -444,20 +467,22 @@ To connect physics with observables we define
 \begin{equation}
     u := v \sqrt{s},
 \end{equation}
-where $v$ is the projected relative speed and $s$ is the projected separation. Under this definition, $u \propto \sqrt{m_{\rm tot}}$ and depends on nuisance parameters $\theta$, $e$, and orientation $\phi$. We again separate the mass dependence by defining $\tilde{u} \equiv u/\sqrt{m_{\rm tot}}$, so $\tilde{u}$ depends only on the nuisance parameters and their influence can be marginalized. We perform simulations and pre-fit $p(\tilde{u})$ by integrating $p(\tilde{u}\,|\,\phi,\theta,e)$ over the nuisance distributions. For an observed $u$ the likelihood then becomes
+where $v$ is the projected relative speed and $s$ is the projected separation. Under this definition, $u \propto \sqrt{m_{\rm tot}/\msun}$ and depends on nuisance parameters $\theta$, $e$, and orientation $\phi$. We again separate the mass dependence by defining $\tilde{u} \equiv u/\sqrt{m_{\rm tot}/\msun}$, so $\tilde{u}$ depends only on the nuisance parameters and their influence can be marginalized. We perform simulations and pre-fit $p(\tilde{u})$ by integrating $p(\tilde{u}\,|\,\phi,\theta,e)$ over the nuisance distributions. For an observed $u$ the likelihood then becomes
 \begin{equation}
-    p(u\,|\,m_{\rm tot}) = \frac{1}{\sqrt{m_{\rm tot}}}\,p\!\left(\tilde{u} \equiv \frac{u}{\sqrt{m_{\rm tot}}}\right).
+    p(u\,|\,m_{\rm tot}) = \frac{1}{\sqrt{m_{\rm tot}/\msun}}\,p\!\left(\tilde{u} \equiv \frac{u}{\sqrt{m_{\rm tot}/\msun}}\right).
 \end{equation}
 
 Our goal is to constrain the mass--luminosity mapping $\mathcal{M}$, which links photometric observables to stellar mass. We treat
 \begin{equation}
     \{M_{\rm G}, {\rm BP-RP}, Z\} = \mathcal{M}(m,\,Z),
 \end{equation}
-with parameters $\Theta$ defining the functional form. The likelihood for one measurement is then
+with parameters $\Theta$ defining the functional form.  Conversely, stellar
+masses are obtained from the inverse map
+$m=\mathcal{M}^{-1}(M_{\rm G},Z;\Theta)$. The likelihood for one measurement is then
 
 \begin{align}
     &\mathcal{L}_j \\
-    &\quad = p \left(u_j \big|\ m_{\rm tot};\mathcal{M}(m_{j,1}, Z_{j}) + \mathcal{M}(m_{j,2},Z_{j});\Theta \right). \notag
+    &\quad = p \left(u_j \big|\ m_{\rm tot};\mathcal{M}^{-1}(M_{{\rm G},j1}, Z_j;\Theta) + \mathcal{M}^{-1}(M_{{\rm G},j2},Z_j;\Theta) \right). \notag
 \end{align}
 
 Measurement uncertainties on the tangential velocity enter mainly through the uncertainty of the proper-motion difference $\Delta\mu$ in the relation of 
@@ -477,16 +502,16 @@ the distribution for $u$ is
 where $I_0$ is the zeroth-order modified Bessel function. Integrating over $\tilde{u}$ yields
 \begin{align}
     &p(u_j\,|\,m_{\rm tot}) \\
-    &= \frac{1}{\sqrt{m_{\rm tot}}} \int_0^\infty \mathrm{Rice}\!\left(\frac{u_j}{\sqrt{m_{\rm tot}}} \,\bigg|\, \tilde{u}, \frac{\sigma_{u,j}}{\sqrt{m_{\rm tot}}}\right) p(\tilde{u})\, d\tilde{u}. \notag
+    &= \frac{1}{\sqrt{m_{\rm tot}/\msun}} \int_0^\infty \mathrm{Rice}\!\left(\frac{u_j}{\sqrt{m_{\rm tot}/\msun}} \,\bigg|\, \tilde{u}, \frac{\sigma_{u,j}}{\sqrt{m_{\rm tot}/\msun}}\right) p(\tilde{u})\, d\tilde{u}. \notag
 \end{align}
 
 To allow for outliers we adopt a mixture model for each datum,
 
 \begin{equation}
 \begin{aligned}
-    \mathcal{L}^{\rm mix}_j = \int~ \Biggl[ & (1-f_{\mathrm{outlier}}) \cdot \dfrac{1}{\sqrt{m_{\mathrm{tot}}}} \cdot p\left( \tilde{u} \right) \\
-    & + f_{\mathrm{outlier}} \cdot \dfrac{1}{\sqrt{m_{\mathrm{tot}}}} \cdot \dfrac{1}{C_{\mathrm{o}}} \cdot G_{\mathrm{o}}\left( \tilde{u}|\mu_{\mathrm{o}},~\sigma^2_{\mathrm{o}} \right) \Biggr] \\
-    & \times \mathrm{Rice} \left(\dfrac{u_{\mathrm{obs}}}{\sqrt{m_{\mathrm{tot}}}}|\tilde{u},\dfrac{\sigma_{u,j}}{\sqrt{m_{\mathrm{tot}}}}\right) ~d\tilde{u}.
+    \mathcal{L}^{\rm mix}_j = \int~ \Biggl[ & (1-f_{\mathrm{outlier}}) \cdot \dfrac{1}{\sqrt{m_{\mathrm{tot}}/\msun}} \cdot p\left( \tilde{u} \right) \\
+    & + f_{\mathrm{outlier}} \cdot \dfrac{1}{\sqrt{m_{\mathrm{tot}}/\msun}} \cdot \dfrac{1}{C_{\mathrm{o}}} \cdot G_{\mathrm{o}}\left( \tilde{u}|\mu_{\mathrm{o}},~\sigma^2_{\mathrm{o}} \right) \Biggr] \\
+    & \times \mathrm{Rice} \left(\dfrac{u_{\mathrm{obs}}}{\sqrt{m_{\mathrm{tot}}/\msun}}|\tilde{u},\dfrac{\sigma_{u,j}}{\sqrt{m_{\mathrm{tot}}/\msun}}\right) ~d\tilde{u}.
 \end{aligned}
 \end{equation}
 
@@ -494,7 +519,7 @@ To allow for outliers we adopt a mixture model for each datum,
 The mass-luminosity relation can thus be constrained by substituting $m_{\mathrm{tot}}$ with
 
 \begin{align}
-    m_{\mathrm{tot}} = \mathcal{M}(M_{\mathrm{G},1}) + \mathcal{M}(M_{\mathrm{G},2})
+    m_{\mathrm{tot}} = \mathcal{M}^{-1}(M_{\mathrm{G},1},Z;\Theta) + \mathcal{M}^{-1}(M_{\mathrm{G},2},Z;\Theta)
 \end{align}
 
 % At metallicity node $Z_q$, the component and total masses predicted by the MLR
@@ -588,28 +613,38 @@ The mass-luminosity relation can thus be constrained by substituting $m_{\mathrm
 % \end{equation}
 % The component shapes are fixed.  Their mixture is
 % \begin{equation}
-%  L_j^{\rm mix}(s)=(1-f_{\rm out})L_{{\rm good},j}(s)
-%  +f_{\rm out}L_{{\rm out},j}(s),
-%  \qquad f_{\rm out}\sim\operatorname{Beta}(3,12).
+%  L_j^{\rm mix}(s)=(1-f_{\rm outlier})L_{{\rm good},j}(s)
+%  +f_{\rm outlier}L_{{\rm out},j}(s),
+%  \qquad f_{\rm outlier}\sim\operatorname{Beta}(3,12).
 %  \label{eq:mixture}
 % \end{equation}
 % Because \cref{eq:good} retains its raw, slightly non-normalized amplitude,
-% $f_{\rm out}$ is an effective likelihood weight and cannot be interpreted as
+% $f_{\rm outlier}$ is an effective likelihood weight and cannot be interpreted as
 % the physical fraction of outlier binaries.
 
 \subsection{Metallicity marginalization}
 
+At metallicity node $Z_q$, the component masses, total mass, and dynamical
+mass scale are
+\begin{equation}
+ m_{jkq}=\mathcal{M}^{-1}(M_{{\rm G},jk},Z_q;\Theta),\qquad
+ M_{{\rm tot},jq}=m_{j1q}+m_{j2q},\qquad
+ s_{jq}=\sqrt{M_{{\rm tot},jq}/\msun}.
+ \label{eq:node-mass-scale}
+\end{equation}
+
 For one system, the final Stage-2 likelihood is
 \begin{equation}
  \mathcal L_j^{\rm dyn}(\bm\theta_M)=
- \sum_{q=1}^{81}\overline P_{jq}\, \cdot
+ \sum_{q=1}^{81}\overline P_{jq}
  \mathcal L_j^{\rm mix}\!\left[s_{jq}(\bm\theta_M)\right].
  \label{eq:dyn-final}
 \end{equation}
-This sum propagates the system's Stage-1 metallicity uncertainty into its mass
-and dynamics.  It is not a second use of the spectroscopic or CMD data, and no
-additional quadrature weight belongs in \cref{eq:dyn-final} because it is
-already present in the probability masses $\overline P_{jq}$.
+This sum propagates the system's Stage-1b metallicity uncertainty into its mass
+and dynamics.  It is not a second use of the spectroscopic or CMD data.
+Population-distribution factors and additional quadrature weights must not be
+inserted in \cref{eq:dyn-final}, because both are already present in the
+probability masses $\overline P_{jq}$.
 
 \section{Parameters, priors, and posterior computation}
 \label{sec:inference}
@@ -618,7 +653,7 @@ The sampled MLR coordinates are
 \begin{equation}
  \bm\theta_M=\left(c_0,\{a_h\}_{h=2}^{K_Z},
  \{b_i\}_{i=2}^{K_x},\{r_{ih}\}_{i,h\ge2},
- \log\lambda_x,\log\lambda_Z,f_{\rm out}\right),
+ \log\lambda_x,\log\lambda_Z,f_{\rm outlier}\right),
 \end{equation}
 giving 35 scalar degrees of freedom for $K_x=8$ and $K_Z=4$.  The priors and
 fixed regularization scales are summarized in \cref{tab:priors}.  Here
@@ -627,32 +662,32 @@ $\lambda_{x,\rm ref}=0.18624$ and $\lambda_{Z,\rm ref}=0.13078$ dex.
 
 \begin{table}[htbp]
 \centering
-\caption{Frozen Stage-1 and Stage-2 parameter specification.  Normal
+\caption{Frozen Stage-1a, Stage-1b, and Stage-2 parameter specification.  Normal
 distributions are written as location and standard deviation.}
 \label{tab:priors}
 \begin{tabularx}{\textwidth}{@{}lllX@{}}
 \toprule
 Stage & Quantity & Prior or fixed value & Role \\
 \midrule
-1 & $\delta_z$ & $\Normal(0,0.3)$ dex & JCAPS--PARSEC zero point \\
-1 & $s_C$ & Half-Normal$(0.1)$ mag & CMD excess colour scatter \\
-1 & $\bm\omega$ & Dirichlet$(1,\ldots,1)$ & Six-component population weights \\
-1 & $b_G,s_z,\nu$ & fixed T6d values & Relative JCAPS calibration \\
+1a & $\bm\theta_{\rm rel}$ & MLE; no prior & Difference calibration $(b_G,s_z,\nu)$; fixed in Stage~1b \\
+1b & $\delta_z$ & $\Normal(0,0.3)$ dex & JCAPS--PARSEC zero point \\
+1b & $s_C$ & Half-Normal$(0.1)$ mag & CMD excess colour scatter \\
+1b & $\bm\omega$ & Dirichlet$(1,\ldots,1)$ & Six-component population weights \\
 \addlinespace
 2 & $c_0$ & $\Normal(\Pi_{11},0.10)$ dex & First total-surface coefficient \\
 2 & $a_h,b_i,r_{ih}$ & $\Normal(0,1)$ & Unconstrained monotone coordinates \\
 2 & $\log\lambda_x$ & $\Normal(\log0.18624,0.7)$ & Magnitude increment scale \\
 2 & $\log\lambda_Z$ & $\Normal(\log0.13078,0.7)$ & Metallicity increment scale \\
-2 & $f_{\rm out}$ & Beta$(3,12)$ & Effective component weight \\
-2 & $\tau_D$ & 0.10 dex & PARSEC-relative shrinkage \\
-2 & $\tau_x,\tau_Z,\tau_{xZ}$ & 0.05 dex each & Spacing-aware smoothness potentials \\
-2 & solar anchor & $g(4.67,0)=0\pm0.01/\ln10$ dex & Absolute mass scale \\
+2 & $f_{\rm outlier}$ & Beta$(3,12)$ & Effective component weight \\
+% 2 & $\tau_D$ & 0.10 dex & PARSEC-relative shrinkage \\
+% 2 & $\tau_x,\tau_Z,\tau_{xZ}$ & 0.05 dex each & Spacing-aware smoothness potentials \\
+% 2 & solar anchor & $g(4.67,0)=0\pm0.01/\ln10$ dex & Absolute mass scale \\
 \bottomrule
 \end{tabularx}
 \end{table}
 \FloatBarrier
 
-Both stages were sampled with the No-U-Turn Sampler (NUTS)
+Stage~1b and Stage~2 were sampled with the No-U-Turn Sampler (NUTS)
 \citep{HoffmanGelman2014NUTS}, using four chains and 1,000 retained draws per
 chain.  The frozen fits had no divergent transitions.  Posterior adequacy must
 additionally be assessed with rank-based
@@ -668,7 +703,8 @@ model propagates the reported per-star JCAPS errors, heavy-tailed metallicity
 scatter, CMD colour scatter, the single-system metallicity posterior, and the
 reported dynamical amplitude error.  It does not propagate uncertainty in the
 absolute magnitudes, extinction correction, PARSEC model family, age
-distribution, or T6d plug-in calibration.
+distribution, or uncertainty in the preliminary Stage-1a relative-calibration
+estimates.
 
 \begin{table}[htbp]
 \centering
@@ -680,15 +716,15 @@ Category & Represented & Not represented or deliberately cut \\
 \midrule
 Metallicity & Raw per-star errors, shared $Z_j$, Student-$t$ tails,
 CMD excess scatter, population weights, and each system's $\overline P_{jq}$
-& Uncertainty in fixed $b_G$, $s_z$, and $\nu$; cross-system covariance
-induced by shared Stage-1 parameters \\
+& Uncertainty in the fixed preliminary Stage-1a estimates $b_G$, $s_z$, and
+$\nu$; cross-system covariance induced by shared Stage-1b parameters \\
 Photometry and models & Formal BP/RP colour errors and fitted $s_C$
 & $M_G$ uncertainty, extinction uncertainty, age as a latent variable,
 PARSEC-family/model discrepancy \\
 Dynamics & Rice convolution with reported $\sigma_{u,j}$ and latent velocity
 component distributions & Uncertainty in the fixed good/outlier shapes and
 additional astrometric covariance beyond the reported $\sigma_{u,j}$ \\
-Feedback & Metallicity uncertainty is passed from Stage~1 to Stage~2
+Feedback & Metallicity uncertainty is passed from Stage~1b to Stage~2
 & Dynamics cannot update $\delta_z$, $s_C$, $\bm\omega$, or individual
 metallicity posteriors \\
 \bottomrule
@@ -703,9 +739,10 @@ also increase sensitivity to low-temperature PARSEC colour systematics.  Third,
 hard monotonicity encodes the adopted physical ordering of the MLR; it does not
 demonstrate that PARSEC or the observations are unbiased over the full domain.
 Fourth, the cut reduces feedback from a potentially misspecified dynamical
-model, but it understates joint uncertainty by discarding the shared Stage-1
-posterior covariance and any information that the dynamics could provide about
-metallicity calibration.  A fully joint analysis would be a different model,
+model, but it understates joint uncertainty by fixing the Stage-1a estimates,
+discarding the shared Stage-1b posterior covariance, and excluding any
+information that the dynamics could provide about metallicity calibration.  A
+fully joint analysis would be a different model,
 not merely a more accurate implementation of the present one.
 
 \appendix

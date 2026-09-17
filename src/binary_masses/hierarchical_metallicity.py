@@ -76,7 +76,7 @@ def rice_good_raw(tilde_u):
     ) * ((tilde_u > 0) & (tilde_u <= RICE_GOOD_SUPPORT))
 
 
-def _rice_component_log_density(value, *, component, support_max):
+def _rice_component_log_density(value, *, component, support_max, outlier_u0=RICE_OUTLIER_MU, outlier_sigma=RICE_OUTLIER_SIGMA):
     value = np.asarray(value, dtype=np.float64)
     if component == "good":
         result = (
@@ -87,10 +87,10 @@ def _rice_component_log_density(value, *, component, support_max):
         )
         return np.where((value > 0.0) & (value <= support_max), result, -np.inf)
     if component == "bad":
-        norm = rice_outlier_normalization(support_max=support_max)
+        norm = rice_outlier_normalization(support_max=support_max, mu=outlier_u0, sigma=outlier_sigma)
         result = (
-            -0.5 * ((value - RICE_OUTLIER_MU) / RICE_OUTLIER_SIGMA) ** 2
-            - np.log(RICE_OUTLIER_SIGMA * np.sqrt(2.0 * np.pi) * norm)
+            -0.5 * ((value - float(outlier_u0)) / float(outlier_sigma)) ** 2
+            - np.log(float(outlier_sigma) * np.sqrt(2.0 * np.pi) * norm)
         )
         return np.where((value >= 0.0) & (value <= support_max), result, -np.inf)
     raise ValueError("component must be 'good' or 'bad'.")
@@ -115,7 +115,7 @@ def _scaled_piecewise_log_quad(log_integrand, boundaries):
     return total
 
 
-def rice_component_reference_integral(u_obs, u_sigma, sqrt_mtot, *, component="good", support_max=RICE_GOOD_SUPPORT):
+def rice_component_reference_integral(u_obs, u_sigma, sqrt_mtot, *, component="good", support_max=RICE_GOOD_SUPPORT, outlier_u0=RICE_OUTLIER_MU, outlier_sigma=RICE_OUTLIER_SIGMA):
     """Reference adaptive Rice integral used by lookup convergence checks."""
     u_obs, u_sigma, sqrt_mtot = map(float, (u_obs, u_sigma, sqrt_mtot))
     if u_obs <= 0 or u_sigma <= 0 or sqrt_mtot <= 0:
@@ -134,7 +134,8 @@ def rice_component_reference_integral(u_obs, u_sigma, sqrt_mtot, *, component="g
         return (
             log_rice
             + _rice_component_log_density(
-                v / sqrt_mtot, component=component, support_max=support_max
+                v / sqrt_mtot, component=component, support_max=support_max,
+                outlier_u0=outlier_u0, outlier_sigma=outlier_sigma
             )
             - np.log(sqrt_mtot)
         )
@@ -148,7 +149,7 @@ def rice_component_reference_integral(u_obs, u_sigma, sqrt_mtot, *, component="g
     )
 
 
-def rice_component_reference_integral_tilde(u_obs, u_sigma, sqrt_mtot, *, component="good", support_max=RICE_GOOD_SUPPORT):
+def rice_component_reference_integral_tilde(u_obs, u_sigma, sqrt_mtot, *, component="good", support_max=RICE_GOOD_SUPPORT, outlier_u0=RICE_OUTLIER_MU, outlier_sigma=RICE_OUTLIER_SIGMA):
     """The same reference integral in ``tilde_u`` coordinates (no Jacobian)."""
     u_obs, u_sigma, sqrt_mtot = map(float, (u_obs, u_sigma, sqrt_mtot))
     def log_integrand(tilde):
@@ -161,7 +162,8 @@ def rice_component_reference_integral_tilde(u_obs, u_sigma, sqrt_mtot, *, compon
             + np.log(i0e(argument))
         )
         return log_rice + _rice_component_log_density(
-            tilde, component=component, support_max=support_max
+            tilde, component=component, support_max=support_max,
+            outlier_u0=outlier_u0, outlier_sigma=outlier_sigma
         )
     split_tilde = np.clip(
         (u_obs + u_sigma * np.asarray([-14, -10, -6, -3, 0, 3, 6, 10, 14]))
@@ -204,6 +206,8 @@ def assess_rice_lookup_convergence(
     velocity_quadrature_nodes=64,
     tolerance_log_likelihood=1e-3,
     floor=1e-30,
+    outlier_u0=RICE_OUTLIER_MU,
+    outlier_sigma=RICE_OUTLIER_SIGMA,
 ):
     """Check the adopted local Rice quadrature against stricter references.
 
@@ -236,6 +240,8 @@ def assess_rice_lookup_convergence(
         "sqrt_mtot_points": int(scale_points),
         "system_chunk": max(1, selected.size),
         "floor": float(floor),
+        "outlier_u0": float(outlier_u0),
+        "outlier_sigma": float(outlier_sigma),
     }
     reference_extent = max(14.0, float(velocity_sigma_extent) + 4.0)
     reference_nodes = max(128, 2 * int(velocity_quadrature_nodes))
@@ -262,7 +268,8 @@ def assess_rice_lookup_convergence(
         for local_row, source_row in enumerate(selected):
             for scale_index, scale in enumerate(scales):
                 reference_v[local_row, scale_index] = rice_component_reference_integral(
-                    u[source_row], u_sigma[source_row], scale, component=reference_name
+                    u[source_row], u_sigma[source_row], scale, component=reference_name,
+                    outlier_u0=outlier_u0, outlier_sigma=outlier_sigma,
                 )
                 reference_tilde[local_row, scale_index] = (
                     rice_component_reference_integral_tilde(
@@ -270,6 +277,7 @@ def assess_rice_lookup_convergence(
                         u_sigma[source_row],
                         scale,
                         component=reference_name,
+                        outlier_u0=outlier_u0, outlier_sigma=outlier_sigma,
                     )
                 )
         floor_value = float(floor)
@@ -346,6 +354,8 @@ def assess_rice_lookup_convergence(
         "tolerance_max_abs_log_likelihood": float(tolerance_log_likelihood),
         "source_data_digest": array_digest(rows, u, u_sigma),
         "floor": float(floor),
+        "outlier_u0": float(outlier_u0),
+        "outlier_sigma": float(outlier_sigma),
         "sample_systems_requested": int(sample_systems),
         "sample_system_count": int(selected.size),
         "scale_points_requested": int(scale_points),
@@ -1248,8 +1258,24 @@ class DynamicsLikelihoodLookup:
         requested_systems = int(convergence.get("sample_systems_requested", -1))
         actual_systems = int(convergence.get("sample_system_count", -1))
         requested_scale_points = int(convergence.get("scale_points_requested", -1))
+        # Older T8 files omit the experiment marker and are interpreted as the
+        # frozen baseline. Experimental lookups carry their explicit shape.
+        expected_outlier_u0 = float(self.metadata.get("outlier_u0", RICE_OUTLIER_MU))
+        expected_outlier_sigma = float(self.metadata.get("outlier_sigma", RICE_OUTLIER_SIGMA))
+        if not np.isfinite(expected_outlier_u0) or not np.isfinite(expected_outlier_sigma) or expected_outlier_sigma <= 0:
+            raise ValueError("Outlier center and positive width must be finite.")
+        if not bool(self.metadata.get("experimental_outlier_sensitivity", False)) and (
+            expected_outlier_u0 != RICE_OUTLIER_MU or expected_outlier_sigma != RICE_OUTLIER_SIGMA
+        ):
+            raise ValueError("Nonbaseline outlier shape requires an explicit experimental marker.")
+        if bool(self.metadata.get("experimental_outlier_sensitivity", False)) and (
+            "outlier_u0" not in convergence or "outlier_sigma" not in convergence
+        ):
+            raise ValueError("Experimental lookup convergence record lacks its outlier shape.")
         if (
             convergence.get("source_data_digest") != self.metadata.get("data_digest")
+            or not np.isclose(float(convergence.get("outlier_u0", expected_outlier_u0)), expected_outlier_u0, rtol=0.0, atol=0.0)
+            or not np.isclose(float(convergence.get("outlier_sigma", expected_outlier_sigma)), expected_outlier_sigma, rtol=0.0, atol=0.0)
             or not np.isclose(
                 float(convergence.get("floor", np.nan)), float(self.metadata["floor"]),
                 rtol=0.0, atol=0.0,
@@ -1266,8 +1292,8 @@ class DynamicsLikelihoodLookup:
             raise ValueError("Lookup convergence record is not bound to the saved T8 data/settings.")
         fixed_values = (
             ("tilde_u_max", RICE_GOOD_SUPPORT),
-            ("outlier_u0", RICE_OUTLIER_MU),
-            ("outlier_sigma", RICE_OUTLIER_SIGMA),
+            ("outlier_u0", expected_outlier_u0),
+            ("outlier_sigma", expected_outlier_sigma),
         )
         if any(
             not np.isclose(float(self.metadata.get(name, np.nan)), expected)
@@ -1293,7 +1319,9 @@ class DynamicsLikelihoodLookup:
             for name, expected in expected_good.items()
         ):
             raise ValueError("T8 lookup raw-good component constants are incompatible; rebuild lookup.")
-        expected_outlier_norm = rice_outlier_normalization()
+        expected_outlier_norm = rice_outlier_normalization(
+            mu=expected_outlier_u0, sigma=expected_outlier_sigma
+        )
         if not np.isclose(
             float(self.metadata.get("outlier_normalization_value", np.nan)),
             expected_outlier_norm,
@@ -1404,6 +1432,7 @@ class DynamicsLikelihoodLookup:
         tilde_u_max: float = 80.0,
         outlier_u0: float = 40.0,
         outlier_sigma: float = 13.0,
+        outlier_sensitivity: bool = False,
         system_chunk: int = 256,
         floor: float = 1e-30,
     ) -> "DynamicsLikelihoodLookup":
@@ -1559,6 +1588,7 @@ class DynamicsLikelihoodLookup:
             "tilde_u_max": float(tilde_u_max),
             "outlier_u0": float(outlier_u0),
             "outlier_sigma": float(outlier_sigma),
+            "experimental_outlier_sensitivity": bool(outlier_sensitivity),
             "outlier_support": [0.0, float(tilde_u_max)],
             "outlier_normalization": "Phi((U-mu)/sigma)-Phi(-mu/sigma)",
             "outlier_normalization_value": float(rice_outlier_normalization(support_max=tilde_u_max, mu=outlier_u0, sigma=outlier_sigma)),
