@@ -62,6 +62,37 @@ RICE_GOOD_C = 3.100
 RICE_GOOD_SUPPORT = 80.0
 RICE_OUTLIER_MU = 40.0
 RICE_OUTLIER_SIGMA = 13.0
+# Integral of the raw good basis over its support.  The T8.1 revision divides
+# the good basis by this value so each mixture component integrates to one
+# and the mixture weight is a physical outlier fraction.
+RICE_GOOD_BASIS_RAW_INTEGRAL = 0.9978600946
+
+
+def set_good_shape_constants(*, B, C, uc, A=None):
+    """Override the fixed good-basis shape constants for shape-sensitivity runs.
+
+    After T8.1 the density is normalized to unit integral, so ``A`` is absorbed
+    by the normalization and only (B, C, uc) move the shape.  The raw support
+    integral is recomputed for the new constants.  Overrides must be applied
+    before the dynamics lookup is built; lookup metadata records the constants
+    and schema validation rejects any later mismatch.
+    """
+    global RICE_GOOD_A, RICE_GOOD_B, RICE_GOOD_UC, RICE_GOOD_C, RICE_GOOD_BASIS_RAW_INTEGRAL
+    if not (B > 0 and C > 0 and uc > 0):
+        raise ValueError("Good-shape constants B, C, uc must be positive.")
+    if A is None:
+        A = RICE_GOOD_A
+    raw = quad(
+        lambda w: A * w * np.exp(-(B * w * w + np.exp((w - uc) / C))),
+        0.0, RICE_GOOD_SUPPORT, limit=400,
+    )[0]
+    if not (raw > 0 and np.isfinite(raw)):
+        raise ValueError("The overridden good basis has no usable normalization.")
+    RICE_GOOD_A = float(A)
+    RICE_GOOD_B = float(B)
+    RICE_GOOD_UC = float(uc)
+    RICE_GOOD_C = float(C)
+    RICE_GOOD_BASIS_RAW_INTEGRAL = float(raw)
 
 
 def rice_outlier_normalization(*, support_max=RICE_GOOD_SUPPORT, mu=RICE_OUTLIER_MU, sigma=RICE_OUTLIER_SIGMA):
@@ -70,10 +101,15 @@ def rice_outlier_normalization(*, support_max=RICE_GOOD_SUPPORT, mu=RICE_OUTLIER
 
 
 def rice_good_raw(tilde_u):
+    """Good-component density in ``w`` space, normalized to unit support integral (T8.1)."""
     tilde_u = np.asarray(tilde_u, dtype=np.float64)
-    return RICE_GOOD_A * tilde_u * np.exp(
-        -(RICE_GOOD_B * tilde_u**2 + np.exp((tilde_u - RICE_GOOD_UC) / RICE_GOOD_C))
-    ) * ((tilde_u > 0) & (tilde_u <= RICE_GOOD_SUPPORT))
+    return (
+        RICE_GOOD_A
+        / RICE_GOOD_BASIS_RAW_INTEGRAL
+        * tilde_u
+        * np.exp(-(RICE_GOOD_B * tilde_u**2 + np.exp((tilde_u - RICE_GOOD_UC) / RICE_GOOD_C)))
+        * ((tilde_u > 0) & (tilde_u <= RICE_GOOD_SUPPORT))
+    )
 
 
 def _rice_component_log_density(value, *, component, support_max, outlier_u0=RICE_OUTLIER_MU, outlier_sigma=RICE_OUTLIER_SIGMA):
@@ -81,6 +117,7 @@ def _rice_component_log_density(value, *, component, support_max, outlier_u0=RIC
     if component == "good":
         result = (
             np.log(RICE_GOOD_A)
+            - np.log(RICE_GOOD_BASIS_RAW_INTEGRAL)
             + np.log(np.maximum(value, np.finfo(np.float64).tiny))
             - RICE_GOOD_B * value**2
             - np.exp((value - RICE_GOOD_UC) / RICE_GOOD_C)
@@ -1229,16 +1266,16 @@ class DynamicsLikelihoodLookup:
             raise ValueError("Dynamics lookup does not record the required 1/s Jacobian.")
         if self.metadata.get("interpolation") != "linear_log_likelihood_in_raw_s":
             raise ValueError("Dynamics lookup interpolation convention is not the T8 convention.")
-        if self.metadata.get("normalization_version") != "finite_support_v1":
-            raise ValueError("Dynamics lookup normalization version is not the T8 convention.")
+        if self.metadata.get("normalization_version") != "finite_support_exact_t8_1":
+            raise ValueError("Dynamics lookup normalization version is not the T8.1 convention.")
         if self.metadata.get("outlier_normalization") != "Phi((U-mu)/sigma)-Phi(-mu/sigma)":
             raise ValueError("Dynamics lookup outlier normalization convention is invalid.")
         if self.metadata.get("velocity_units") != "km s^-1 sqrt(AU)":
             raise ValueError("Dynamics lookup velocity units are incompatible with T8.")
         if not np.isfinite(float(self.metadata.get("floor", np.nan))) or float(self.metadata["floor"]) <= 0:
             raise ValueError("Dynamics lookup floor must be finite and positive.")
-        if bool(self.metadata.get("good_basis_normalized")):
-            raise ValueError("T8 must retain the unnormalized raw good basis; rebuild lookup.")
+        if not bool(self.metadata.get("good_basis_normalized")):
+            raise ValueError("T8.1 requires the normalized good basis; rebuild lookup.")
         if bool(self.metadata.get("migration_applied")):
             raise ValueError("Migrated dynamics lookup tables are not accepted in T8; rebuild lookup.")
         if self.metadata.get("scale_grid") != "geometric":
@@ -1249,7 +1286,7 @@ class DynamicsLikelihoodLookup:
             raise ValueError("Dynamics lookup integration coordinate is incompatible with T8.")
         if self.metadata.get("row_order") != "row_indices order":
             raise ValueError("Dynamics lookup row-order convention is incompatible with T8.")
-        if self.metadata.get("mixture_weight_semantics") != "basis weight; not a physical outlier fraction":
+        if self.metadata.get("mixture_weight_semantics") != "physical outlier fraction (T8.1 exact component normalization)":
             raise ValueError("Dynamics lookup mixture-weight semantics are missing or incompatible.")
         convergence = self.metadata.get("convergence_check")
         if not isinstance(convergence, Mapping) or not bool(convergence.get("passed")):
@@ -1311,8 +1348,8 @@ class DynamicsLikelihoodLookup:
             "good_basis_quadratic": RICE_GOOD_B,
             "good_basis_turnover": RICE_GOOD_UC,
             "good_basis_scale": RICE_GOOD_C,
-            "good_basis_support_integral": 0.9978600946,
-            "C_good": 0.9978600946,
+            "good_basis_support_integral": 1.0,
+            "C_good": 1.0,
         }
         if any(
             not np.isclose(float(self.metadata.get(name, np.nan)), expected, rtol=0.0, atol=1e-12)
@@ -1520,6 +1557,7 @@ class DynamicsLikelihoodLookup:
             tilde_for_eval = jnp.clip(tilde_u, 1e-12, float(tilde_u_max))
             log_good_basis = (
                 jnp.log(RICE_GOOD_A)
+                - jnp.log(RICE_GOOD_BASIS_RAW_INTEGRAL)
                 + jnp.log(tilde_for_eval)
                 - RICE_GOOD_B * tilde_for_eval**2
                 - jnp.exp((tilde_for_eval - RICE_GOOD_UC) / RICE_GOOD_C)
@@ -1593,22 +1631,23 @@ class DynamicsLikelihoodLookup:
             "outlier_normalization": "Phi((U-mu)/sigma)-Phi(-mu/sigma)",
             "outlier_normalization_value": float(rice_outlier_normalization(support_max=tilde_u_max, mu=outlier_u0, sigma=outlier_sigma)),
             "C_out": float(rice_outlier_normalization(support_max=tilde_u_max, mu=outlier_u0, sigma=outlier_sigma)),
-            "C_good": 0.9978600946,
-            "normalization_version": "finite_support_v1",
-            "good_basis_normalized": False,
+            "C_good": 1.0,
+            "normalization_version": "finite_support_exact_t8_1",
+            "good_basis_normalized": True,
+            "good_basis_raw_support_integral": RICE_GOOD_BASIS_RAW_INTEGRAL,
             "good_basis_support": [0.0, float(tilde_u_max)],
-            "good_basis_constant": 5.434e-3,
-            "good_basis_quadratic": 2.544e-3,
-            "good_basis_turnover": 35.67,
-            "good_basis_scale": 3.100,
-            "good_basis_support_integral": 0.9978600946,
+            "good_basis_constant": float(RICE_GOOD_A),
+            "good_basis_quadratic": float(RICE_GOOD_B),
+            "good_basis_turnover": float(RICE_GOOD_UC),
+            "good_basis_scale": float(RICE_GOOD_C),
+            "good_basis_support_integral": 1.0,
             "jacobian": "1/s",
             "velocity_units": "km s^-1 sqrt(AU)",
             "scale_definition": "s=sqrt(Mtot/Msun)",
             "integration_coordinate": "v=s*tilde_u",
             "interpolation": "linear_log_likelihood_in_raw_s",
             "row_order": "row_indices order",
-            "mixture_weight_semantics": "basis weight; not a physical outlier fraction",
+            "mixture_weight_semantics": "physical outlier fraction (T8.1 exact component normalization)",
             "floor": float(floor),
             "migration_applied": False,
         }
@@ -1689,6 +1728,25 @@ def _bspline_basis_jax(values, knots, degree):
         basis = jnp.stack(terms, axis=-1)
     endpoint_basis = jnp.zeros_like(basis[..., :n]).at[..., -1].set(1.0)
     return jnp.where((xc == t[-1])[..., None], endpoint_basis, basis[..., :n])
+
+
+def lookup_interpolate(values, sqrt_grid, table):
+    """Row-wise linear interpolation of a lookup table in sqrt(total mass).
+
+    Shared by the NumPyro likelihood and diagnostics so both use the same
+    domain convention: values outside [sqrt_grid[0], sqrt_grid[-1]] return
+    ``-inf`` instead of extrapolating.
+    """
+    import jax.numpy as jnp
+
+    sqrt_grid = jnp.asarray(sqrt_grid)
+    upper = jnp.clip(jnp.searchsorted(sqrt_grid, values, side="right"), 1, sqrt_grid.size - 1)
+    lower = upper - 1
+    yl = jnp.take_along_axis(table, lower, axis=1)
+    yu = jnp.take_along_axis(table, upper, axis=1)
+    xl, xu = sqrt_grid[lower], sqrt_grid[upper]
+    out = yl + (values - xl) / (xu - xl) * (yu - yl)
+    return jnp.where((values >= sqrt_grid[0]) & (values <= sqrt_grid[-1]), out, -jnp.inf)
 
 
 class MonotoneTensorSplineMLR:
@@ -2052,13 +2110,7 @@ class MonotoneTensorSplineMLR:
         )
 
         def interp(values, table):
-            upper = jnp.clip(jnp.searchsorted(sqrt_grid, values, side="right"), 1, sqrt_grid.size - 1)
-            lower = upper - 1
-            yl = jnp.take_along_axis(table, lower, axis=1)
-            yu = jnp.take_along_axis(table, upper, axis=1)
-            xl, xu = sqrt_grid[lower], sqrt_grid[upper]
-            out = yl + (values - xl) / (xu - xl) * (yu - yl)
-            return jnp.where((values >= sqrt_grid[0]) & (values <= sqrt_grid[-1]), out, -jnp.inf)
+            return lookup_interpolate(values, sqrt_grid, table)
 
         def model(absg, z_probabilities, log_good_lookup, log_bad_lookup):
             c0 = numpyro.sample("c0", dist.Normal(float(self.parsec_projection[0, 0]), 0.10))
