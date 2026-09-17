@@ -23,6 +23,7 @@ from astropy.table import Table
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from binary_masses import hierarchical_metallicity as _hm  # noqa: E402
 from binary_masses.hierarchical_metallicity import (  # noqa: E402
     DynamicsLikelihoodLookup,
     HierarchicalMetallicityCalibrator,
@@ -51,8 +52,8 @@ INPUT_COLUMNS = {
 }
 
 CMD_MIN_PARSEC_TEFF_K = 4000.0
-T8_MODEL_ID = "t8_jcaps_student_t_independent_members"
-T8_WORKFLOW_ID = "hierarchical_metallicity_t8_jcaps_student_t_teff4000_v1"
+T8_MODEL_ID = "t8_1_jcaps_student_t_independent_members"
+T8_WORKFLOW_ID = "hierarchical_metallicity_t8_1_jcaps_student_t_teff4000_v1"
 CALIBRATION_MODEL_ID = T8_MODEL_ID
 T8_POSTERIOR_NAME = "latent_metallicity_weights_t8.npz"
 T8_LOOKUP_NAME = "dynamics_likelihood_lookup_t8.npz"
@@ -880,6 +881,11 @@ def run_mlr(
         },
         "metallicity_posterior_source": str(args.metallicity_posterior.resolve()) if args.metallicity_posterior else str(output_dir / T8_POSTERIOR_NAME),
         "schema": "t8b-monotone-tensor-spline-mlr-v1",
+        "experimental_shape_sensitivity": bool(args.shape_sensitivity),
+        "good_shape_constants": {
+            "A": _hm.RICE_GOOD_A, "B": _hm.RICE_GOOD_B,
+            "uc": _hm.RICE_GOOD_UC, "C": _hm.RICE_GOOD_C,
+        },
         "knot_x": np.asarray(args.mlr_knot_x, dtype=float).tolist(),
         "knot_z": np.asarray(args.mlr_knot_z, dtype=float).tolist(),
         "degree_x": int(args.mlr_degree_x),
@@ -899,8 +905,8 @@ def run_mlr(
             "f_outlier": "Beta(3,12)",
         },
         "f_outlier_semantics": (
-            "mixture basis weight only; the raw good basis is not normalized, "
-            "so this is not a physical outlier fraction"
+            "physical outlier fraction; T8.1 normalizes the good basis to unit "
+            "support integral so both mixture components integrate to one"
         ),
         "derived_output_definitions": {
             "mass": "final inferred mass in solar masses",
@@ -1115,7 +1121,7 @@ def parse_args():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=REPO_ROOT / "results" / "hierarchical_metallicity_t8",
+        default=REPO_ROOT / "results" / "hierarchical_metallicity_t8_1",
     )
     parser.add_argument(
         "--metallicity-posterior",
@@ -1184,6 +1190,14 @@ def parse_args():
     parser.add_argument("--outlier-sigma", type=float, default=13.0)
     parser.add_argument("--outlier-sensitivity", action="store_true",
                         help="Opt in to an experimental outlier-shape sensitivity run.")
+    parser.add_argument("--good-shape-b", type=float, default=None,
+                        help="Override the fixed good-basis B constant (shape sensitivity).")
+    parser.add_argument("--good-shape-uc", type=float, default=None,
+                        help="Override the fixed good-basis uc constant (shape sensitivity).")
+    parser.add_argument("--good-shape-c", type=float, default=None,
+                        help="Override the fixed good-basis C constant (shape sensitivity).")
+    parser.add_argument("--shape-sensitivity", action="store_true",
+                        help="Opt in to an experimental good-shape sensitivity run.")
     parser.add_argument("--target-accept", type=float, default=0.9)
     args = parser.parse_args()
     if args.cmd_anchored_only and args.both_cmd_anchored_only:
@@ -1267,6 +1281,27 @@ def parse_args():
             previous = json.loads(saved_model.read_text())
             if not previous.get("experimental_outlier_sensitivity") or previous.get("outlier_shape", {}).get("mu") != args.outlier_u0 or previous.get("outlier_shape", {}).get("sigma") != args.outlier_sigma:
                 parser.error("Output directory already contains a different MLR model; choose a new directory.")
+    shape_overrides = {
+        "B": args.good_shape_b, "uc": args.good_shape_uc, "C": args.good_shape_c,
+    }
+    if any(v is not None for v in shape_overrides.values()):
+        if not args.shape_sensitivity:
+            parser.error("Non-default good-shape constants require --shape-sensitivity.")
+        if args.stage == "plot":
+            parser.error("Shape sensitivity rebuilds the lookup: --stage lookup or mlr (or all).")
+        output = args.output_dir.resolve()
+        frozen = REPO_ROOT / "results" / "hierarchical_metallicity_t8_20260913"
+        if output == frozen.resolve() or frozen.resolve() in output.parents or (output / "calibration_model.json").exists():
+            parser.error("Shape-sensitivity output must be a fresh directory separate from the frozen baseline.")
+        import binary_masses.hierarchical_metallicity as _hm
+        overrides = {k: v for k, v in shape_overrides.items() if v is not None}
+        _hm.set_good_shape_constants(**overrides)
+        print(
+            "Good-shape sensitivity override: "
+            f"A={_hm.RICE_GOOD_A:.4g} B={_hm.RICE_GOOD_B:.4g} "
+            f"uc={_hm.RICE_GOOD_UC:.4g} C={_hm.RICE_GOOD_C:.4g} "
+            f"(raw support integral {_hm.RICE_GOOD_BASIS_RAW_INTEGRAL:.10f})"
+        )
     return args
 
 
