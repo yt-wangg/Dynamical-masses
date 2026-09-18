@@ -858,7 +858,8 @@ def run_mlr(
         arrays["absg"][:, 1, None], posterior.z_grid[None, :]
     )
     baseline_sqrt_mass = np.sqrt(baseline_m1 + baseline_m2)
-    lookup_min, lookup_max = dynamics_lookup.sqrt_mtot_grid[[0, -1]]
+    dynamics_source = dynamics_lookup if dynamics_lookup is not None else dynamics_shape_stack
+    lookup_min, lookup_max = dynamics_source.sqrt_mtot_grid[[0, -1]]
     print(
         "Baseline PARSEC sqrt(total mass) range: "
         f"[{np.min(baseline_sqrt_mass):.4f}, {np.max(baseline_sqrt_mass):.4f}]; "
@@ -870,7 +871,7 @@ def run_mlr(
             "rebuild the lookup with wider --lookup-sqrt-mass-min/max values."
         )
     (output_dir / "mlr_lookup_metadata_t8.json").write_text(
-        json.dumps(dict(dynamics_lookup.metadata), indent=2), encoding="utf-8"
+        json.dumps(dict(dynamics_source.metadata), indent=2), encoding="utf-8"
     )
     mlr = _make_t8_mlr(mass_surface, args)
     observed_mg_min = float(np.min(arrays["absg"]))

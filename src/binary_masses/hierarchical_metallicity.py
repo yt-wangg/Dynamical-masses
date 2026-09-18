@@ -2321,16 +2321,23 @@ class MonotoneTensorSplineMLR:
             return lookup_interpolate(values, sqrt_grid, table)
 
         if self.dynamics_shape_stack is not None:
+            # Static prior bounds as python floats: numpyro re-traces the model
+            # inside the NUTS scan loop, and float() on jnp arrays is not
+            # traceable even when the array is a loop-invariant constant.
             stack_axes = {
-                name: jnp.asarray(self.dynamics_shape_stack.axes[name])
+                name: np.asarray(self.dynamics_shape_stack.axes[name], dtype=np.float64)
                 for name in DynamicsLikelihoodShapeStack.AXIS_NAMES
+            }
+            stack_prior_bounds = {
+                name: (float(axis[0]), float(axis[-1]))
+                for name, axis in stack_axes.items()
             }
 
             def effective_shape_tables(log_b, log_uc, log_c, stack_good, stack_bad):
                 """Trilinear mix of the 27 member tables at sampled (log B, log uc, log C)."""
                 fracs, cells = [], []
                 for axis_value, name in zip((log_b, log_uc, log_c), DynamicsLikelihoodShapeStack.AXIS_NAMES):
-                    n0, n1, n2 = stack_axes[name]
+                    n0, n1, n2 = (jnp.asarray(v) for v in stack_axes[name])
                     cell = (axis_value > n1).astype(jnp.int32)
                     lo = jnp.where(cell == 1, n1, n0)
                     hi = jnp.where(cell == 1, n2, n1)
@@ -2358,17 +2365,14 @@ class MonotoneTensorSplineMLR:
 
         def model(absg, z_probabilities, log_good_lookup, log_bad_lookup):
             if self.dynamics_shape_stack is not None:
-                axis_b, axis_uc, axis_c = (
-                    stack_axes["log_b"], stack_axes["log_uc"], stack_axes["log_c"]
-                )
                 log_b = numpyro.sample(
-                    "log_good_shape_b", dist.Uniform(float(axis_b[0]), float(axis_b[-1]))
+                    "log_good_shape_b", dist.Uniform(*stack_prior_bounds["log_b"])
                 )
                 log_uc = numpyro.sample(
-                    "log_good_shape_uc", dist.Uniform(float(axis_uc[0]), float(axis_uc[-1]))
+                    "log_good_shape_uc", dist.Uniform(*stack_prior_bounds["log_uc"])
                 )
                 log_c = numpyro.sample(
-                    "log_good_shape_c", dist.Uniform(float(axis_c[0]), float(axis_c[-1]))
+                    "log_good_shape_c", dist.Uniform(*stack_prior_bounds["log_c"])
                 )
                 numpyro.deterministic("good_shape_B", jnp.exp(log_b))
                 numpyro.deterministic("good_shape_uc", jnp.exp(log_uc))
@@ -2404,9 +2408,11 @@ class MonotoneTensorSplineMLR:
             m2 = jnp.power(10.0, gp2)
             sqrt_mtot = jnp.sqrt(jnp.maximum(m1 + m2, 1e-12))
             if self.dynamics_shape_stack is not None:
-                log_good, log_bad = effective_shape_tables(
+                good_eff, bad_eff = effective_shape_tables(
                     log_b, log_uc, log_c, log_good_lookup, log_bad_lookup
                 )
+                log_good = interp(sqrt_mtot, good_eff)
+                log_bad = interp(sqrt_mtot, bad_eff)
             else:
                 log_good = interp(sqrt_mtot, log_good_lookup)
                 log_bad = interp(sqrt_mtot, log_bad_lookup)
@@ -2460,16 +2466,17 @@ class MonotoneTensorSplineMLR:
             )
         model = self._build_numpyro_model()
         if self.dynamics_shape_stack is not None:
-            model_args = (
-                jnp.asarray(self.absg), jnp.asarray(self.z_probabilities),
+            model_tables_args = (
                 jnp.asarray(self.dynamics_shape_stack.log_good_stack),
                 jnp.asarray(self.dynamics_shape_stack.log_bad_stack),
             )
         else:
-            model_args = (
-                jnp.asarray(self.absg), jnp.asarray(self.z_probabilities),
+            model_tables_args = (
                 jnp.asarray(self.log_good_lookup), jnp.asarray(self.log_bad_lookup),
             )
+        model_args = (
+            jnp.asarray(self.absg), jnp.asarray(self.z_probabilities),
+        ) + model_tables_args
 
         def initial_potential(parameters):
             return -log_density(model, model_args, {}, parameters)[0]
@@ -2496,7 +2503,7 @@ class MonotoneTensorSplineMLR:
         }
         strategy = nuts_kwargs.pop("init_strategy", init_to_value(values=init))
         mcmc = MCMC(NUTS(model, init_strategy=strategy, **nuts_kwargs), num_warmup=int(num_warmup), num_samples=int(num_samples), num_chains=int(num_chains), progress_bar=bool(progress_bar))
-        mcmc.run(jax.random.PRNGKey(int(seed)), jnp.asarray(self.absg), jnp.asarray(self.z_probabilities), jnp.asarray(self.log_good_lookup), jnp.asarray(self.log_bad_lookup), extra_fields=("diverging", "energy", "potential_energy", "num_steps", "accept_prob"))
+        mcmc.run(jax.random.PRNGKey(int(seed)), *model_args, extra_fields=("diverging", "energy", "potential_energy", "num_steps", "accept_prob"))
         self.sampler = mcmc
         self.posterior_samples = {name: np.asarray(values) for name, values in mcmc.get_samples().items()}
         return mcmc
