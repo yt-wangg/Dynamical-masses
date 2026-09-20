@@ -1,8 +1,9 @@
 # T8 server run guide
 
-The default MLR fitting method is the [EM-style workflow](EM_MLR_WORKFLOW.md).
-This guide supplies its T8 calibration and lookup inputs and documents the
-explicit fixed-shape MCMC workflow.
+The post-7bc core T8 model uses a mass-independent raw-u outlier likelihood.
+The [EM-style workflow](EM_MLR_WORKFLOW.md) is retained as a sensitivity and
+optimization experiment. This guide supplies the calibration and lookup inputs
+and documents the explicit fixed-shape MCMC workflow.
 
 This guide runs the approved T8a/T8c/T8b pipeline in the `dyn` Conda
 environment.  The runner writes only T8-named products and refuses a legacy
