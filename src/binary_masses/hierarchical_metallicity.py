@@ -106,6 +106,58 @@ def rice_outlier_normalization(*, support_max=RICE_GOOD_SUPPORT, mu=RICE_OUTLIER
     return float(ndtr((float(support_max) - float(mu)) / float(sigma)) - ndtr(-float(mu) / float(sigma)))
 
 
+def raw_u_outlier_log_likelihood(
+    u,
+    u_sigma,
+    *,
+    support_max=RICE_GOOD_SUPPORT,
+    mu=RICE_OUTLIER_MU,
+    sigma=RICE_OUTLIER_SIGMA,
+    quadrature_nodes=256,
+    floor=1e-30,
+):
+    """Rice-convolved outlier likelihood defined directly in observed raw-u space.
+
+    Unlike the legacy T8 outlier component, this density does not rescale its
+    latent velocity coordinate by ``sqrt(M_tot)``. It therefore cannot raise
+    the outlier likelihood merely by increasing the inferred binary mass. The
+    legacy mass-coupled component remains available through the saved dynamics
+    lookup for controlled reproduction and sensitivity runs.
+    """
+    u = np.asarray(u, dtype=np.float64)
+    u_sigma = np.asarray(u_sigma, dtype=np.float64)
+    if u.shape != u_sigma.shape or u.ndim != 1:
+        raise ValueError("u and u_sigma must be one-dimensional arrays with matching shape.")
+    if np.any(~np.isfinite(u)) or np.any(~np.isfinite(u_sigma)):
+        raise ValueError("u and u_sigma must be finite.")
+    if np.any(u <= 0) or np.any(u_sigma <= 0):
+        raise ValueError("u and u_sigma must be strictly positive.")
+    if not (support_max > 0 and sigma > 0 and quadrature_nodes >= 8 and floor > 0):
+        raise ValueError("Invalid raw-u outlier integration settings.")
+
+    x, weights = np.polynomial.legendre.leggauss(int(quadrature_nodes))
+    half = 0.5 * float(support_max)
+    velocity = half * (x[None, :] + 1.0)
+    quad_weights = half * weights[None, :]
+    obs = u[:, None]
+    obs_sigma = u_sigma[:, None]
+    argument = obs * velocity / obs_sigma**2
+    log_rice = (
+        np.log(obs / obs_sigma**2)
+        - (obs - velocity) ** 2 / (2.0 * obs_sigma**2)
+        + np.log(i0e(argument))
+    )
+    norm = rice_outlier_normalization(
+        support_max=float(support_max), mu=float(mu), sigma=float(sigma)
+    )
+    log_outlier = (
+        -0.5 * ((velocity - float(mu)) / float(sigma)) ** 2
+        - np.log(float(sigma) * np.sqrt(2.0 * np.pi) * norm)
+    )
+    integral = np.sum(quad_weights * np.exp(log_rice + log_outlier), axis=1)
+    return np.log(np.maximum(integral, float(floor)))
+
+
 def rice_good_raw(tilde_u):
     """Good-component density in ``w`` space, normalized to unit support integral (T8.1)."""
     tilde_u = np.asarray(tilde_u, dtype=np.float64)
@@ -2283,7 +2335,8 @@ class MonotoneTensorSplineMLR:
         return self.g_from_raw(absg, mh, params) - self.g_parsec_projection(absg, mh)
 
     def set_data(self, *, row_indices, u, u_sigma, absg, metallicity_grid,
-                 dynamics_lookup=None, dynamics_shape_stack=None):
+                 dynamics_lookup=None, dynamics_shape_stack=None,
+                 raw_u_outlier_log_likelihood=None):
         metallicity_grid.validate()
         posterior_model = str(metallicity_grid.metadata.get("model", ""))
         if not (posterior_model.startswith("t8") or "_t8_" in posterior_model):
@@ -2304,6 +2357,19 @@ class MonotoneTensorSplineMLR:
             raise ValueError("Stage-two arrays must contain only finite values.")
         if np.any(self.u <= 0) or np.any(self.u_sigma <= 0):
             raise ValueError("u and u_sigma must be strictly positive.")
+        if raw_u_outlier_log_likelihood is None:
+            self.raw_u_outlier_log_likelihood = None
+        else:
+            raw_bad = _as_native_f64(
+                raw_u_outlier_log_likelihood,
+                name="raw_u_outlier_log_likelihood",
+                ndim=1,
+            )
+            if raw_bad.shape != (n,) or np.any(~np.isfinite(raw_bad)):
+                raise ValueError(
+                    "raw_u_outlier_log_likelihood must be finite with one value per system."
+                )
+            self.raw_u_outlier_log_likelihood = raw_bad
         self.dynamics_shape_stack = dynamics_shape_stack
         if dynamics_shape_stack is not None:
             dynamics_shape_stack.validate_for(row_indices=self.row_indices, u=self.u, u_sigma=self.u_sigma)
@@ -2626,7 +2692,12 @@ class MonotoneTensorSplineMLR:
                     )
             else:
                 log_good = interp(sqrt_mtot, log_good_lookup)
-                log_bad = interp(sqrt_mtot, log_bad_lookup)
+                if self.raw_u_outlier_log_likelihood is None:
+                    log_bad = interp(sqrt_mtot, log_bad_lookup)
+                else:
+                    log_bad = jnp.asarray(
+                        self.raw_u_outlier_log_likelihood, dtype=log_good.dtype
+                    )[:, None] + jnp.zeros_like(log_good)
             log_conditional = jnp.logaddexp(jnp.log1p(-f_outlier) + log_good, jnp.log(f_outlier) + log_bad)
             numpyro.factor("dynamics", jnp.sum(jax_logsumexp(jnp.log(jnp.maximum(z_probabilities, 1e-30)) + log_conditional, axis=1)))
             solar_g = jnp.einsum("i,h,ih->", anchor_bx, anchor_bz, theta)
