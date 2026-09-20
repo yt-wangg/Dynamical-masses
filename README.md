@@ -39,7 +39,7 @@ metallicity-bin fits, and alternating conditional-MAP / EM-style optimization
 from different starting shapes.
 
 For the scientific history and interpretation of these changes, see
-[`docs/POST_7BC_MODEL_IMPROVEMENTS.md`](docs/POST_7BC_MODEL_IMPROVEMENTS.md).
+[`docs/model/POST_7BC_MODEL_IMPROVEMENTS.md`](docs/model/POST_7BC_MODEL_IMPROVEMENTS.md).
 
 ## Main MLR workflow
 
@@ -332,7 +332,7 @@ Omitting `--shape-stack-unpacked` uses direct continuous quadrature. Supplying
 a validated unpacked shape stack selects the interpolation-based path.
 
 See
-[`docs/T82_JOINT_SHAPE_PIPELINE.md`](docs/T82_JOINT_SHAPE_PIPELINE.md)
+[`docs/workflows/T82_JOINT_SHAPE_PIPELINE.md`](docs/workflows/T82_JOINT_SHAPE_PIPELINE.md)
 for the full metallicity-bin workflow and limitations.
 
 ## Alternating-MAP / EM-style sensitivity experiment
@@ -362,7 +362,7 @@ and S2 starts and alternates conditional MAP updates. Treat these outputs as an
 optimization/sensitivity comparison rather than the primary posterior result.
 
 See
-[`docs/EM_MLR_WORKFLOW.md`](docs/EM_MLR_WORKFLOW.md)
+[`docs/workflows/EM_MLR_WORKFLOW.md`](docs/workflows/EM_MLR_WORKFLOW.md)
 for details and known limitations.
 
 ## Diagnostic scripts
@@ -429,11 +429,11 @@ monotone-spline MLR pipeline.
 
 ## Further documentation
 
-- [Post-`7bc861a` model history](docs/POST_7BC_MODEL_IMPROVEMENTS.md)
-- [T8 server run guide](docs/T8_SERVER_RUN.md)
-- [T8.2 joint-shape pipeline](docs/T82_JOINT_SHAPE_PIPELINE.md)
-- [Alternating-MAP / EM-style workflow](docs/EM_MLR_WORKFLOW.md)
-- [Mass-independent outlier experiment plan](docs/T8_MASS_INDEPENDENT_OUTLIER_GARCHING_PLAN.md)
+- [Post-`7bc861a` model history](docs/model/POST_7BC_MODEL_IMPROVEMENTS.md)
+- [T8 server run guide](docs/workflows/T8_SERVER_RUN.md)
+- [T8.2 joint-shape pipeline](docs/workflows/T82_JOINT_SHAPE_PIPELINE.md)
+- [Alternating-MAP / EM-style workflow](docs/workflows/EM_MLR_WORKFLOW.md)
+- [Mass-independent outlier experiment plan](docs/validation/T8_MASS_INDEPENDENT_OUTLIER_GARCHING_PLAN.md)
 
 ## License
 
