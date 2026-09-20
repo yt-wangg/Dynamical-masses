@@ -53,6 +53,8 @@ SHAPE_STARTS = {
     "default": np.log([0.002544, 35.67, 3.1]),
     "S2": np.log([0.00103, 40.98, 11.53]),
 }
+PHYSICAL_SHAPE_LOG_CENTER = SHAPE_STARTS["default"].copy()
+DEFAULT_SHAPE_PRIOR_SIGMA = np.log([2.0, 1.3, 2.0])
 SHAPE_NAMES = ("log_b", "log_uc", "log_c")
 OUTLIER_MU = 40.0
 OUTLIER_SIGMA = 13.0
@@ -98,6 +100,15 @@ def parse_args():
                         help="Maximum relative MLR mass change at representative M_G points for convergence.")
     parser.add_argument("--stable-cycles", type=int, default=2,
                         help="Number of consecutive stable full cycles required for convergence.")
+    parser.add_argument("--shape-prior-sigma-log-b", type=float,
+                        default=float(DEFAULT_SHAPE_PRIOR_SIGMA[0]),
+                        help="Physics-centered Gaussian prior sigma for log(B); default ln(2).")
+    parser.add_argument("--shape-prior-sigma-log-uc", type=float,
+                        default=float(DEFAULT_SHAPE_PRIOR_SIGMA[1]),
+                        help="Physics-centered Gaussian prior sigma for log(uc); default ln(1.3).")
+    parser.add_argument("--shape-prior-sigma-log-c", type=float,
+                        default=float(DEFAULT_SHAPE_PRIOR_SIGMA[2]),
+                        help="Physics-centered Gaussian prior sigma for log(C); default ln(2).")
     parser.add_argument("--data-subset", type=Path, default=None,
                         help="Optional previously saved selected row positions.")
     return parser.parse_args()
@@ -240,6 +251,18 @@ def build_objective(mlr, args):
     absg_grid = jnp.asarray(mlr.absg, dtype=jnp.float64)
     normal_const = np.log(np.sqrt(2.0 * np.pi))
     beta_const = float(gammaln(3.0) + gammaln(12.0) - gammaln(15.0))
+    shape_prior_center = jnp.asarray(PHYSICAL_SHAPE_LOG_CENTER, dtype=jnp.float64)
+    shape_prior_sigma = jnp.asarray(
+        [
+            args.shape_prior_sigma_log_b,
+            args.shape_prior_sigma_log_uc,
+            args.shape_prior_sigma_log_c,
+        ],
+        dtype=jnp.float64,
+    )
+    shape_prior_normalization = jnp.sum(
+        jnp.log(shape_prior_sigma) + np.log(np.sqrt(2.0 * np.pi))
+    )
     u_observed = jnp.asarray(mlr.u, dtype=jnp.float64)
     u_sigma = jnp.asarray(mlr.u_sigma, dtype=jnp.float64)
     raw_bad = jnp.asarray(
@@ -402,9 +425,14 @@ def build_objective(mlr, args):
         anchor_bz = jnp.asarray(hm._bspline_basis_numpy(0.0, mlr.knots_z, mlr.degree_z), dtype=jnp.float64)
         solar_g = jnp.einsum("i,h,ih->", anchor_bx, anchor_bz, theta)
         solar_anchor = -0.5 * ((solar_g - mlr.solar_anchor_mean) / mlr.solar_anchor_sigma) ** 2 - np.log(mlr.solar_anchor_sigma) - normal_const
-        # Uniform shape priors are constant inside the explicitly bounded box.
-        shape_normalization = -sum(np.log(float(SHAPE_AXES[n][-1] - SHAPE_AXES[n][0])) for n in SHAPE_NAMES)
-        joint = log_likelihood + log_prior + solar_anchor + shape_normalization
+        # Physics-informed calibration prior. The existing shape box remains a
+        # hard physical/numerical support constraint enforced by L-BFGS-B.
+        # The Gaussian center is the orbit-model-derived default shape.
+        shape_log_prior = (
+            -0.5 * jnp.sum(((shape - shape_prior_center) / shape_prior_sigma) ** 2)
+            - shape_prior_normalization
+        )
+        joint = log_likelihood + log_prior + solar_anchor + shape_log_prior
         return joint, log_likelihood
 
     def log_posterior(v):
@@ -671,6 +699,16 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
                 "required_consecutive_stable_cycles": int(args.stable_cycles),
             },
             "shape_box": {k: v.tolist() for k, v in SHAPE_AXES.items()},
+            "shape_prior": {
+                "type": "Gaussian in log parameters within the hard shape box",
+                "center_B_uc_C": np.exp(PHYSICAL_SHAPE_LOG_CENTER).tolist(),
+                "sigma_log_b_log_uc_log_c": [
+                    float(args.shape_prior_sigma_log_b),
+                    float(args.shape_prior_sigma_log_uc),
+                    float(args.shape_prior_sigma_log_c),
+                ],
+                "default_interpretation": "1-sigma factor 2 in B and C; factor 1.3 in uc",
+            },
             "solar_anchor": {"M_G": 4.67, "mh": 0.0, "log10_mass": 0.0},
             "uncertainty": "No posterior intervals; a later joint sampler is required.",
         },
@@ -759,6 +797,19 @@ def plot_results(output, results, mlr, baseline_vector, parsec):
 
 def main():
     args = parse_args()
+    prior_sigmas = np.array([
+        args.shape_prior_sigma_log_b,
+        args.shape_prior_sigma_log_uc,
+        args.shape_prior_sigma_log_c,
+    ], dtype=np.float64)
+    if np.any(~np.isfinite(prior_sigmas)) or np.any(prior_sigmas <= 0):
+        raise ValueError("Shape-prior log sigmas must be finite and strictly positive.")
+    if args.direct_nodes < 4 or args.direct_chunk < 1:
+        raise ValueError("Direct quadrature requires --direct-nodes >= 4 and --direct-chunk >= 1.")
+    if args.stable_cycles < 1:
+        raise ValueError("--stable-cycles must be positive.")
+    if min(args.objective_rtol, args.shape_tol, args.mass_rtol) <= 0:
+        raise ValueError("Convergence tolerances must be strictly positive.")
     args.output.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
