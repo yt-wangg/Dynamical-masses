@@ -35,6 +35,7 @@ from binary_masses.hierarchical_metallicity import (  # noqa: E402
     array_digest,
     color_uncertainty_from_flux_snr,
     grouped_mcmc_payload,
+    raw_u_outlier_log_likelihood,
     simulate_mock_dataset,
 )
 
@@ -926,6 +927,15 @@ def run_mlr(
             "the contamination and selection model. T8.1 normalizes the good basis "
             "to unit support integral so both mixture components integrate to one."
         ),
+        "outlier_coordinate": args.outlier_coordinate,
+        "outlier_mass_dependent": bool(args.outlier_coordinate == "scaled_tilde_u"),
+        "outlier_model": (
+            "Rice-convolved truncated Normal in raw observed u; independent of mass "
+            "and metallicity"
+            if args.outlier_coordinate == "raw_u"
+            else
+            "legacy T8 truncated Normal in tilde_u=u/sqrt(Mtot); mass-coupled sensitivity baseline"
+        ),
         "derived_output_definitions": {
             "mass": "final inferred mass in solar masses",
             "delta_star": "g - g_P_star in dex",
@@ -948,6 +958,16 @@ def run_mlr(
     (output_dir / "mlr_model.json").write_text(
         json.dumps(mlr_model_metadata, indent=2), encoding="utf-8"
     )
+    raw_bad = None
+    if args.outlier_coordinate == "raw_u":
+        raw_bad = raw_u_outlier_log_likelihood(
+            arrays["u"],
+            arrays["u_sigma"],
+            support_max=80.0,
+            mu=args.outlier_u0,
+            sigma=args.outlier_sigma,
+            quadrature_nodes=max(256, int(args.lookup_velocity_nodes)),
+        )
     mlr.set_data(
         row_indices=arrays["row_indices"],
         u=arrays["u"],
@@ -956,6 +976,7 @@ def run_mlr(
         metallicity_grid=posterior,
         dynamics_lookup=dynamics_lookup,
         dynamics_shape_stack=dynamics_shape_stack,
+        raw_u_outlier_log_likelihood=raw_bad,
     )
     print("Running stage-two dynamical MLR correction...")
     sampler = mlr.run_mcmc(
@@ -1270,6 +1291,17 @@ def parse_args():
     parser.add_argument("--lookup-system-chunk", type=int, default=128)
     parser.add_argument("--outlier-u0", type=float, default=40.0)
     parser.add_argument("--outlier-sigma", type=float, default=13.0)
+    parser.add_argument(
+        "--outlier-coordinate",
+        choices=("raw_u", "scaled_tilde_u"),
+        default="raw_u",
+        help=(
+            "Outlier coordinate model. raw_u (default) uses a mass-independent "
+            "Rice-convolved TN(40,13,[0,80]) in observed u. scaled_tilde_u "
+            "reproduces the legacy 7bc861a behavior where the outlier is defined "
+            "in u/sqrt(Mtot) and therefore depends on inferred mass."
+        ),
+    )
     parser.add_argument("--outlier-sensitivity", action="store_true",
                         help="Opt in to an experimental outlier-shape sensitivity run.")
     parser.add_argument("--good-shape-b", type=float, default=None,
