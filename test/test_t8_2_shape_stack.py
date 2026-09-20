@@ -67,6 +67,23 @@ def test_node_reproduction_and_weight_properties():
         assert abs(wr.sum() - 1.0) < 1e-12 and np.all(wr >= 0)
 
 
+def test_shape_weights_are_linear_between_nodes():
+    # The optimizer relies on non-zero first derivatives at grid nodes.
+    # Halfway between two nodes on one axis must therefore be a true 50/50
+    # linear mixture, with the other axes pinned exactly to nodes.
+    values = (
+        0.5 * (AXES["log_b"][0] + AXES["log_b"][1]),
+        AXES["log_uc"][1],
+        AXES["log_c"][1],
+    )
+    idx, w = shape_trilinear_weights_numpy(values, AXES)
+    nonzero = np.flatnonzero(w > 1e-14)
+    assert nonzero.size == 2
+    members = set(idx[nonzero].tolist())
+    assert members == {9 * 0 + 3 * 1 + 1, 9 * 1 + 3 * 1 + 1}
+    np.testing.assert_allclose(np.sort(w[nonzero]), [0.5, 0.5], rtol=0, atol=1e-12)
+
+
 def test_effective_table_at_node_matches_member():
     stack = build_tiny_stack()
     values = (AXES["log_b"][0], AXES["log_uc"][1], AXES["log_c"][2])

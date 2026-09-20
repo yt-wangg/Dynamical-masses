@@ -53,6 +53,8 @@ SHAPE_STARTS = {
     "default": np.log([0.002544, 35.67, 3.1]),
     "S2": np.log([0.00103, 40.98, 11.53]),
 }
+PHYSICAL_SHAPE_LOG_CENTER = SHAPE_STARTS["default"].copy()
+DEFAULT_SHAPE_PRIOR_SIGMA = np.log([2.0, 1.3, 2.0])
 SHAPE_NAMES = ("log_b", "log_uc", "log_c")
 OUTLIER_MU = 40.0
 OUTLIER_SIGMA = 13.0
@@ -80,7 +82,33 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=20260919)
     parser.add_argument("--max-iterations", type=int, default=10)
     parser.add_argument("--block-maxiter", type=int, default=80)
-    parser.add_argument("--tol", type=float, default=2e-4)
+    parser.add_argument("--tol", type=float, default=2e-4,
+                        help="Deprecated absolute tolerance retained for CLI compatibility.")
+    parser.add_argument(
+        "--shape-evaluation", choices=("direct", "linear_stack"), default="direct",
+        help="Good-shape likelihood used by alternating MAP. direct evaluates the continuous Rice model; linear_stack is a faster diagnostic surrogate.",
+    )
+    parser.add_argument("--direct-nodes", type=int, default=12,
+                        help="Gauss-Legendre order per direct Rice integration interval.")
+    parser.add_argument("--direct-chunk", type=int, default=16,
+                        help="System chunk size for direct JAX Rice integration.")
+    parser.add_argument("--objective-rtol", type=float, default=1e-7,
+                        help="Relative full-cycle log-posterior improvement threshold.")
+    parser.add_argument("--shape-tol", type=float, default=1e-3,
+                        help="Maximum absolute change in log(B), log(uc), log(C) for convergence.")
+    parser.add_argument("--mass-rtol", type=float, default=1e-3,
+                        help="Maximum relative MLR mass change at representative M_G points for convergence.")
+    parser.add_argument("--stable-cycles", type=int, default=2,
+                        help="Number of consecutive stable full cycles required for convergence.")
+    parser.add_argument("--shape-prior-sigma-log-b", type=float,
+                        default=float(DEFAULT_SHAPE_PRIOR_SIGMA[0]),
+                        help="Physics-centered Gaussian prior sigma for log(B); default ln(2).")
+    parser.add_argument("--shape-prior-sigma-log-uc", type=float,
+                        default=float(DEFAULT_SHAPE_PRIOR_SIGMA[1]),
+                        help="Physics-centered Gaussian prior sigma for log(uc); default ln(1.3).")
+    parser.add_argument("--shape-prior-sigma-log-c", type=float,
+                        default=float(DEFAULT_SHAPE_PRIOR_SIGMA[2]),
+                        help="Physics-centered Gaussian prior sigma for log(C); default ln(2).")
     parser.add_argument("--data-subset", type=Path, default=None,
                         help="Optional previously saved selected row positions.")
     return parser.parse_args()
@@ -190,7 +218,7 @@ def vector_to_params(vector):
     }
 
 
-def build_objective(mlr):
+def build_objective(mlr, args):
     """Build JAX value/gradient functions for the constrained joint MAP.
 
     ``numpyro.infer.util.log_density`` expects unconstrained values for
@@ -223,8 +251,112 @@ def build_objective(mlr):
     absg_grid = jnp.asarray(mlr.absg, dtype=jnp.float64)
     normal_const = np.log(np.sqrt(2.0 * np.pi))
     beta_const = float(gammaln(3.0) + gammaln(12.0) - gammaln(15.0))
+    shape_prior_center = jnp.asarray(PHYSICAL_SHAPE_LOG_CENTER, dtype=jnp.float64)
+    shape_prior_sigma = jnp.asarray(
+        [
+            args.shape_prior_sigma_log_b,
+            args.shape_prior_sigma_log_uc,
+            args.shape_prior_sigma_log_c,
+        ],
+        dtype=jnp.float64,
+    )
+    shape_prior_normalization = jnp.sum(
+        jnp.log(shape_prior_sigma) + np.log(np.sqrt(2.0 * np.pi))
+    )
+    u_observed = jnp.asarray(mlr.u, dtype=jnp.float64)
+    u_sigma = jnp.asarray(mlr.u_sigma, dtype=jnp.float64)
+    raw_bad = jnp.asarray(
+        np.asarray(mlr.dynamics_shape_stack.log_bad_stack[0, :, 0], dtype=np.float64),
+        dtype=jnp.float64,
+    )
 
-    def shape_tables(shape, sqrt_mtot):
+    gl_x_np, gl_w_np = np.polynomial.legendre.leggauss(int(args.direct_nodes))
+    norm_x_np, norm_w_np = np.polynomial.legendre.leggauss(256)
+    norm_x_np = 0.5 * (norm_x_np + 1.0) * 80.0
+    norm_w_np = 40.0 * norm_w_np
+    gl_x = jnp.asarray(gl_x_np, dtype=jnp.float64)
+    gl_w = jnp.asarray(gl_w_np, dtype=jnp.float64)
+    norm_x = jnp.asarray(norm_x_np, dtype=jnp.float64)
+    norm_w = jnp.asarray(norm_w_np, dtype=jnp.float64)
+    shape_offsets = jnp.asarray(np.array([-8, -4, -2, 0, 2, 4, 8], dtype=np.float64))
+    rice_offsets = jnp.asarray(np.array([-30, -14, -10, -6, -3, 0, 3, 6, 10, 14, 30], dtype=np.float64))
+    direct_chunk = int(args.direct_chunk)
+    n_systems = int(mlr.u.size)
+    n_pad = int(np.ceil(n_systems / direct_chunk) * direct_chunk)
+
+    def direct_shape_tables(shape, sqrt_mtot):
+        log_b, log_uc, log_c = shape
+        log_norm = logsumexp(
+            jnp.log(float(hm.RICE_GOOD_A))
+            + jnp.log(norm_w)
+            + jnp.log(norm_x)
+            - jnp.exp(log_b) * norm_x**2
+            - jnp.exp((norm_x - jnp.exp(log_uc)) / jnp.exp(log_c))
+        )
+        sqrt_pad = jnp.pad(sqrt_mtot, ((0, n_pad - n_systems), (0, 0)), constant_values=1.0)
+        u_pad = jnp.pad(u_observed, (0, n_pad - n_systems), constant_values=1.0)
+        sigma_pad = jnp.pad(u_sigma, (0, n_pad - n_systems), constant_values=1.0)
+        s_chunks = sqrt_pad.reshape((-1, direct_chunk, sqrt_mtot.shape[1]))
+        u_chunks = u_pad.reshape((-1, direct_chunk))
+        sigma_chunks = sigma_pad.reshape((-1, direct_chunk))
+
+        def integrate_chunk(chunk_args):
+            s_chunk, u_chunk, sigma_chunk = chunk_args
+            upper = s_chunk * 80.0
+            shape_boundaries = s_chunk[..., None] * (
+                jnp.exp(log_uc) + jnp.exp(log_c) * shape_offsets
+            )
+            rice_boundaries = (
+                u_chunk[:, None, None] + sigma_chunk[:, None, None] * rice_offsets
+            )
+            rice_boundaries = jnp.broadcast_to(
+                rice_boundaries, (s_chunk.shape[0], s_chunk.shape[1], rice_offsets.size)
+            )
+            interior = jnp.concatenate((shape_boundaries, rice_boundaries), axis=-1)
+            n_interior = int(interior.shape[-1])
+            boundary_eps = 1e-8
+            safe_upper = upper - boundary_eps * (n_interior + 1)
+            interior = jnp.clip(interior, boundary_eps, safe_upper[..., None])
+            interior += boundary_eps * jnp.arange(n_interior, dtype=jnp.float64)
+            boundaries = jnp.concatenate(
+                (jnp.zeros_like(upper[..., None]), jnp.sort(interior, axis=-1), upper[..., None]),
+                axis=-1,
+            )
+            lower = boundaries[..., :-1]
+            upper_interval = boundaries[..., 1:]
+            midpoint = 0.5 * (lower + upper_interval)
+            half_width = 0.5 * (upper_interval - lower)
+            velocity = midpoint[..., None] + half_width[..., None] * gl_x
+            observed = u_chunk[:, None, None, None]
+            sigma = sigma_chunk[:, None, None, None]
+            argument = observed * velocity / sigma**2
+            log_rice = (
+                jnp.log(observed) - 2.0 * jnp.log(sigma)
+                - (observed - velocity) ** 2 / (2.0 * sigma**2)
+                + jnp.log(jax.scipy.special.i0e(argument) + 1e-30)
+            )
+            scale = s_chunk[..., None, None]
+            tilde_u = velocity / scale
+            tilde_eval = jnp.clip(tilde_u, 1e-12, 80.0)
+            log_good = (
+                jnp.log(float(hm.RICE_GOOD_A)) - log_norm + jnp.log(tilde_eval)
+                - jnp.exp(log_b) * tilde_eval**2
+                - jnp.exp((tilde_eval - jnp.exp(log_uc)) / jnp.exp(log_c))
+                - jnp.log(scale)
+            )
+            log_quad = jnp.log(jnp.maximum(half_width, 1e-300))[..., None] + jnp.log(gl_w)
+            valid = (tilde_u > 0.0) & (tilde_u <= 80.0)
+            log_interval = logsumexp(
+                log_rice + jnp.where(valid, log_good, -jnp.inf) + log_quad, axis=-1
+            )
+            return logsumexp(log_interval, axis=-1)
+
+        good = jax.lax.map(integrate_chunk, (s_chunks, u_chunks, sigma_chunks))
+        good = good.reshape((n_pad, sqrt_mtot.shape[1]))[:n_systems]
+        bad = raw_bad[:, None] + jnp.zeros_like(good)
+        return good, bad
+
+    def linear_stack_shape_tables(shape, sqrt_mtot):
         cells, fracs = [], []
         for axis_value, name in zip(shape, SHAPE_NAMES):
             axis = axes[name]
@@ -233,9 +365,8 @@ def build_objective(mlr):
             hi = jnp.where(cell == 1, axis[2], axis[1])
             t = jnp.clip((axis_value - lo) / (hi - lo), 0.0, 1.0)
             cells.append(cell)
-            fracs.append(t * t * (3.0 - 2.0 * t))
-        logs_good, logs_bad = [], []
-        log_weights = []
+            fracs.append(t)
+        logs_good, log_weights = [], []
         for cb in (0, 1):
             for cu in (0, 1):
                 for cc in (0, 1):
@@ -244,18 +375,18 @@ def build_objective(mlr):
                         (fracs[0] if cb else 1.0 - fracs[0])
                         * (fracs[1] if cu else 1.0 - fracs[1])
                         * (fracs[2] if cc else 1.0 - fracs[2]), 1e-30)))
-                    logs_good.append(hm.lookup_interpolate(
-                        sqrt_mtot, sqrt_grid, log_good_stack[idx]
-                    ))
-                    logs_bad.append(hm.lookup_interpolate(
-                        sqrt_mtot, sqrt_grid, log_bad_stack[idx]
-                    ))
+                    logs_good.append(hm.lookup_interpolate(sqrt_mtot, sqrt_grid, log_good_stack[idx]))
         weights = jnp.stack(log_weights)[:, None, None]
-        return logsumexp(weights + jnp.stack(logs_good), axis=0), logsumexp(
-            weights + jnp.stack(logs_bad), axis=0
-        )
+        good = logsumexp(weights + jnp.stack(logs_good), axis=0)
+        bad = raw_bad[:, None] + jnp.zeros_like(good)
+        return good, bad
 
-    def log_posterior(v):
+    def shape_tables(shape, sqrt_mtot):
+        if args.shape_evaluation == "direct":
+            return direct_shape_tables(shape, sqrt_mtot)
+        return linear_stack_shape_tables(shape, sqrt_mtot)
+
+    def log_posterior_and_likelihood(v):
         c0 = v[0]
         a = v[1:4]
         b = v[4:11]
@@ -294,9 +425,21 @@ def build_objective(mlr):
         anchor_bz = jnp.asarray(hm._bspline_basis_numpy(0.0, mlr.knots_z, mlr.degree_z), dtype=jnp.float64)
         solar_g = jnp.einsum("i,h,ih->", anchor_bx, anchor_bz, theta)
         solar_anchor = -0.5 * ((solar_g - mlr.solar_anchor_mean) / mlr.solar_anchor_sigma) ** 2 - np.log(mlr.solar_anchor_sigma) - normal_const
-        # Uniform shape priors are constant inside the explicitly bounded box.
-        shape_normalization = -sum(np.log(float(SHAPE_AXES[n][-1] - SHAPE_AXES[n][0])) for n in SHAPE_NAMES)
-        return log_likelihood + log_prior + solar_anchor + shape_normalization
+        # Physics-informed calibration prior. The existing shape box remains a
+        # hard physical/numerical support constraint enforced by L-BFGS-B.
+        # The Gaussian center is the orbit-model-derived default shape.
+        shape_log_prior = (
+            -0.5 * jnp.sum(((shape - shape_prior_center) / shape_prior_sigma) ** 2)
+            - shape_prior_normalization
+        )
+        joint = log_likelihood + log_prior + solar_anchor + shape_log_prior
+        return joint, log_likelihood
+
+    def log_posterior(v):
+        return log_posterior_and_likelihood(v)[0]
+
+    def log_likelihood_only(v):
+        return log_posterior_and_likelihood(v)[1]
 
     value_grad = jax.jit(jax.value_and_grad(lambda v: -log_posterior(v)))
 
@@ -307,39 +450,27 @@ def build_objective(mlr):
             return 1e100, np.zeros_like(np.asarray(v, dtype=np.float64))
         return value, grad
 
+    logpost_jit = jax.jit(log_posterior)
+    loglike_jit = jax.jit(log_likelihood_only)
+
     def logpost(v):
-        value = log_posterior(jnp.asarray(v, dtype=jnp.float64))
-        return float(value)
+        return float(logpost_jit(jnp.asarray(v, dtype=jnp.float64)))
 
-    return objective, logpost
+    def loglike(v):
+        return float(loglike_jit(jnp.asarray(v, dtype=jnp.float64)))
+
+    return objective, logpost, loglike
 
 
-def summarize_objective(mlr, vector, logpost):
-    """Return exact joint target and its likelihood/prior decomposition."""
+def summarize_objective(mlr, vector, logpost, loglike):
+    """Return the exact optimizer target and likelihood/prior decomposition."""
     params = vector_to_params(vector)
     params["f_outlier"] = float(vector[F_INDEX])
-    # The model's log-density is the sum of the observation factor and all
-    # priors/anchors.  Re-evaluate the exact NumPy likelihood for reporting.
-    theta = mlr.theta_from_raw(params)
     mh = mlr.z_grid[None, :]
     m1 = mlr.mass_from_absg_mh(mlr.absg[:, 0, None], mh, params)
     m2 = mlr.mass_from_absg_mh(mlr.absg[:, 1, None], mh, params)
     sqrt_mtot = np.sqrt(np.maximum(m1 + m2, 1e-12))
-    good = interpolate_shape_numpy(
-        vector[SHAPE_OFFSET:SHAPE_OFFSET + 3], mlr.sqrt_mtot_grid,
-        mlr.dynamics_shape_stack.log_good_stack, mlr.dynamics_shape_stack.axes,
-        sqrt_mtot,
-    )
-    bad = interpolate_lookup_numpy(sqrt_mtot, mlr.sqrt_mtot_grid,
-                                   mlr.dynamics_shape_stack.log_bad_stack[0])
-    log_conditional = np.logaddexp(
-        np.log1p(-vector[F_INDEX]) + good,
-        np.log(vector[F_INDEX]) + bad,
-    )
-    log_likelihood = float(np.sum(np.logaddexp.reduce(
-        np.log(np.maximum(mlr.z_probabilities, 1e-30)) + log_conditional,
-        axis=1,
-    )))
+    log_likelihood = float(loglike(vector))
     joint = float(logpost(vector))
     return {
         "log_posterior": joint,
@@ -366,7 +497,7 @@ def interpolate_lookup_numpy(values, grid, table):
 
 
 def interpolate_shape_numpy(values, grid, stack, axes, sqrt_mtot):
-    """Same smoothstep trilinear mixture used by the T8.2 model."""
+    """Linear trilinear probability mixture used by the stack diagnostic mode."""
     values = np.asarray(values, dtype=np.float64)
     cells, fracs = [], []
     for value, name in zip(values, SHAPE_NAMES):
@@ -375,7 +506,7 @@ def interpolate_shape_numpy(values, grid, stack, axes, sqrt_mtot):
         lo, hi = (axis[1], axis[2]) if cell else (axis[0], axis[1])
         t = np.clip((value - lo) / (hi - lo), 0.0, 1.0)
         cells.append(cell)
-        fracs.append(t * t * (3.0 - 2.0 * t))
+        fracs.append(t)
     out = np.full_like(sqrt_mtot, -np.inf, dtype=np.float64)
     pieces = []
     weights = []
@@ -451,10 +582,10 @@ def representative_masses(mlr, vector):
     return [float(mlr.mass_from_absg_mh(mg, 0.0, params)) for mg in REPRESENTATIVE_MG]
 
 
-def run_trajectory(mlr, objective, logpost, start_vector, name, args):
+def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args):
     current = np.asarray(start_vector, dtype=np.float64).copy()
     trace = []
-    initial = summarize_objective(mlr, current, logpost)
+    initial = summarize_objective(mlr, current, logpost, loglike)
     initial.update({"run": name, "iteration": 0, "block": "initial",
                     "objective_change": 0.0, "accepted": True})
     initial["representative_masses"] = representative_masses(mlr, current)
@@ -464,8 +595,15 @@ def run_trajectory(mlr, objective, logpost, start_vector, name, args):
     shape_bounds = [(float(SHAPE_AXES[n][0]), float(SHAPE_AXES[n][-1])) for n in SHAPE_NAMES]
     shape_bounds = [(1e-5, 1.0 - 1e-5)] + shape_bounds
     previous_target = float(initial["log_posterior"])
+    previous_masses = np.asarray(initial["representative_masses"], dtype=np.float64)
+    previous_shape = current[SHAPE_OFFSET:SHAPE_OFFSET + 3].copy()
     statuses = []
+    stable_count = 0
     for iteration in range(1, int(args.max_iterations) + 1):
+        cycle_start_target = previous_target
+        cycle_start_masses = previous_masses.copy()
+        cycle_start_shape = previous_shape.copy()
+
         candidate, result_mlr = optimize_block(
             objective, current, mlr_indices, None, args.block_maxiter
         )
@@ -476,34 +614,65 @@ def run_trajectory(mlr, objective, logpost, start_vector, name, args):
             accepted_mlr = True
         else:
             accepted_mlr = False
+
         candidate, result_shape = optimize_block(
             objective, current, shape_indices, shape_bounds, args.block_maxiter
         )
         candidate_target = float(logpost(candidate))
         if np.isfinite(candidate_target) and candidate_target >= previous_target - 1e-6:
             current = candidate
-            delta = candidate_target - previous_target
             previous_target = candidate_target
             accepted_shape = True
         else:
-            delta = 0.0
             accepted_shape = False
-        row = summarize_objective(mlr, current, logpost)
-        row.update({"run": name, "iteration": iteration, "block": "full_cycle",
-                    "objective_change": float(delta), "accepted": bool(accepted_mlr and accepted_shape),
-                    "mlr_optimizer_success": bool(result_mlr.success),
-                    "shape_optimizer_success": bool(result_shape.success),
-                    "mlr_optimizer_message": str(result_mlr.message),
-                    "shape_optimizer_message": str(result_shape.message)})
-        row["representative_masses"] = representative_masses(mlr, current)
+
+        current_masses = np.asarray(representative_masses(mlr, current), dtype=np.float64)
+        current_shape = current[SHAPE_OFFSET:SHAPE_OFFSET + 3].copy()
+        cycle_delta = float(previous_target - cycle_start_target)
+        objective_rel_change = cycle_delta / (1.0 + abs(cycle_start_target))
+        shape_max_change = float(np.max(np.abs(current_shape - cycle_start_shape)))
+        mass_max_rel_change = float(np.max(np.abs(current_masses / cycle_start_masses - 1.0)))
+        stable = (
+            accepted_mlr and accepted_shape
+            and objective_rel_change < float(args.objective_rtol)
+            and shape_max_change < float(args.shape_tol)
+            and mass_max_rel_change < float(args.mass_rtol)
+        )
+        stable_count = stable_count + 1 if stable else 0
+
+        row = summarize_objective(mlr, current, logpost, loglike)
+        row.update({
+            "run": name, "iteration": iteration, "block": "full_cycle",
+            "objective_change": cycle_delta,
+            "objective_relative_change": float(objective_rel_change),
+            "shape_log_max_change": shape_max_change,
+            "mass_max_relative_change": mass_max_rel_change,
+            "stable_cycle": bool(stable),
+            "stable_cycle_count": int(stable_count),
+            "accepted": bool(accepted_mlr and accepted_shape),
+            "mlr_optimizer_success": bool(result_mlr.success),
+            "shape_optimizer_success": bool(result_shape.success),
+            "mlr_optimizer_message": str(result_mlr.message),
+            "shape_optimizer_message": str(result_shape.message),
+        })
+        row["representative_masses"] = current_masses.tolist()
         trace.append(row)
-        statuses.append({"iteration": iteration,
-                         "mlr_success": bool(result_mlr.success),
-                         "shape_success": bool(result_shape.success),
-                         "accepted_mlr": accepted_mlr,
-                         "accepted_shape": accepted_shape,
-                         "delta": float(delta)})
-        if delta < float(args.tol):
+        statuses.append({
+            "iteration": iteration,
+            "mlr_success": bool(result_mlr.success),
+            "shape_success": bool(result_shape.success),
+            "accepted_mlr": accepted_mlr,
+            "accepted_shape": accepted_shape,
+            "full_cycle_delta": cycle_delta,
+            "objective_relative_change": float(objective_rel_change),
+            "shape_log_max_change": shape_max_change,
+            "mass_max_relative_change": mass_max_rel_change,
+            "stable_cycle": bool(stable),
+            "stable_cycle_count": int(stable_count),
+        })
+        previous_masses = current_masses
+        previous_shape = current_shape
+        if stable_count >= int(args.stable_cycles):
             break
     return current, trace, statuses
 
@@ -520,8 +689,26 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
             "algorithm": "alternating conditional MAP",
             "posterior_scope": "formal T8 metallicity posterior, fixed 2000-system subset",
             "outlier": "raw-u TN(40,13,[0,80]) with Rice convolution; mass independent",
-            "normal_shape_stack": "formal T8.2 27-node stack, smoothstep trilinear interpolation",
+            "shape_evaluation": args.shape_evaluation,
+            "normal_shape_stack": "formal T8.2 27-node stack with linear trilinear interpolation when linear_stack mode is selected",
+            "direct_quadrature": {"nodes_per_interval": int(args.direct_nodes), "system_chunk": int(args.direct_chunk)},
+            "convergence": {
+                "objective_relative_tolerance": float(args.objective_rtol),
+                "shape_log_max_change_tolerance": float(args.shape_tol),
+                "mass_max_relative_change_tolerance": float(args.mass_rtol),
+                "required_consecutive_stable_cycles": int(args.stable_cycles),
+            },
             "shape_box": {k: v.tolist() for k, v in SHAPE_AXES.items()},
+            "shape_prior": {
+                "type": "Gaussian in log parameters within the hard shape box",
+                "center_B_uc_C": np.exp(PHYSICAL_SHAPE_LOG_CENTER).tolist(),
+                "sigma_log_b_log_uc_log_c": [
+                    float(args.shape_prior_sigma_log_b),
+                    float(args.shape_prior_sigma_log_uc),
+                    float(args.shape_prior_sigma_log_c),
+                ],
+                "default_interpretation": "1-sigma factor 2 in B and C; factor 1.3 in uc",
+            },
             "solar_anchor": {"M_G": 4.67, "mh": 0.0, "log10_mass": 0.0},
             "uncertainty": "No posterior intervals; a later joint sampler is required.",
         },
@@ -537,7 +724,7 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
         vector, trace, statuses = payload
         final = trace[-1]
         serializable["results"][name] = {
-            "converged": bool(len(trace) < int(args.max_iterations) + 1 and final["objective_change"] < args.tol),
+            "converged": bool(final.get("stable_cycle_count", 0) >= int(args.stable_cycles)),
             "iterations": int(final["iteration"]),
             "final": {k: v for k, v in final.items() if k != "representative_masses"},
             "final_shape": [final["shape_B"], final["shape_uc"], final["shape_C"]],
@@ -610,6 +797,19 @@ def plot_results(output, results, mlr, baseline_vector, parsec):
 
 def main():
     args = parse_args()
+    prior_sigmas = np.array([
+        args.shape_prior_sigma_log_b,
+        args.shape_prior_sigma_log_uc,
+        args.shape_prior_sigma_log_c,
+    ], dtype=np.float64)
+    if np.any(~np.isfinite(prior_sigmas)) or np.any(prior_sigmas <= 0):
+        raise ValueError("Shape-prior log sigmas must be finite and strictly positive.")
+    if args.direct_nodes < 4 or args.direct_chunk < 1:
+        raise ValueError("Direct quadrature requires --direct-nodes >= 4 and --direct-chunk >= 1.")
+    if args.stable_cycles < 1:
+        raise ValueError("--stable-cycles must be positive.")
+    if min(args.objective_rtol, args.shape_tol, args.mass_rtol) <= 0:
+        raise ValueError("Convergence tolerances must be strictly positive.")
     args.output.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -653,7 +853,7 @@ def main():
         "n_nodes": int(stack.n_nodes),
         "sqrt_mtot_range": [float(stack.sqrt_mtot_grid[0]), float(stack.sqrt_mtot_grid[-1])],
         "axes": {key: value.tolist() for key, value in stack.axes.items()},
-        "interpolation": "smoothstep trilinear interpolation in finite 3-node log-shape box",
+        "interpolation": "linear trilinear probability interpolation in finite 3-node log-shape box (diagnostic fallback only)",
     }
     mass_surface, _ = workflow.build_surfaces()
     mlr = workflow._make_t8_mlr(mass_surface, argparse.Namespace(
@@ -666,7 +866,7 @@ def main():
     mlr.set_data(row_indices=subset.row_indices, u=subset_arrays["u"],
                  u_sigma=subset_arrays["u_sigma"], absg=subset_arrays["absg"],
                  metallicity_grid=subset, dynamics_shape_stack=stack)
-    objective, logpost = build_objective(mlr)
+    objective, logpost, loglike = build_objective(mlr, args)
     initial_mlr_path = args.initial_mlr or (args.baseline / T8_MLR_NAME)
     baseline_vector, _ = initial_vector(initial_mlr_path, "default")
     probe_value, probe_grad = objective(baseline_vector)
@@ -692,7 +892,7 @@ def main():
     results = {}
     for name in ("default", "S2"):
         vector, trace, statuses = run_trajectory(
-            mlr, objective, logpost, baseline_vector.copy() if name == "default"
+            mlr, objective, logpost, loglike, baseline_vector.copy() if name == "default"
             else params_to_vector(vector_to_params(baseline_vector), baseline_vector[F_INDEX], SHAPE_STARTS[name]),
             name, args,
         )
