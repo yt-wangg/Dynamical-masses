@@ -1,22 +1,20 @@
 # Bayesian Binary Masses
 
-The current dynamical MLR workflow is **T8**, run through
-[`src/examples/run_hierarchical_metallicity_test.py`](src/examples/run_hierarchical_metallicity_test.py).
-See [T8 run instructions](docs/T8_SERVER_RUN.md) for calibration, fitting, and plotting.
+The default MLR method is **EM-style alternating conditional MAP**, run with
+[`scripts/run_mlr.sh`](scripts/run_mlr.sh). It alternates updates to the MLR
+and the normal velocity distribution, with a mass-independent raw-u outlier
+component. See [the default EM workflow](docs/EM_MLR_WORKFLOW.md) for inputs,
+execution, outputs, and limitations.
 
-T8 fits a PARSEC-relative mass surface with a shared metallicity posterior for
-each wide binary. Over `3.5 <= M_G <= 13.5` and `-1.0 <= [M/H] <= 0.6`,
-the final mass decreases or stays constant toward fainter magnitudes and
-increases or stays constant toward higher metallicity. These constraints apply
-to the final mass, while the correction relative to PARSEC may have either sign.
-Fitted T8 curves are evaluated from `mlr_mcmc_t8.npz`.
+The MLR uses the T8 monotone PARSEC-relative surface and the saved shared
+metallicity posterior for each binary. The current default runs both default-
+shape and S2-shape starts on the same 2000-system subset. The initial MLR is
+shared and comes from the supplied baseline posterior.
 
-## Joint velocity-shape and MLR fitting
-
-The [T8.2 pipeline](docs/T82_JOINT_SHAPE_PIPELINE.md) fits independent [M/H]
-bins from S2 and PARSEC initializations, with a mass-independent raw-u outlier
-component. It includes full-sample MCMC commands, posterior comparison plots,
-and the limitations of the saved runs.
+Joint MCMC is an explicit follow-up for posterior intervals and independent
+[M/H]-bin comparisons: see the [T8.2 pipeline](docs/T82_JOINT_SHAPE_PIPELINE.md).
+The [T8 server guide](docs/T8_SERVER_RUN.md) covers metallicity calibration and
+lookup preparation. Legacy fixed-shape and polynomial fits remain available.
 
 ## Legacy polynomial workflow
 

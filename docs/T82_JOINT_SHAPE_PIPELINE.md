@@ -1,5 +1,9 @@
 # T8.2 independent metallicity-bin pipeline
 
+The default fitting method is the [EM-style workflow](EM_MLR_WORKFLOW.md).
+This joint MCMC pipeline is selected explicitly for posterior intervals and
+independent metallicity-bin comparisons.
+
 `src/examples/run_t82_joint_shape_mcmc.py` jointly samples the monotone MLR,
 normal-component velocity shape, and outlier fraction within each metallicity
 bin. The bins have independent parameters and no pooling. Both start labels use
