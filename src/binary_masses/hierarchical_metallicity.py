@@ -62,43 +62,6 @@ RICE_GOOD_C = 3.100
 RICE_GOOD_SUPPORT = 80.0
 RICE_OUTLIER_MU = 40.0
 RICE_OUTLIER_SIGMA = 13.0
-# Integral of the raw good basis over its support.  The T8.1 revision divides
-# the good basis by this value so each mixture component integrates to one.
-RICE_GOOD_BASIS_RAW_INTEGRAL = 0.9978600946
-# The T8.1 normalization makes f a branch probability of the DEFINED mixture;
-# calling it a physical contamination fraction additionally requires the
-# contamination and selection model to match reality.
-MIXTURE_SEMANTICS = (
-    "normalized mixture probability; physical interpretation depends on the "
-    "contamination and selection model"
-)
-
-
-def set_good_shape_constants(*, B, C, uc, A=None):
-    """Override the fixed good-basis shape constants for shape-sensitivity runs.
-
-    After T8.1 the density is normalized to unit integral, so ``A`` is absorbed
-    by the normalization and only (B, C, uc) move the shape.  The raw support
-    integral is recomputed for the new constants.  Overrides must be applied
-    before the dynamics lookup is built; lookup metadata records the constants
-    and schema validation rejects any later mismatch.
-    """
-    global RICE_GOOD_A, RICE_GOOD_B, RICE_GOOD_UC, RICE_GOOD_C, RICE_GOOD_BASIS_RAW_INTEGRAL
-    if not (B > 0 and C > 0 and uc > 0):
-        raise ValueError("Good-shape constants B, C, uc must be positive.")
-    if A is None:
-        A = RICE_GOOD_A
-    raw = quad(
-        lambda w: A * w * np.exp(-(B * w * w + np.exp((w - uc) / C))),
-        0.0, RICE_GOOD_SUPPORT, limit=400,
-    )[0]
-    if not (raw > 0 and np.isfinite(raw)):
-        raise ValueError("The overridden good basis has no usable normalization.")
-    RICE_GOOD_A = float(A)
-    RICE_GOOD_B = float(B)
-    RICE_GOOD_UC = float(uc)
-    RICE_GOOD_C = float(C)
-    RICE_GOOD_BASIS_RAW_INTEGRAL = float(raw)
 
 
 def rice_outlier_normalization(*, support_max=RICE_GOOD_SUPPORT, mu=RICE_OUTLIER_MU, sigma=RICE_OUTLIER_SIGMA):
@@ -107,15 +70,10 @@ def rice_outlier_normalization(*, support_max=RICE_GOOD_SUPPORT, mu=RICE_OUTLIER
 
 
 def rice_good_raw(tilde_u):
-    """Good-component density in ``w`` space, normalized to unit support integral (T8.1)."""
     tilde_u = np.asarray(tilde_u, dtype=np.float64)
-    return (
-        RICE_GOOD_A
-        / RICE_GOOD_BASIS_RAW_INTEGRAL
-        * tilde_u
-        * np.exp(-(RICE_GOOD_B * tilde_u**2 + np.exp((tilde_u - RICE_GOOD_UC) / RICE_GOOD_C)))
-        * ((tilde_u > 0) & (tilde_u <= RICE_GOOD_SUPPORT))
-    )
+    return RICE_GOOD_A * tilde_u * np.exp(
+        -(RICE_GOOD_B * tilde_u**2 + np.exp((tilde_u - RICE_GOOD_UC) / RICE_GOOD_C))
+    ) * ((tilde_u > 0) & (tilde_u <= RICE_GOOD_SUPPORT))
 
 
 def _rice_component_log_density(value, *, component, support_max, outlier_u0=RICE_OUTLIER_MU, outlier_sigma=RICE_OUTLIER_SIGMA):
@@ -123,7 +81,6 @@ def _rice_component_log_density(value, *, component, support_max, outlier_u0=RIC
     if component == "good":
         result = (
             np.log(RICE_GOOD_A)
-            - np.log(RICE_GOOD_BASIS_RAW_INTEGRAL)
             + np.log(np.maximum(value, np.finfo(np.float64).tiny))
             - RICE_GOOD_B * value**2
             - np.exp((value - RICE_GOOD_UC) / RICE_GOOD_C)
@@ -988,11 +945,7 @@ class HierarchicalMetallicityCalibrator:
         return log_joint
 
     def _build_numpyro_model(self):
-        import jax
-        if getattr(self, "shape_stack_mode", "smoothstep") == "direct":
-            jax.config.update("jax_enable_x64", True)
         import jax.numpy as jnp
-        from jax.scipy.special import i0e as jax_i0e
         from jax.scipy.special import logsumexp as jax_logsumexp
         from jax.scipy.special import ndtr as jax_ndtr
         import numpyro
@@ -1061,8 +1014,6 @@ class HierarchicalMetallicityCalibrator:
         if not self._data_set:
             raise ValueError("Call set_data() before run_mcmc().")
         jax = _configure_jax_gpu_fallback()
-        if getattr(self, "shape_stack_mode", "smoothstep") == "direct":
-            jax.config.update("jax_enable_x64", True)
         import jax.numpy as jnp
         from numpyro.infer import MCMC, NUTS
 
@@ -1278,16 +1229,16 @@ class DynamicsLikelihoodLookup:
             raise ValueError("Dynamics lookup does not record the required 1/s Jacobian.")
         if self.metadata.get("interpolation") != "linear_log_likelihood_in_raw_s":
             raise ValueError("Dynamics lookup interpolation convention is not the T8 convention.")
-        if self.metadata.get("normalization_version") != "finite_support_exact_t8_1":
-            raise ValueError("Dynamics lookup normalization version is not the T8.1 convention.")
+        if self.metadata.get("normalization_version") != "finite_support_v1":
+            raise ValueError("Dynamics lookup normalization version is not the T8 convention.")
         if self.metadata.get("outlier_normalization") != "Phi((U-mu)/sigma)-Phi(-mu/sigma)":
             raise ValueError("Dynamics lookup outlier normalization convention is invalid.")
         if self.metadata.get("velocity_units") != "km s^-1 sqrt(AU)":
             raise ValueError("Dynamics lookup velocity units are incompatible with T8.")
         if not np.isfinite(float(self.metadata.get("floor", np.nan))) or float(self.metadata["floor"]) <= 0:
             raise ValueError("Dynamics lookup floor must be finite and positive.")
-        if not bool(self.metadata.get("good_basis_normalized")):
-            raise ValueError("T8.1 requires the normalized good basis; rebuild lookup.")
+        if bool(self.metadata.get("good_basis_normalized")):
+            raise ValueError("T8 must retain the unnormalized raw good basis; rebuild lookup.")
         if bool(self.metadata.get("migration_applied")):
             raise ValueError("Migrated dynamics lookup tables are not accepted in T8; rebuild lookup.")
         if self.metadata.get("scale_grid") != "geometric":
@@ -1298,8 +1249,7 @@ class DynamicsLikelihoodLookup:
             raise ValueError("Dynamics lookup integration coordinate is incompatible with T8.")
         if self.metadata.get("row_order") != "row_indices order":
             raise ValueError("Dynamics lookup row-order convention is incompatible with T8.")
-        legacy_mix = "physical outlier fraction (T8.1 exact component normalization)"
-        if self.metadata.get("mixture_weight_semantics") not in (MIXTURE_SEMANTICS, legacy_mix):
+        if self.metadata.get("mixture_weight_semantics") != "basis weight; not a physical outlier fraction":
             raise ValueError("Dynamics lookup mixture-weight semantics are missing or incompatible.")
         convergence = self.metadata.get("convergence_check")
         if not isinstance(convergence, Mapping) or not bool(convergence.get("passed")):
@@ -1361,8 +1311,8 @@ class DynamicsLikelihoodLookup:
             "good_basis_quadratic": RICE_GOOD_B,
             "good_basis_turnover": RICE_GOOD_UC,
             "good_basis_scale": RICE_GOOD_C,
-            "good_basis_support_integral": 1.0,
-            "C_good": 1.0,
+            "good_basis_support_integral": 0.9978600946,
+            "C_good": 0.9978600946,
         }
         if any(
             not np.isclose(float(self.metadata.get(name, np.nan)), expected, rtol=0.0, atol=1e-12)
@@ -1570,7 +1520,6 @@ class DynamicsLikelihoodLookup:
             tilde_for_eval = jnp.clip(tilde_u, 1e-12, float(tilde_u_max))
             log_good_basis = (
                 jnp.log(RICE_GOOD_A)
-                - jnp.log(RICE_GOOD_BASIS_RAW_INTEGRAL)
                 + jnp.log(tilde_for_eval)
                 - RICE_GOOD_B * tilde_for_eval**2
                 - jnp.exp((tilde_for_eval - RICE_GOOD_UC) / RICE_GOOD_C)
@@ -1644,23 +1593,22 @@ class DynamicsLikelihoodLookup:
             "outlier_normalization": "Phi((U-mu)/sigma)-Phi(-mu/sigma)",
             "outlier_normalization_value": float(rice_outlier_normalization(support_max=tilde_u_max, mu=outlier_u0, sigma=outlier_sigma)),
             "C_out": float(rice_outlier_normalization(support_max=tilde_u_max, mu=outlier_u0, sigma=outlier_sigma)),
-            "C_good": 1.0,
-            "normalization_version": "finite_support_exact_t8_1",
-            "good_basis_normalized": True,
-            "good_basis_raw_support_integral": RICE_GOOD_BASIS_RAW_INTEGRAL,
+            "C_good": 0.9978600946,
+            "normalization_version": "finite_support_v1",
+            "good_basis_normalized": False,
             "good_basis_support": [0.0, float(tilde_u_max)],
-            "good_basis_constant": float(RICE_GOOD_A),
-            "good_basis_quadratic": float(RICE_GOOD_B),
-            "good_basis_turnover": float(RICE_GOOD_UC),
-            "good_basis_scale": float(RICE_GOOD_C),
-            "good_basis_support_integral": 1.0,
+            "good_basis_constant": 5.434e-3,
+            "good_basis_quadratic": 2.544e-3,
+            "good_basis_turnover": 35.67,
+            "good_basis_scale": 3.100,
+            "good_basis_support_integral": 0.9978600946,
             "jacobian": "1/s",
             "velocity_units": "km s^-1 sqrt(AU)",
             "scale_definition": "s=sqrt(Mtot/Msun)",
             "integration_coordinate": "v=s*tilde_u",
             "interpolation": "linear_log_likelihood_in_raw_s",
             "row_order": "row_indices order",
-            "mixture_weight_semantics": MIXTURE_SEMANTICS,
+            "mixture_weight_semantics": "basis weight; not a physical outlier fraction",
             "floor": float(floor),
             "migration_applied": False,
         }
@@ -1673,188 +1621,6 @@ class DynamicsLikelihoodLookup:
         )
         result.validate()
         return result
-
-
-class DynamicsLikelihoodShapeStack:
-    """Precomputed Rice lookups over a 3-axis grid of good-shape constants.
-
-    The axes are (log B, log uc, log C) with three nodes each.  The builder
-    iterates ``log_b`` outermost, then ``log_uc``, then ``log_c``, so stack
-    member k corresponds to flat index ``k = 9*ib + 3*iu + ic``.  The T8.2 MLR stage
-    samples (log B, log uc, log C) inside the node box and mixes the member
-    tables with trilinear weights (linear in probability), so the
-    shape-mass degeneracy enters the posterior explicitly instead of being
-    absorbed by a fixed calibration.
-    """
-
-    SCHEMA = "t8d2-rice-shapestack-v1"
-    AXIS_NAMES = ("log_b", "log_uc", "log_c")
-
-    def __init__(self, *, row_indices, sqrt_mtot_grid, log_good_stack, log_bad_stack,
-                 axes, node_constants, metadata):
-        self.row_indices = np.asarray(row_indices, dtype=np.int64)
-        self.sqrt_mtot_grid = np.asarray(sqrt_mtot_grid, dtype=np.float64)
-        self.log_good_stack = np.asarray(log_good_stack, dtype=np.float32)
-        self.log_bad_stack = np.asarray(log_bad_stack, dtype=np.float32)
-        self.axes = {name: np.asarray(values, dtype=np.float64) for name, values in axes.items()}
-        self.node_constants = node_constants
-        self.metadata = dict(metadata)
-        self.validate()
-
-    @property
-    def n_nodes(self) -> int:
-        return int(self.log_good_stack.shape[0])
-
-    def validate(self) -> None:
-        n = self.row_indices.size
-        n_s = self.sqrt_mtot_grid.size
-        for name in self.AXIS_NAMES:
-            axis = self.axes.get(name)
-            if axis is None or axis.shape != (3,) or np.any(np.diff(axis) <= 0):
-                raise ValueError(f"Shape-stack axis {name} must hold three strictly increasing nodes.")
-        expected = 27
-        if self.log_good_stack.shape != (expected, n, n_s) or self.log_bad_stack.shape != (expected, n, n_s):
-            raise ValueError(
-                "Shape-stack tables must have shape (27, n_systems, n_s); got "
-                f"{self.log_good_stack.shape} and {self.log_bad_stack.shape} for n={n}, n_s={n_s}."
-            )
-        if len(self.node_constants) != expected:
-            raise ValueError("Shape-stack node constant records do not match the 27 members.")
-
-    @classmethod
-    def build(cls, *, row_indices, u, u_sigma, axes,
-              sqrt_mtot_min=0.25, sqrt_mtot_max=2.5, sqrt_mtot_points=512,
-              velocity_quadrature_nodes=64, velocity_sigma_extent=10.0,
-              outlier_u0=40.0, outlier_sigma=13.0, system_chunk=128,
-              outlier_sensitivity=False, progress=True):
-        """Precompute the 27-member stack, restoring the ambient constants afterwards."""
-        rows = np.asarray(row_indices, dtype=np.int64)
-        axes = {name: np.asarray(values, dtype=np.float64) for name, values in axes.items()}
-        global RICE_GOOD_A, RICE_GOOD_B, RICE_GOOD_UC, RICE_GOOD_C, RICE_GOOD_BASIS_RAW_INTEGRAL
-        original = (RICE_GOOD_A, RICE_GOOD_B, RICE_GOOD_UC, RICE_GOOD_C, RICE_GOOD_BASIS_RAW_INTEGRAL)
-        log_good_stack = np.empty((27, rows.size, int(sqrt_mtot_points)), dtype=np.float32)
-        log_bad_stack = np.empty_like(log_good_stack)
-        node_constants = []
-        try:
-            k = 0
-            for lb in axes["log_b"]:
-                for luc in axes["log_uc"]:
-                    for lc in axes["log_c"]:
-                        B, C, uc = float(np.exp(lb)), float(np.exp(lc)), float(np.exp(luc))
-                        set_good_shape_constants(B=B, C=C, uc=uc)
-                        lookup = DynamicsLikelihoodLookup.precompute(
-                            row_indices=rows, u=u, u_sigma=u_sigma,
-                            sqrt_mtot_min=sqrt_mtot_min, sqrt_mtot_max=sqrt_mtot_max,
-                            sqrt_mtot_points=sqrt_mtot_points,
-                            velocity_quadrature_nodes=velocity_quadrature_nodes,
-                            velocity_sigma_extent=velocity_sigma_extent,
-                            outlier_u0=outlier_u0, outlier_sigma=outlier_sigma,
-                            outlier_sensitivity=outlier_sensitivity,
-                            system_chunk=system_chunk,
-                        )
-                        log_good_stack[k] = lookup.log_good
-                        log_bad_stack[k] = lookup.log_bad
-                        node_constants.append({
-                            "index": k, "log_b": float(lb), "log_uc": float(luc), "log_c": float(lc),
-                            "B": B, "uc": uc, "C": C,
-                            "good_basis_constant": float(RICE_GOOD_A),
-                            "raw_support_integral": float(RICE_GOOD_BASIS_RAW_INTEGRAL),
-                        })
-                        if progress:
-                            print(f"  shape stack node {k + 1}/27: B={B:.4g} uc={uc:.4g} C={C:.4g}")
-                        k += 1
-        finally:
-            (RICE_GOOD_A, RICE_GOOD_B, RICE_GOOD_UC, RICE_GOOD_C, RICE_GOOD_BASIS_RAW_INTEGRAL) = original
-        sqrt_grid = np.asarray(lookup.sqrt_mtot_grid, dtype=np.float64)
-        metadata = {
-            "model": "dynamics_likelihood_shapestack_t8",
-            "schema": cls.SCHEMA,
-            "data_digest": array_digest(rows, u, u_sigma),
-            "sqrt_mtot_min": float(sqrt_mtot_min), "sqrt_mtot_max": float(sqrt_mtot_max),
-            "sqrt_mtot_points": int(sqrt_mtot_points),
-            "velocity_quadrature_nodes": int(velocity_quadrature_nodes),
-            "velocity_sigma_extent": float(velocity_sigma_extent),
-            "outlier_u0": float(outlier_u0), "outlier_sigma": float(outlier_sigma),
-            "outlier_support": [0.0, 80.0],
-            "normalization_version": "finite_support_exact_t8_1",
-            "jacobian": "1/s",
-            "row_order": "row_indices order",
-        }
-        return cls(
-            row_indices=rows, sqrt_mtot_grid=sqrt_grid,
-            log_good_stack=log_good_stack, log_bad_stack=log_bad_stack,
-            axes=axes, node_constants=node_constants, metadata=metadata,
-        )
-
-    def validate_for(self, *, row_indices, u, u_sigma) -> None:
-        self.validate()
-        rows = np.asarray(row_indices, dtype=np.int64)
-        u = np.asarray(u, dtype=np.float64)
-        u_sigma = np.asarray(u_sigma, dtype=np.float64)
-        if not np.array_equal(rows, self.row_indices):
-            raise ValueError("Dynamics shape-stack row indices do not match the selected data.")
-        if self.metadata.get("data_digest") != array_digest(rows, u, u_sigma):
-            raise ValueError("Dynamics shape-stack u/u_sigma digest does not match the selected data.")
-
-    def save(self, path) -> Path:
-        self.validate()
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(
-            path,
-            row_indices=self.row_indices,
-            sqrt_mtot_grid=self.sqrt_mtot_grid,
-            log_good_stack=self.log_good_stack,
-            log_bad_stack=self.log_bad_stack,
-            axis_log_b=self.axes["log_b"],
-            axis_log_uc=self.axes["log_uc"],
-            axis_log_c=self.axes["log_c"],
-            node_constants_json=np.asarray(json.dumps(self.node_constants, sort_keys=True)),
-            metadata_json=np.asarray(json.dumps(dict(self.metadata), sort_keys=True)),
-        )
-        return path
-
-    @classmethod
-    def load(cls, path) -> "DynamicsLikelihoodShapeStack":
-        with np.load(path, allow_pickle=False) as saved:
-            return cls(
-                row_indices=np.asarray(saved["row_indices"], dtype=np.int64),
-                sqrt_mtot_grid=np.asarray(saved["sqrt_mtot_grid"], dtype=np.float64),
-                log_good_stack=np.asarray(saved["log_good_stack"], dtype=np.float32),
-                log_bad_stack=np.asarray(saved["log_bad_stack"], dtype=np.float32),
-                axes={
-                    "log_b": np.asarray(saved["axis_log_b"], dtype=np.float64),
-                    "log_uc": np.asarray(saved["axis_log_uc"], dtype=np.float64),
-                    "log_c": np.asarray(saved["axis_log_c"], dtype=np.float64),
-                },
-                node_constants=json.loads(str(saved["node_constants_json"])),
-                metadata=json.loads(str(saved["metadata_json"])),
-            )
-
-
-def shape_trilinear_weights_numpy(values, axes):
-    """Corner indices and trilinear weights on the 3-node shape axes (numpy)."""
-    corners = np.empty(8, dtype=np.int64)
-    weights = np.empty(8, dtype=np.float64)
-    cells, fracs = [], []
-    for name, value in zip(("log_b", "log_uc", "log_c"), values):
-        n0, n1, n2 = axes[name]
-        cell = 1 if value > n1 else 0
-        lo, hi = (n1, n2) if cell else (n0, n1)
-        t = float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
-        frac = t * t * (3.0 - 2.0 * t)
-        cells.append(cell); fracs.append(frac)
-    for c_b in (0, 1):
-        for c_u in (0, 1):
-            for c_c in (0, 1):
-                idx = 9 * (cells[0] + c_b) + 3 * (cells[1] + c_u) + (cells[2] + c_c)
-                corners[c_b * 4 + c_u * 2 + c_c] = idx
-                weights[c_b * 4 + c_u * 2 + c_c] = (
-                    (fracs[0] if c_b else 1 - fracs[0])
-                    * (fracs[1] if c_u else 1 - fracs[1])
-                    * (fracs[2] if c_c else 1 - fracs[2])
-                )
-    return corners, weights
 
 
 def _bspline_basis_numpy(values, knots, degree):
@@ -1925,36 +1691,6 @@ def _bspline_basis_jax(values, knots, degree):
     return jnp.where((xc == t[-1])[..., None], endpoint_basis, basis[..., :n])
 
 
-def lookup_interpolate(values, sqrt_grid, table):
-    """Row-wise linear interpolation of a lookup table in sqrt(total mass).
-
-    Shared by the NumPyro likelihood and diagnostics so both use the same
-    domain convention: values outside [sqrt_grid[0], sqrt_grid[-1]] return
-    ``-inf`` instead of extrapolating.
-    """
-    import jax.numpy as jnp
-
-    sqrt_grid = jnp.asarray(sqrt_grid)
-    upper = jnp.clip(jnp.searchsorted(sqrt_grid, values, side="right"), 1, sqrt_grid.size - 1)
-    lower = upper - 1
-    yl = jnp.take_along_axis(table, lower, axis=1)
-    yu = jnp.take_along_axis(table, upper, axis=1)
-    xl, xu = sqrt_grid[lower], sqrt_grid[upper]
-    out = yl + (values - xl) / (xu - xl) * (yu - yl)
-    return jnp.where((values >= sqrt_grid[0]) & (values <= sqrt_grid[-1]), out, -jnp.inf)
-
-
-def _unconstrain_chain_initial_values(model, model_args, chain_values):
-    """Convert physical chain starts to the coordinates expected by MCMC.run."""
-    import jax.numpy as jnp
-    from numpyro.infer.util import get_transforms, transform_fn
-
-    values = {name: jnp.asarray(value) for name, value in chain_values.items()}
-    first = {name: value[0] for name, value in values.items()}
-    transforms = get_transforms(model, model_args, {}, first)
-    return transform_fn(transforms, values, invert=True)
-
-
 class MonotoneTensorSplineMLR:
     """T8b hard-monotone PARSEC-relative tensor-product MLR.
 
@@ -1979,7 +1715,6 @@ class MonotoneTensorSplineMLR:
         solar_anchor_sigma: float = 0.01 / np.log(10.0),
     ):
         self.mass_surface = mass_surface
-        self.dynamics_shape_stack = None
         self.knots_x = _as_native_f64(knots_x, name="knots_x", ndim=1)
         self.knots_z = _as_native_f64(knots_z, name="knots_z", ndim=1)
         self.degree_x, self.degree_z = int(degree_x), int(degree_z)
@@ -2012,17 +1747,6 @@ class MonotoneTensorSplineMLR:
         self.n_params = 1 + (self.K_Z - 1) + (self.K_x - 1) + (self.K_x - 1) * (self.K_Z - 1) + 3
         self.sampler = None
         self.posterior_samples = None
-        # Shape-stack runs retain the historical smoothstep interpolator by
-        # default for reproducibility.  Formal joint-shape runs may opt into
-        # the continuous Rice evaluator after validating its numerical cost.
-        self.shape_stack_mode = "smoothstep"
-        self.raw_u_outlier_log_likelihood = None
-        # Piecewise velocity integration: this is the GL order within each
-        # interval, not the total node count.  Shape cutoffs can move far
-        # into a many-sigma Rice tail, so a single local window is not enough.
-        self.direct_velocity_quadrature_nodes = 32
-        self.direct_velocity_sigma_extent = 14.0
-        self.direct_shape_chunk = 32
         self._data_set = False
 
     @property
@@ -2157,13 +1881,6 @@ class MonotoneTensorSplineMLR:
             "log_lambda_z": float(np.log(lambda_z)),
             "f_outlier": 0.2,
         }
-        if self.dynamics_shape_stack is not None:
-            axes = self.dynamics_shape_stack.axes
-            params.update({
-                "log_good_shape_b": float(np.mean(axes["log_b"])),
-                "log_good_shape_uc": float(np.mean(axes["log_uc"])),
-                "log_good_shape_c": float(np.mean(axes["log_c"])),
-            })
         # Invert each diagonal recursion against the target, using the already
         # reconstructed neighbours as its exact feasible bounds.
         for total in range(2, self.K_x + self.K_Z - 1):
@@ -2282,16 +1999,11 @@ class MonotoneTensorSplineMLR:
     def correction_log10(self, absg, mh, params):
         return self.g_from_raw(absg, mh, params) - self.g_parsec_projection(absg, mh)
 
-    def set_data(self, *, row_indices, u, u_sigma, absg, metallicity_grid,
-                 dynamics_lookup=None, dynamics_shape_stack=None):
+    def set_data(self, *, row_indices, u, u_sigma, absg, metallicity_grid, dynamics_lookup):
         metallicity_grid.validate()
         posterior_model = str(metallicity_grid.metadata.get("model", ""))
         if not (posterior_model.startswith("t8") or "_t8_" in posterior_model):
             raise ValueError("The MLR stage requires a T8 metallicity posterior; rebuild calibration.")
-        if (dynamics_lookup is None) == (dynamics_shape_stack is None):
-            raise ValueError(
-                "Provide exactly one dynamics source: a fixed lookup or a shape stack."
-            )
         self.row_indices = np.asarray(row_indices, dtype=np.int64)
         if not np.array_equal(self.row_indices, metallicity_grid.row_indices):
             raise ValueError("Stage-two row indices do not match the metallicity posterior file.")
@@ -2304,19 +2016,11 @@ class MonotoneTensorSplineMLR:
             raise ValueError("Stage-two arrays must contain only finite values.")
         if np.any(self.u <= 0) or np.any(self.u_sigma <= 0):
             raise ValueError("u and u_sigma must be strictly positive.")
-        self.dynamics_shape_stack = dynamics_shape_stack
-        if dynamics_shape_stack is not None:
-            dynamics_shape_stack.validate_for(row_indices=self.row_indices, u=self.u, u_sigma=self.u_sigma)
-            self.dynamics_lookup = None
-            self.sqrt_mtot_grid = np.asarray(dynamics_shape_stack.sqrt_mtot_grid, dtype=np.float64)
-            self.log_good_lookup = None
-            self.log_bad_lookup = None
-        else:
-            dynamics_lookup.validate_for(row_indices=self.row_indices, u=self.u, u_sigma=self.u_sigma)
-            self.dynamics_lookup = dynamics_lookup
-            self.sqrt_mtot_grid = np.asarray(dynamics_lookup.sqrt_mtot_grid, dtype=np.float64)
-            self.log_good_lookup = np.asarray(dynamics_lookup.log_good, dtype=np.float32)
-            self.log_bad_lookup = np.asarray(dynamics_lookup.log_bad, dtype=np.float32)
+        dynamics_lookup.validate_for(row_indices=self.row_indices, u=self.u, u_sigma=self.u_sigma)
+        self.dynamics_lookup = dynamics_lookup
+        self.sqrt_mtot_grid = np.asarray(dynamics_lookup.sqrt_mtot_grid, dtype=np.float64)
+        self.log_good_lookup = np.asarray(dynamics_lookup.log_good, dtype=np.float32)
+        self.log_bad_lookup = np.asarray(dynamics_lookup.log_bad, dtype=np.float32)
         self.z_grid = np.asarray(metallicity_grid.z_grid, dtype=np.float64)
         self.z_probabilities = np.asarray(metallicity_grid.probabilities, dtype=np.float64)
         if self.z_probabilities.shape != (n, self.z_grid.size):
@@ -2326,11 +2030,7 @@ class MonotoneTensorSplineMLR:
         self._data_set = True
 
     def _build_numpyro_model(self):
-        import jax
-        if getattr(self, "shape_stack_mode", "smoothstep") == "direct":
-            jax.config.update("jax_enable_x64", True)
         import jax.numpy as jnp
-        from jax.scipy.special import i0e as jax_i0e
         from jax.scipy.special import logsumexp as jax_logsumexp
         import numpyro
         import numpyro.distributions as dist
@@ -2352,239 +2052,15 @@ class MonotoneTensorSplineMLR:
         )
 
         def interp(values, table):
-            return lookup_interpolate(values, sqrt_grid, table)
-
-        if self.dynamics_shape_stack is not None:
-            # Static prior bounds as python floats: numpyro re-traces the model
-            # inside the NUTS scan loop, and float() on jnp arrays is not
-            # traceable even when the array is a loop-invariant constant.
-            stack_axes = {
-                name: np.asarray(self.dynamics_shape_stack.axes[name], dtype=np.float64)
-                for name in DynamicsLikelihoodShapeStack.AXIS_NAMES
-            }
-            stack_prior_bounds = {
-                name: (float(axis[0]), float(axis[-1]))
-                for name, axis in stack_axes.items()
-            }
-
-            direct_mode = getattr(self, "shape_stack_mode", "smoothstep") == "direct"
-            if direct_mode:
-                if self.raw_u_outlier_log_likelihood is None:
-                    raise ValueError(
-                        "Direct shape evaluation requires raw-u outlier log likelihoods."
-                    )
-                if np.asarray(self.raw_u_outlier_log_likelihood).shape != self.u.shape:
-                    raise ValueError(
-                        "raw_u_outlier_log_likelihood must have one value per system."
-                    )
-                gl_x_np, gl_w_np = np.polynomial.legendre.leggauss(
-                    int(self.direct_velocity_quadrature_nodes)
-                )
-                norm_x_np, norm_w_np = np.polynomial.legendre.leggauss(256)
-                norm_x_np = 0.5 * (norm_x_np + 1.0) * RICE_GOOD_SUPPORT
-                norm_w_np = 0.5 * RICE_GOOD_SUPPORT * norm_w_np
-                gl_x = jnp.asarray(gl_x_np, dtype=jnp.float64)
-                gl_w = jnp.asarray(gl_w_np, dtype=jnp.float64)
-                norm_x = jnp.asarray(norm_x_np, dtype=jnp.float64)
-                norm_w = jnp.asarray(norm_w_np, dtype=jnp.float64)
-                shape_offsets = jnp.asarray(
-                    np.array([-8, -4, -2, 0, 2, 4, 8], dtype=np.float64)
-                )
-                rice_offsets = jnp.asarray(
-                    np.array([-30, -14, -10, -6, -3, 0, 3, 6, 10, 14, 30], dtype=np.float64)
-                )
-                u_observed = jnp.asarray(self.u, dtype=jnp.float64)
-                u_sigma = jnp.asarray(self.u_sigma, dtype=jnp.float64)
-                direct_chunk = int(self.direct_shape_chunk)
-                n_systems = int(self.u.size)
-                n_pad = int(np.ceil(n_systems / direct_chunk) * direct_chunk)
-
-                def direct_shape_tables(log_b, log_uc, log_c, sqrt_mtot):
-                    """Evaluate the Rice-convolved good density continuously.
-
-                    The mass-scale and velocity quadratures are chunked over
-                    systems so the full formal sample does not materialize a
-                    (system, metallicity, velocity-node) temporary at once.
-                    The raw-u outlier component is supplied independently and
-                    remains constant across mass and metallicity.
-                    """
-                    log_norm = jax_logsumexp(
-                        jnp.log(float(RICE_GOOD_A))
-                        + jnp.log(norm_w)
-                        + jnp.log(norm_x)
-                        - jnp.exp(log_b) * norm_x**2
-                        - jnp.exp((norm_x - jnp.exp(log_uc)) / jnp.exp(log_c))
-                    )
-
-                    sqrt_pad = jnp.pad(
-                        sqrt_mtot,
-                        ((0, n_pad - n_systems), (0, 0)),
-                        constant_values=1.0,
-                    )
-                    u_pad = jnp.pad(
-                        u_observed,
-                        (0, n_pad - n_systems),
-                        constant_values=1.0,
-                    )
-                    sigma_pad = jnp.pad(
-                        u_sigma,
-                        (0, n_pad - n_systems),
-                        constant_values=1.0,
-                    )
-                    s_chunks = sqrt_pad.reshape((-1, direct_chunk, sqrt_mtot.shape[1]))
-                    u_chunks = u_pad.reshape((-1, direct_chunk))
-                    sigma_chunks = sigma_pad.reshape((-1, direct_chunk))
-
-                    def integrate_chunk(chunk_args):
-                        s_chunk, u_chunk, sigma_chunk = chunk_args
-                        upper = s_chunk * float(RICE_GOOD_SUPPORT)
-                        shape_boundaries = s_chunk[..., None] * (
-                            jnp.exp(log_uc) + jnp.exp(log_c) * shape_offsets
-                        )
-                        rice_boundaries = (
-                            u_chunk[:, None, None]
-                            + sigma_chunk[:, None, None] * rice_offsets
-                        )
-                        rice_boundaries = jnp.broadcast_to(
-                            rice_boundaries,
-                            (s_chunk.shape[0], s_chunk.shape[1], rice_offsets.size),
-                        )
-                        # Clipping several candidate boundaries to 0 or the
-                        # support edge creates exact ties.  ``sort`` has
-                        # undefined derivatives at those ties, which would
-                        # turn an otherwise finite NUTS gradient into NaNs.
-                        # Keep exact endpoints separate and give only the
-                        # interior candidates a sub-micro-unit deterministic
-                        # rank offset.  This is far below the quadrature
-                        # accuracy and leaves the integral support unchanged.
-                        interior = jnp.concatenate(
-                            (shape_boundaries, rice_boundaries), axis=-1
-                        )
-                        n_interior = int(interior.shape[-1])
-                        boundary_eps = 1e-8
-                        safe_upper = upper - boundary_eps * (n_interior + 1)
-                        interior = jnp.clip(
-                            interior, boundary_eps, safe_upper[..., None]
-                        )
-                        interior += boundary_eps * jnp.arange(
-                            n_interior, dtype=jnp.float64
-                        )
-                        boundaries = jnp.concatenate(
-                            (
-                                jnp.zeros_like(upper[..., None]),
-                                jnp.sort(interior, axis=-1),
-                                upper[..., None],
-                            ),
-                            axis=-1,
-                        )
-                        lower = boundaries[..., :-1]
-                        upper_interval = boundaries[..., 1:]
-                        midpoint = 0.5 * (lower + upper_interval)
-                        half_width = 0.5 * (upper_interval - lower)
-                        velocity = midpoint[..., None] + half_width[..., None] * gl_x
-                        observed = u_chunk[:, None, None, None]
-                        sigma = sigma_chunk[:, None, None, None]
-                        argument = observed * velocity / sigma**2
-                        log_rice = (
-                            jnp.log(observed)
-                            - 2.0 * jnp.log(sigma)
-                            - (observed - velocity) ** 2 / (2.0 * sigma**2)
-                            + jnp.log(jax_i0e(argument) + 1e-30)
-                        )
-                        scale = s_chunk[..., None, None]
-                        tilde_u = velocity / scale
-                        tilde_eval = jnp.clip(tilde_u, 1e-12, float(RICE_GOOD_SUPPORT))
-                        log_good = (
-                            jnp.log(float(RICE_GOOD_A))
-                            - log_norm
-                            + jnp.log(tilde_eval)
-                            - jnp.exp(log_b) * tilde_eval**2
-                            - jnp.exp((tilde_eval - jnp.exp(log_uc)) / jnp.exp(log_c))
-                            - jnp.log(scale)
-                        )
-                        log_quad = (
-                            jnp.log(jnp.maximum(half_width, 1e-300))[..., None]
-                            + jnp.log(gl_w)
-                        )
-                        valid = (tilde_u > 0.0) & (tilde_u <= float(RICE_GOOD_SUPPORT))
-                        log_good = jnp.where(valid, log_good, -jnp.inf)
-                        log_interval = jax_logsumexp(
-                            log_rice + log_good + log_quad, axis=-1
-                        )
-                        return jax_logsumexp(log_interval, axis=-1)
-
-                    direct_good = jax.lax.map(
-                        integrate_chunk, (s_chunks, u_chunks, sigma_chunks)
-                    ).reshape((n_pad, sqrt_mtot.shape[1]))[:n_systems]
-                    direct_bad = jnp.asarray(
-                        self.raw_u_outlier_log_likelihood, dtype=jnp.float64
-                    )[:, None] + jnp.zeros_like(direct_good)
-                    return direct_good, direct_bad
-
-            def effective_shape_tables(log_b, log_uc, log_c, stack_good, stack_bad, sqrt_mtot):
-                """Mix the 27 member tables at sampled (log B, log uc, log C).
-
-                Each corner table is first interpolated at the required
-                sqrt(mtot) (n x n_z points), and only the eight n x n_z
-                results are mixed, so the 27 x n x n_s stack is never touched
-                per draw.  Smoothstep fractions keep the weights C1 across
-                cell boundaries; at the nodes the mix still reproduces the
-                member tables exactly.
-                """
-                fracs, cells = [], []
-                for axis_value, name in zip((log_b, log_uc, log_c), DynamicsLikelihoodShapeStack.AXIS_NAMES):
-                    n0, n1, n2 = (jnp.asarray(v) for v in stack_axes[name])
-                    cell = (axis_value > n1).astype(jnp.int32)
-                    lo = jnp.where(cell == 1, n1, n0)
-                    hi = jnp.where(cell == 1, n2, n1)
-                    t = jnp.clip((axis_value - lo) / (hi - lo), 0.0, 1.0)
-                    if getattr(self, "shape_stack_mode", "smoothstep") == "linear":
-                        fracs.append(t)
-                    else:
-                        fracs.append(t * t * (3.0 - 2.0 * t))
-                    cells.append(cell)
-                corner_log_weights = []
-                corner_indices = []
-                for c_b in (0, 1):
-                    for c_u in (0, 1):
-                        for c_c in (0, 1):
-                            corner_indices.append(
-                                9 * (cells[0] + c_b) + 3 * (cells[1] + c_u) + (cells[2] + c_c)
-                            )
-                            w = (
-                                (fracs[0] if c_b else 1.0 - fracs[0])
-                                * (fracs[1] if c_u else 1.0 - fracs[1])
-                                * (fracs[2] if c_c else 1.0 - fracs[2])
-                            )
-                            corner_log_weights.append(jnp.log(jnp.maximum(w, 1e-30)))
-                indices = jnp.asarray(jnp.stack(corner_indices))
-                log_w = jnp.asarray(jnp.stack(corner_log_weights))[:, None, None]
-                good = jax_logsumexp(
-                    log_w + jnp.stack([lookup_interpolate(sqrt_mtot, sqrt_grid, stack_good[i]) for i in indices]), axis=0
-                )
-                bad = jax_logsumexp(
-                    log_w + jnp.stack([lookup_interpolate(sqrt_mtot, sqrt_grid, stack_bad[i]) for i in indices]), axis=0
-                )
-                if self.raw_u_outlier_log_likelihood is not None:
-                    bad = jnp.asarray(
-                        self.raw_u_outlier_log_likelihood, dtype=jnp.float64
-                    )[:, None] + jnp.zeros_like(good)
-                return good, bad
+            upper = jnp.clip(jnp.searchsorted(sqrt_grid, values, side="right"), 1, sqrt_grid.size - 1)
+            lower = upper - 1
+            yl = jnp.take_along_axis(table, lower, axis=1)
+            yu = jnp.take_along_axis(table, upper, axis=1)
+            xl, xu = sqrt_grid[lower], sqrt_grid[upper]
+            out = yl + (values - xl) / (xu - xl) * (yu - yl)
+            return jnp.where((values >= sqrt_grid[0]) & (values <= sqrt_grid[-1]), out, -jnp.inf)
 
         def model(absg, z_probabilities, log_good_lookup, log_bad_lookup):
-            if self.dynamics_shape_stack is not None:
-                log_b = numpyro.sample(
-                    "log_good_shape_b", dist.Uniform(*stack_prior_bounds["log_b"])
-                )
-                log_uc = numpyro.sample(
-                    "log_good_shape_uc", dist.Uniform(*stack_prior_bounds["log_uc"])
-                )
-                log_c = numpyro.sample(
-                    "log_good_shape_c", dist.Uniform(*stack_prior_bounds["log_c"])
-                )
-                numpyro.deterministic("good_shape_B", jnp.exp(log_b))
-                numpyro.deterministic("good_shape_uc", jnp.exp(log_uc))
-                numpyro.deterministic("good_shape_C", jnp.exp(log_c))
             c0 = numpyro.sample("c0", dist.Normal(float(self.parsec_projection[0, 0]), 0.10))
             a = numpyro.sample("a", dist.Normal(0.0, 1.0).expand([self.K_Z - 1]))
             b = numpyro.sample("b", dist.Normal(0.0, 1.0).expand([self.K_x - 1]))
@@ -2615,18 +2091,8 @@ class MonotoneTensorSplineMLR:
             m1 = jnp.power(10.0, gp1)
             m2 = jnp.power(10.0, gp2)
             sqrt_mtot = jnp.sqrt(jnp.maximum(m1 + m2, 1e-12))
-            if self.dynamics_shape_stack is not None:
-                if direct_mode:
-                    log_good, log_bad = direct_shape_tables(
-                        log_b, log_uc, log_c, sqrt_mtot
-                    )
-                else:
-                    log_good, log_bad = effective_shape_tables(
-                        log_b, log_uc, log_c, log_good_lookup, log_bad_lookup, sqrt_mtot
-                    )
-            else:
-                log_good = interp(sqrt_mtot, log_good_lookup)
-                log_bad = interp(sqrt_mtot, log_bad_lookup)
+            log_good = interp(sqrt_mtot, log_good_lookup)
+            log_bad = interp(sqrt_mtot, log_bad_lookup)
             log_conditional = jnp.logaddexp(jnp.log1p(-f_outlier) + log_good, jnp.log(f_outlier) + log_bad)
             numpyro.factor("dynamics", jnp.sum(jax_logsumexp(jnp.log(jnp.maximum(z_probabilities, 1e-30)) + log_conditional, axis=1)))
             solar_g = jnp.einsum("i,h,ih->", anchor_bx, anchor_bz, theta)
@@ -2642,30 +2108,21 @@ class MonotoneTensorSplineMLR:
     def baseline_dynamics_log_likelihood(self, f_outlier=0.2):
         if not self._data_set:
             raise ValueError("Call set_data() before evaluating the baseline likelihood.")
-        if self.dynamics_shape_stack is not None:
-            raise ValueError("Baseline lookup likelihood is not defined for shape-stack runs.")
         mh = self.z_grid[None, :]
         sqrt_mtot = np.sqrt(self.mass_surface.mass_from_absg_mh(self.absg[:, 0, None], mh) + self.mass_surface.mass_from_absg_mh(self.absg[:, 1, None], mh))
         good = self.dynamics_lookup.interpolate_numpy(sqrt_mtot, component="good")
         bad = self.dynamics_lookup.interpolate_numpy(sqrt_mtot, component="bad")
         return marginalize_dynamics(np.logaddexp(np.log1p(-f_outlier) + good, np.log(f_outlier) + bad), self.z_probabilities)
 
-    def run_mcmc(self, *, num_warmup=1000, num_samples=1000, num_chains=4, seed=43,
-                 progress_bar=True, initial_values=None, initial_jitter_scale=0.0,
-                 **nuts_kwargs):
+    def run_mcmc(self, *, num_warmup=1000, num_samples=1000, num_chains=4, seed=43, progress_bar=True, **nuts_kwargs):
         if not self._data_set:
             raise ValueError("Call set_data() before run_mcmc().")
         jax = _configure_jax_gpu_fallback()
-        if getattr(self, "shape_stack_mode", "smoothstep") == "direct":
-            jax.config.update("jax_enable_x64", True)
         import jax.numpy as jnp
         from numpyro.infer import MCMC, NUTS
         from numpyro.infer.initialization import init_to_value
         from numpyro.infer.util import log_density
         init_numpy = self.initial_raw_parameters()
-        if initial_values is not None:
-            for name, value in dict(initial_values).items():
-                init_numpy[name] = np.asarray(value, dtype=np.float64)
         init = {name: jnp.asarray(value) for name, value in init_numpy.items()}
         initial_theta = self.theta_from_raw(init_numpy)
         initial_g1 = self.g_from_theta(
@@ -2683,18 +2140,10 @@ class MonotoneTensorSplineMLR:
                 f"lookup=[{lookup_min:.6g},{lookup_max:.6g}]. Rebuild a wider lookup."
             )
         model = self._build_numpyro_model()
-        if self.dynamics_shape_stack is not None:
-            model_tables_args = (
-                jnp.asarray(self.dynamics_shape_stack.log_good_stack),
-                jnp.asarray(self.dynamics_shape_stack.log_bad_stack),
-            )
-        else:
-            model_tables_args = (
-                jnp.asarray(self.log_good_lookup), jnp.asarray(self.log_bad_lookup),
-            )
         model_args = (
             jnp.asarray(self.absg), jnp.asarray(self.z_probabilities),
-        ) + model_tables_args
+            jnp.asarray(self.log_good_lookup), jnp.asarray(self.log_bad_lookup),
+        )
 
         def initial_potential(parameters):
             return -log_density(model, model_args, {}, parameters)[0]
@@ -2719,56 +2168,9 @@ class MonotoneTensorSplineMLR:
             "theta_minus_projection_rms_dex": float(np.sqrt(np.mean(projection_delta**2))),
             "theta_minus_projection_max_abs_dex": float(np.max(np.abs(projection_delta))),
         }
-        chain_init = None
-        if float(initial_jitter_scale) > 0.0 and int(num_chains) > 1:
-            # Start each chain in a nearby, legal interior point.  This keeps
-            # the two requested starts scientifically identical while making
-            # chain mixing diagnostics informative from the first transition.
-            rng = np.random.default_rng(int(seed) + 91357)
-            chain_init = {
-                name: np.repeat(np.asarray(value, dtype=np.float64)[None, ...], int(num_chains), axis=0)
-                for name, value in init_numpy.items()
-            }
-            shape_bounds = None
-            if self.dynamics_shape_stack is not None:
-                shape_bounds = {
-                    name: (float(axis[0]), float(axis[-1]))
-                    for name, axis in self.dynamics_shape_stack.axes.items()
-                }
-            for chain in range(int(num_chains)):
-                for name, value in chain_init.items():
-                    scale = float(initial_jitter_scale)
-                    if name == "c0":
-                        scale *= 0.5
-                    elif name == "f_outlier":
-                        scale *= 0.5
-                    value[chain] += rng.normal(0.0, scale, size=value[chain].shape)
-                chain_init["f_outlier"][chain] = np.clip(
-                    chain_init["f_outlier"][chain], 1e-4, 1.0 - 1e-4
-                )
-                if shape_bounds is not None:
-                    for name, (lower, upper) in shape_bounds.items():
-                        parameter_name = {
-                            "log_b": "log_good_shape_b",
-                            "log_uc": "log_good_shape_uc",
-                            "log_c": "log_good_shape_c",
-                        }[name]
-                        chain_init[parameter_name][chain] = np.clip(
-                            chain_init[parameter_name][chain],
-                            lower + 1e-6, upper - 1e-6
-                        )
-            init_params = _unconstrain_chain_initial_values(model, model_args, chain_init)
-        else:
-            init_params = None
         strategy = nuts_kwargs.pop("init_strategy", init_to_value(values=init))
-        kernel_kwargs = dict(nuts_kwargs)
-        if init_params is None:
-            kernel_kwargs["init_strategy"] = strategy
-        mcmc = MCMC(NUTS(model, **kernel_kwargs), num_warmup=int(num_warmup), num_samples=int(num_samples), num_chains=int(num_chains), progress_bar=bool(progress_bar))
-        run_kwargs = {"extra_fields": ("diverging", "energy", "potential_energy", "num_steps", "accept_prob")}
-        if init_params is not None:
-            run_kwargs["init_params"] = init_params
-        mcmc.run(jax.random.PRNGKey(int(seed)), *model_args, **run_kwargs)
+        mcmc = MCMC(NUTS(model, init_strategy=strategy, **nuts_kwargs), num_warmup=int(num_warmup), num_samples=int(num_samples), num_chains=int(num_chains), progress_bar=bool(progress_bar))
+        mcmc.run(jax.random.PRNGKey(int(seed)), jnp.asarray(self.absg), jnp.asarray(self.z_probabilities), jnp.asarray(self.log_good_lookup), jnp.asarray(self.log_bad_lookup), extra_fields=("diverging", "energy", "potential_energy", "num_steps", "accept_prob"))
         self.sampler = mcmc
         self.posterior_samples = {name: np.asarray(values) for name, values in mcmc.get_samples().items()}
         return mcmc

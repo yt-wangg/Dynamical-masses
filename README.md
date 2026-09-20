@@ -1,31 +1,14 @@
 # Bayesian Binary Masses
 
-The default MLR method is **EM-style alternating conditional MAP**, run with
-[`scripts/run_mlr.sh`](scripts/run_mlr.sh). It alternates updates to the MLR
-and the normal velocity distribution, with a mass-independent raw-u outlier
-component. See [the default EM workflow](docs/EM_MLR_WORKFLOW.md) for inputs,
-execution, outputs, and limitations.
-
-The MLR uses the T8 monotone PARSEC-relative surface and the saved shared
-metallicity posterior for each binary. The current default runs both default-
-shape and S2-shape starts on the same 2000-system subset. The initial MLR is
-shared and comes from the supplied baseline posterior.
-
-Joint MCMC is an explicit follow-up for posterior intervals and independent
-[M/H]-bin comparisons: see the [T8.2 pipeline](docs/T82_JOINT_SHAPE_PIPELINE.md).
-The [T8 server guide](docs/T8_SERVER_RUN.md) covers metallicity calibration and
-lookup preparation. Legacy fixed-shape and polynomial fits remain available.
-
-## Legacy polynomial workflow
-
-The instructions below describe
+The main entry point of this repository is
 [`src/examples/run_on_data_feh_global.py`](src/examples/run_on_data_feh_global.py).
 It fits a mass–absolute-magnitude relation with continuous metallicity
 `[Fe/H]` to real Gaia wide-binary data, using NUTS sampling with JAX and
 NumPyro.
 
-This polynomial model allows unrestricted metallicity corrections. Its results
-and the T7 three-knot fits are separate from the monotone T8 inference.
+This document focuses on getting that script running successfully. Other
+examples and legacy models in the repository are not part of the current
+primary workflow.
 
 ## Model overview
 
