@@ -1,5 +1,25 @@
 # Bayesian Binary Masses
 
+## Post-`7bc861a` T8 model evolution
+
+The T8 dynamical-MLR work has been consolidated relative to
+`7bc861a2f004db9caec0527410c1ef732bc113a2`. The core T8 likelihood now uses
+a **mass-independent raw-`u` outlier component** by default, while the legacy
+mass-coupled `u/sqrt(Mtot)` outlier remains available explicitly for
+reproduction and sensitivity tests.
+
+The repository also retains the diagnostic and sensitivity paths that motivated
+the change: the (M_G)-window mass-score diagnostic, fixed velocity-shape
+sensitivity fits, joint good-shape + MLR MCMC, metallicity-bin comparisons, and
+alternating conditional-MAP/EM-style runs from different initial shapes. The
+alternating-MAP workflow is an optimization/sensitivity experiment, not the sole
+default scientific inference method.
+
+See
+[`docs/POST_7BC_MODEL_IMPROVEMENTS.md`](docs/POST_7BC_MODEL_IMPROVEMENTS.md)
+for the scientific motivation, correctness fixes, experiment sequence, and
+interpretation of the post-`7bc861a` changes.
+
 The main entry point of this repository is
 [`src/examples/run_on_data_feh_global.py`](src/examples/run_on_data_feh_global.py).
 It fits a mass–absolute-magnitude relation with continuous metallicity
