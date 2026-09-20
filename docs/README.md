@@ -1,8 +1,8 @@
 # Documentation
 
-The current primary workflow is
-[`src/examples/run_on_data_feh_global.py`](../src/examples/run_on_data_feh_global.py).
+The default method is the [EM-style MLR workflow](EM_MLR_WORKFLOW.md), launched
+with [`scripts/run_mlr.sh`](../scripts/run_mlr.sh).
 
-Installation, input data, GPU/CPU selection, execution, configuration, and
-output documentation are maintained in the
-[repository README](../README.md).
+- [T8 calibration and lookup preparation](T8_SERVER_RUN.md)
+- [Joint MCMC and independent metallicity-bin fits](T82_JOINT_SHAPE_PIPELINE.md)
+- [Repository overview and legacy methods](../README.md)

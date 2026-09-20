@@ -63,7 +63,7 @@ T8_SHAPESTACK_NAME = "dynamics_likelihood_shapestack_t8.npz"
 # sample-calibrated fit, each with margin.
 T82_SHAPE_AXES = {
     "log_b": (np.log(0.7e-3), np.log(1.52e-3), np.log(3.3e-3)),
-    "log_uc": (np.log(33.0), np.log(38.1), np.log(44.0)),
+    "log_uc": (np.log(24.0), np.log(32.5), np.log(44.0)),
     "log_c": (np.log(2.5), np.log(5.81), np.log(13.5)),
 }
 T8_MLR_NAME = "mlr_mcmc_t8.npz"
