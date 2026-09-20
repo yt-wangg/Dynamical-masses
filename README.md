@@ -1,293 +1,439 @@
 # Bayesian Binary Masses
 
-## Post-`7bc861a` T8 model evolution
+This repository infers stellar mass--luminosity relations (MLRs) from wide
+binaries using a hierarchical metallicity model and a Rice-convolved dynamical
+likelihood.
 
-The T8 dynamical-MLR work has been consolidated relative to
-`7bc861a2f004db9caec0527410c1ef732bc113a2`. The core T8 likelihood now uses
-a **mass-independent raw-`u` outlier component** by default, while the legacy
-mass-coupled `u/sqrt(Mtot)` outlier remains available explicitly for
-reproduction and sensitivity tests.
+The current primary workflow is the T8 pipeline implemented in
+[`src/examples/run_hierarchical_metallicity_test.py`](src/examples/run_hierarchical_metallicity_test.py).
+The older polynomial workflow in
+[`src/examples/run_on_data_feh_global.py`](src/examples/run_on_data_feh_global.py)
+is retained for reference and legacy comparisons, but it is no longer the main
+MLR workflow.
 
-The repository also retains the diagnostic and sensitivity paths that motivated
-the change: the (M_G)-window mass-score diagnostic, fixed velocity-shape
-sensitivity fits, joint good-shape + MLR MCMC, metallicity-bin comparisons, and
-alternating conditional-MAP/EM-style runs from different initial shapes. The
-alternating-MAP workflow is an optimization/sensitivity experiment, not the sole
-default scientific inference method.
+## Current model state
+
+Relative to the `7bc861a` baseline, the current T8 model includes several
+important changes:
+
+- the default outlier likelihood is defined directly in observed raw `u`, so
+  it is independent of inferred binary mass;
+- the legacy outlier defined in `u / sqrt(Mtot)` is retained explicitly for
+  reproduction and sensitivity tests;
+- both mixture components use exact finite-support normalization and consistent
+  Jacobian accounting;
+- the dynamics lookup has strict domain behavior rather than silent clamping;
+- posterior diagnostics use all chains and include finite-value and
+  consistency checks;
+- the 27-node good-shape stack uses the corrected flat index
+  `k = 9*i_B + 3*i_uc + i_C`;
+- NumPyro initial values are transformed correctly into unconstrained sampler
+  coordinates;
+- a direct continuous Rice-quadrature path is available to validate
+  interpolation-based shape calculations.
+
+The repository also retains the experiments that motivated these changes:
+(M_G)-window mass-score diagnostics, legacy-vs-raw-`u` outlier comparisons,
+fixed good-shape sensitivity tests, joint good-shape + MLR MCMC, independent
+metallicity-bin fits, and alternating conditional-MAP / EM-style optimization
+from different starting shapes.
+
+For the scientific history and interpretation of these changes, see
+[`docs/POST_7BC_MODEL_IMPROVEMENTS.md`](docs/POST_7BC_MODEL_IMPROVEMENTS.md).
+
+## Main MLR workflow
+
+The standard T8 calculation has three restartable stages:
+
+1. metallicity calibration;
+2. dynamical Rice-likelihood lookup;
+3. monotone PARSEC-relative MLR inference.
+
+All three stages are handled by:
+
+`src/examples/run_hierarchical_metallicity_test.py`
+
+The default MLR stage uses the mass-independent raw-`u` outlier model.
+
+### Environment
+
+A typical setup is:
+
+```bash
+conda activate dyn
+python -m pip install -e .
+python -c 'import numpy, jax, numpyro; print(jax.devices())'
+```
+
+Set the input FITS file and output directory:
+
+```bash
+export DATA=data/jd_msms_single_bic_1kpc_filtered_cmdcut_cutb_jcaps_err_mhcal_good.fits
+export OUT=results/hierarchical_metallicity_t8_formal
+```
+
+The T8 input table is expected to contain the uncorrected JCAPS metallicities
+and errors used by the hierarchical calibration, including
+`feh_jcaps_1`, `feh_jcaps_2`, `jc_sigma_m_h_1`, and
+`jc_sigma_m_h_2`.
+
+## 1. Smoke test
+
+Before a formal run, test the complete pipeline on a tiny mock sample:
+
+```bash
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage all \
+  --mock \
+  --mock-systems 32 \
+  --quick \
+  --output-dir results/t8_mock
+```
+
+This is a pipeline check, not a convergence test.
+
+Useful focused checks are:
+
+```bash
+python -m py_compile \
+  src/binary_masses/hierarchical_metallicity.py \
+  src/examples/run_hierarchical_metallicity_test.py
+
+python test/test_hierarchical_metallicity.py
+python test/test_t8_1_normalization.py
+python test/test_t8_2_shape_stack.py
+python test/test_raw_u_outlier.py
+```
+
+## 2. Metallicity calibration
+
+The first stage fits the hierarchical metallicity model and writes the
+81-node latent-metallicity posterior for each binary:
+
+```bash
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage calibration \
+  --data "$DATA" \
+  --output-dir "$OUT"
+```
+
+Important output:
+
+`$OUT/latent_metallicity_weights_t8.npz`
+
+This file is reused by the lookup and MLR stages.
+
+## 3. Build the dynamical likelihood lookup
+
+Build the fixed-good-shape Rice lookup:
+
+```bash
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage lookup \
+  --data "$DATA" \
+  --output-dir "$OUT"
+```
+
+Important output:
+
+`$OUT/dynamics_likelihood_lookup_t8.npz`
+
+The lookup stage performs numerical convergence checks before accepting the
+table. If the precision gate fails, inspect the saved convergence report and
+increase the velocity quadrature range/nodes rather than bypassing the check.
+
+## 4. Fit the standard MLR
+
+Run the hard-monotone PARSEC-relative MLR with the current default
+mass-independent raw-`u` outlier model:
+
+```bash
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage mlr \
+  --data "$DATA" \
+  --output-dir "$OUT" \
+  --outlier-coordinate raw_u
+```
+
+`--outlier-coordinate raw_u` is already the default; it is shown explicitly
+here so that the model choice is visible in production command logs.
+
+The main MLR outputs include:
+
+- `mlr_mcmc_t8.npz`: grouped posterior samples;
+- `mlr_summary_t8.csv`: posterior parameter summary;
+- `mlr_diagnostics_t8.json`: sampler diagnostics;
+- `mlr_derived_grid_t8.npz` and `mlr_derived_grid_t8.csv`: inferred MLR grid;
+- `mlr_model.json`: full model/provenance metadata.
+
+To regenerate plots from an existing MCMC file:
+
+```bash
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage plot \
+  --output-dir "$OUT"
+```
+
+### One-command alternative
+
+After the smoke test, the three standard stages can also be run together:
+
+```bash
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage all \
+  --data "$DATA" \
+  --output-dir "$OUT" \
+  --outlier-coordinate raw_u
+```
+
+For long production runs, separate stages are usually preferable because they
+are restartable and make intermediate validation easier.
+
+## Standard production defaults
+
+Without `--quick`, the T8 runner currently uses:
+
+- 1000 warmup steps;
+- 1000 posterior draws;
+- 4 chains;
+- 1024 lookup mass-scale nodes;
+- 64 velocity quadrature nodes;
+- target acceptance probability 0.9;
+- an 8 x 4 monotone tensor-spline MLR;
+- a solar anchor at (M_G=4.67), ([M/H]=0).
+
+Override `--warmup`, `--samples`, `--chains`, and
+`--target-accept` explicitly for formal runs when needed.
+
+Do not use `--quick` for final inference: it reduces the sample size, MCMC
+length, number of chains, and lookup resolution.
+
+## Legacy outlier comparison
+
+To reproduce the `7bc861a`-style mass-coupled outlier likelihood while
+keeping the current metallicity calibration and fixed-good-shape lookup, run a
+separate MLR output directory:
+
+```bash
+export OUT_LEGACY=results/t8_legacy_scaled_outlier
+
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage mlr \
+  --data "$DATA" \
+  --output-dir "$OUT_LEGACY" \
+  --metallicity-posterior "$OUT/latent_metallicity_weights_t8.npz" \
+  --dynamics-lookup "$OUT/dynamics_likelihood_lookup_t8.npz" \
+  --outlier-coordinate scaled_tilde_u
+```
+
+This is a sensitivity/reproduction run, not the current default model.
+
+The older dedicated script
+[`src/examples/run_mass_independent_outlier.py`](src/examples/run_mass_independent_outlier.py)
+is retained for the historical A/B experiment and validation workflow, but it
+is no longer required for the standard raw-`u` MLR because raw-`u` is now
+implemented directly in the core T8 runner.
+
+## Fixed good-shape sensitivity
+
+To test sensitivity to the normal (\tilde u) shape parameters (B),
+(u_c), and (C), rebuild the dynamics lookup in a fresh directory and then
+fit the MLR with the same shape override.
+
+Example:
+
+```bash
+export SHAPE_OUT=results/t8_shape_sensitivity_example
+
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage lookup \
+  --data "$DATA" \
+  --output-dir "$SHAPE_OUT" \
+  --metallicity-posterior "$OUT/latent_metallicity_weights_t8.npz" \
+  --shape-sensitivity \
+  --good-shape-b 0.00103 \
+  --good-shape-uc 40.98 \
+  --good-shape-c 11.53
+
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage mlr \
+  --data "$DATA" \
+  --output-dir "$SHAPE_OUT" \
+  --metallicity-posterior "$OUT/latent_metallicity_weights_t8.npz" \
+  --dynamics-lookup "$SHAPE_OUT/dynamics_likelihood_lookup_t8.npz" \
+  --shape-sensitivity \
+  --good-shape-b 0.00103 \
+  --good-shape-uc 40.98 \
+  --good-shape-c 11.53 \
+  --outlier-coordinate raw_u
+```
+
+Use a new output directory for every shape experiment.
+
+## Joint good-shape + MLR inference
+
+For posterior propagation of the normal-velocity shape uncertainty, first build
+the 27-node shape stack:
+
+```bash
+export SHAPE_STACK_OUT=results/hierarchical_metallicity_t8_2_formal
+
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage lookup \
+  --data "$DATA" \
+  --output-dir "$SHAPE_STACK_OUT" \
+  --metallicity-posterior "$OUT/latent_metallicity_weights_t8.npz" \
+  --sample-dynamics-shape
+```
+
+This produces, among other files:
+
+- `dynamics_likelihood_shapestack_t8.npz`;
+- `shapestack_nodes_t8.json`.
+
+A joint MLR + shape fit can then be run directly with the main T8 runner:
+
+```bash
+python -u src/examples/run_hierarchical_metallicity_test.py \
+  --stage mlr \
+  --data "$DATA" \
+  --output-dir "$SHAPE_STACK_OUT" \
+  --metallicity-posterior "$OUT/latent_metallicity_weights_t8.npz" \
+  --sample-dynamics-shape \
+  --outlier-coordinate raw_u
+```
+
+For independent metallicity-bin posterior fits and controlled initialization
+tests, use:
+
+[`src/examples/run_t82_joint_shape_mcmc.py`](src/examples/run_t82_joint_shape_mcmc.py)
+
+Example using the direct continuous Rice evaluator:
+
+```bash
+python src/examples/run_t82_joint_shape_mcmc.py \
+  --data "$DATA" \
+  --posterior "$OUT/latent_metallicity_weights_t8.npz" \
+  --nodes-json "$SHAPE_STACK_OUT/shapestack_nodes_t8.json" \
+  --output results/t82_bin0_parsec \
+  --bin-index 0 \
+  --start parsec \
+  --warmup 1500 \
+  --samples 2000 \
+  --chains 4 \
+  --initial-jitter 0.03 \
+  --seed 20260921
+```
+
+Use `--bin-index 0` through `3`, and compare both `--start parsec` and
+`--start s2`.
+
+Omitting `--shape-stack-unpacked` uses direct continuous quadrature. Supplying
+a validated unpacked shape stack selects the interpolation-based path.
 
 See
-[`docs/POST_7BC_MODEL_IMPROVEMENTS.md`](docs/POST_7BC_MODEL_IMPROVEMENTS.md)
-for the scientific motivation, correctness fixes, experiment sequence, and
-interpretation of the post-`7bc861a` changes.
+[`docs/T82_JOINT_SHAPE_PIPELINE.md`](docs/T82_JOINT_SHAPE_PIPELINE.md)
+for the full metallicity-bin workflow and limitations.
 
-The main entry point of this repository is
-[`src/examples/run_on_data_feh_global.py`](src/examples/run_on_data_feh_global.py).
-It fits a mass–absolute-magnitude relation with continuous metallicity
-`[Fe/H]` to real Gaia wide-binary data, using NUTS sampling with JAX and
-NumPyro.
+## Alternating-MAP / EM-style sensitivity experiment
 
-This document focuses on getting that script running successfully. Other
-examples and legacy models in the repository are not part of the current
-primary workflow.
+The alternating conditional-MAP workflow repeatedly updates the MLR and the
+normal-velocity shape. It is useful for testing shape--MLR degeneracy and
+sensitivity to different starting shapes.
 
-## Model overview
-
-The main script uses `DifferencePolyFehMLR`:
-
-- The isochrone mass grid in `data/interpolated_mass_data/` provides the
-  baseline relation `m_iso(M_G, [M/H])`.
-- A two-dimensional polynomial in absolute G magnitude and metallicity
-  corrects `log10(mass)`.
-- A Rice distribution models the observational uncertainty.
-- The outlier fraction and outlier-distribution parameters can be fitted
-  jointly with the mass relation.
-- Posterior sampling uses NumPyro NUTS.
-- JAX uses a GPU when one is available and supported, and otherwise uses the
-  CPU.
-
-The code passes the observed `[Fe/H]` directly to the isochrone `[M/H]` grid,
-which assumes `[M/H] ≈ [Fe/H]`.
-
-## Required repository files
-
-The default configuration uses the following files included in the
-repository:
-
-```text
-bayesian-binary-masses/
-├── data/
-│   ├── jd_msms_single_bic_1kpc_filtered_cutb_fehloss.fits
-│   └── interpolated_mass_data/
-│       ├── gmag_grid.npy
-│       └── mass_interp_MH_*.npy
-├── src/
-│   ├── binary_masses/
-│   │   ├── differencepoly_feh.py
-│   │   ├── isochrone_grid.py
-│   │   ├── jax_utils.py
-│   │   └── polynomial.py
-│   └── examples/
-│       └── run_on_data_feh_global.py
-└── requirements.txt
-```
-
-The script determines the repository root from its own location, so data
-paths do not depend on the current working directory. Running it from the
-`bayesian-binary-masses/` root is still recommended.
-
-## Environment setup
-
-An isolated Python 3.10 or 3.11 environment is recommended:
-
-```bash
-cd bayesian-binary-masses
-
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-To install `binary_masses` as an editable package, optionally run:
-
-```bash
-python -m pip install -e .
-```
-
-The main script adds `src/` to the Python path itself. Installing the package
-is therefore optional when running only this script, but its dependencies
-must still be installed.
-
-### GPU and CPU selection
-
-The code does not force a particular platform. It relies on JAX's automatic
-device selection:
-
-- If JAX detects a compatible GPU, the GPU is used.
-- If no compatible GPU is available, the CPU is used.
-
-At runtime, the script prints one of the following:
-
-```text
-NumPyro: running on GPU backend (...)
-```
-
-or:
-
-```text
-NumPyro: running on CPU backend (1 device(s)).
-```
-
-Check the devices visible to the current Python environment with:
-
-```bash
-python -c "import jax; print(jax.devices())"
-```
-
-Having an NVIDIA GPU installed does not by itself mean JAX can use it. A
-compatible driver and GPU-enabled JAX installation are also required. The
-installation procedure depends on the CUDA and operating-system versions;
-refer to the
-[official JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
-The script still works with CPU-only JAX, but sampling will usually take
-considerably longer.
-
-## Run the main script
-
-From the repository root, run:
-
-```bash
-python src/examples/run_on_data_feh_global.py
-```
-
-The default workflow:
-
-1. Reads `data/jd_msms_single_bic_1kpc_filtered_cutb_fehloss.fits`.
-2. Keeps systems with `a_g_edhf_1 <= 0.1`.
-3. Selects at most 5,000 systems using a fixed random seed.
-4. Computes `v`, `u`, and `u_sigma` from proper motion, parallax, and projected
-   separation.
-5. Loads the continuous `[M/H]` isochrone mass surface.
-6. Runs NumPyro MCMC.
-7. Saves posterior samples, a corner plot, and a multi-metallicity
-   mass–magnitude plot.
-
-The default production configuration uses 800 warmup steps, 6,000 posterior
-samples, one chain, and a dense mass matrix. Initial JAX compilation and the
-full sampling run may take a long time.
-
-### Quick smoke test
-
-Before a production run, the complete workflow can be tested by temporarily
-reducing the following arguments in the `test_differencepoly_feh_model(...)`
-call near the bottom of
-[`run_on_data_feh_global.py`](src/examples/run_on_data_feh_global.py):
-
-```python
-num_warmup=100,
-num_samples=200,
-use_dense_mass=False,
-```
-
-The 5,000-system subsample limit in the script can also be reduced
-temporarily. Restore the production settings after confirming that data
-loading, JAX compilation, sampling, and plotting all complete successfully.
-
-## Input data requirements
-
-The default FITS table must contain at least the following columns:
-
-| Column | Purpose |
-| --- | --- |
-| `a_g_edhf_1` | Extinction selection |
-| `pmra1`, `pmra2` | Right-ascension proper motions of both components |
-| `pmdec1`, `pmdec2` | Declination proper motions of both components |
-| `parallax1` | Parallax |
-| `sep_AU` | Projected separation |
-| `dpm_over_error` | Used to calculate `u_sigma` |
-| `absg1`, `absg2` | Absolute G magnitudes of both components |
-| `feh` | Preferred metallicity column |
-
-If `feh` is unavailable, the script attempts to use `feh_jcaps_1`. It raises
-an error before fitting if neither column exists.
-
-The script calculates:
-
-```text
-v       = 4.74 × sqrt((pmra2-pmra1)² + (pmdec2-pmdec1)²) / parallax1
-u       = v × sqrt(sep_AU)
-u_sigma = u / dpm_over_error
-```
-
-To use another dataset, change `data_path` in `main()` and ensure that the
-column names and units are consistent with these calculations.
-
-## Main configuration
-
-The main settings are in the `test_differencepoly_feh_model(...)` call near
-the bottom of the script:
-
-| Parameter | Current value | Purpose |
-| --- | ---: | --- |
-| `feh_min`, `feh_max` | `-1`, `0.6` | Metallicity range |
-| `absg_min`, `absg_max` | `3.5`, `13.5` | Absolute G-magnitude range |
-| `mass_min`, `mass_max` | `0.05`, `2.0` | Mass range in solar masses |
-| `order` | `1` | Default term selection for the 2D correction |
-| `uncertainty_model` | `"rice"` | Observational uncertainty model |
-| `fit_outlier_params` | `True` | Fit the outlier parameters |
-| `num_warmup` | `800` | Number of NUTS warmup steps |
-| `num_samples` | `6000` | Number of posterior samples |
-| `num_chains` | `1` | Number of MCMC chains |
-| `use_dense_mass` | `True` | Use a dense mass matrix |
-| `seed` | `33` | NumPyro random seed |
-| `anchor_enabled` | `True` | Enable the solar-mass anchor |
-
-The current solar anchor is:
-
-```text
-M_G = 4.67, [Fe/H] = 0.0, mass = 1.0 M_sun, sigma = 0.01
-```
-
-## Output
-
-The default output directory is:
-
-```text
-results/data_diffpoly2d_anchor_cute/
-```
-
-The main output files are:
-
-- `mcmc_*.txt`: posterior parameter samples;
-- `corner*.png`: posterior corner plot;
-- `fit_multifeh_*.png`: mass–magnitude relations and uncertainties at
-  different `[Fe/H]` values.
-
-Output filenames encode the uncertainty model, outlier configuration, model
-order, metallicity range, and other important settings. Existing files with
-the same names are overwritten, so back up production results when needed.
-
-## Troubleshooting
-
-### `ModuleNotFoundError`
-
-Confirm that the intended environment is active, then run:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-Using `python -m pip` helps ensure that dependencies are installed for the
-same Python interpreter that runs the script.
-
-### A GPU is installed, but the script reports CPU
+It is not a strict EM algorithm and does not return posterior intervals.
 
 Run:
 
 ```bash
-python -c "import jax; print(jax.devices())"
+bash scripts/run_mlr.sh \
+  --data "$DATA" \
+  --baseline "$OUT" \
+  --shape-stack "$SHAPE_STACK_OUT/dynamics_likelihood_shapestack_t8.npz" \
+  --output results/em_mlr_sensitivity
 ```
 
-If this command lists only CPU devices, JAX in the current Python environment
-has not detected the GPU. Check that the GPU driver, CUDA version, and JAX
-installation are compatible.
+The implementation is:
 
-### Out of memory or sampling is too slow
+`src/examples/run_em_mlr_pilot.py`
 
-For a smoke test, reduce the input-system count, `num_warmup`, and
-`num_samples`. Keep `num_chains=1`, and set `use_dense_mass=False` if needed.
+By default it uses the same deterministic 2000-system subset for the default
+and S2 starts and alternates conditional MAP updates. Treat these outputs as an
+optimization/sensitivity comparison rather than the primary posterior result.
 
-### Isochrone data cannot be found
+See
+[`docs/EM_MLR_WORKFLOW.md`](docs/EM_MLR_WORKFLOW.md)
+for details and known limitations.
 
-Confirm that these files exist:
+## Diagnostic scripts
 
-```text
-data/interpolated_mass_data/gmag_grid.npy
-data/interpolated_mass_data/mass_interp_MH_*.npy
+Useful diagnostic and comparison entry points include:
+
+- `src/examples/diagnose_mg_window_mass_score.py`:
+  local and finite-step likelihood pressure from changing masses in an
+  (M_G) window;
+- `src/examples/plot_mlr_residuals_parsec.py`:
+  fixed-shape MLR residual comparisons;
+- `src/examples/plot_em_parsec.py`:
+  alternating-MAP endpoints relative to PARSEC;
+- `src/examples/plot_t82_completed_bins.py`:
+  metallicity-bin posterior summaries;
+- `src/examples/compare_t8_relations_mg.py`:
+  MLR comparison in absolute G magnitude;
+- `src/examples/compare_t8_relations_bprp.py`:
+  comparison in BP-RP color;
+- `src/examples/compare_t8_mann2019_ks_local.py`:
+  local (K_s)-band comparison.
+
+## Recommended interpretation hierarchy
+
+For scientific results, use this hierarchy:
+
+1. standard fixed-good-shape T8 posterior with raw-`u` outlier;
+2. legacy-outlier and fixed-good-shape runs as controlled sensitivity tests;
+3. joint good-shape + MLR MCMC to propagate shape uncertainty;
+4. alternating-MAP/EM-style results as an optimization/sensitivity comparison.
+
+Agreement between different starts or methods is useful evidence of numerical
+stability, but it does not by itself establish the physical correctness of the
+absolute mass scale.
+
+## SLURM
+
+The generic stage launcher is:
+
+`scripts/run_t8_hierarchical_metallicity.slurm`
+
+Example:
+
+```bash
+sbatch --partition=PARTITION --account=ACCOUNT --gres=gpu:1 \
+  --export=ALL,STAGE=calibration,DATA="$DATA",OUTPUT_DIR="$OUT",CONDA_ENV=dyn \
+  scripts/run_t8_hierarchical_metallicity.slurm
 ```
 
-The main script passes an absolute path to the model, so starting the script
-from another directory should not normally affect this path.
+Repeat with `STAGE=lookup` and `STAGE=mlr`, or use `STAGE=all` after a
+successful smoke test.
+
+Additional runner options can be passed through `EXTRA_ARGS`.
+
+## Legacy polynomial workflow
+
+The older continuous-metallicity polynomial model remains available at:
+
+`src/examples/run_on_data_feh_global.py`
+
+It uses `DifferencePolyFehMLR` and is useful for historical comparison, but it
+should not be confused with the current T8 hierarchical-metallicity +
+monotone-spline MLR pipeline.
+
+## Further documentation
+
+- [Post-`7bc861a` model history](docs/POST_7BC_MODEL_IMPROVEMENTS.md)
+- [T8 server run guide](docs/T8_SERVER_RUN.md)
+- [T8.2 joint-shape pipeline](docs/T82_JOINT_SHAPE_PIPELINE.md)
+- [Alternating-MAP / EM-style workflow](docs/EM_MLR_WORKFLOW.md)
+- [Mass-independent outlier experiment plan](docs/T8_MASS_INDEPENDENT_OUTLIER_GARCHING_PLAN.md)
 
 ## License
 
