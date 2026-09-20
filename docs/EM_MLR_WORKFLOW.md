@@ -1,6 +1,6 @@
 # Default EM-style MLR workflow
 
-The default method alternates conditional MAP updates of the MLR and the
+This sensitivity workflow alternates conditional MAP updates of the MLR and the
 normal velocity shape plus outlier fraction. It uses the observed-data
 likelihood marginalized over the saved metallicity posterior and Rice
 measurement errors. It is EM-style optimization, not a strict EM algorithm
