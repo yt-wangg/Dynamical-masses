@@ -36,6 +36,7 @@ from binary_masses.hierarchical_metallicity import (
     jcaps_magnitude_bias,
     marginalize_dynamics,
     normalize_log_weights,
+    rice_good_raw,
     simulate_mock_dataset,
     trapezoid_weights,
     rice_outlier_normalization,
@@ -123,22 +124,22 @@ def simple_dynamics_lookup(rows, u, u_sigma):
             "outlier_normalization": "Phi((U-mu)/sigma)-Phi(-mu/sigma)",
             "outlier_normalization_value": rice_outlier_normalization(),
             "C_out": rice_outlier_normalization(),
-            "C_good": 0.9978600946,
-            "normalization_version": "finite_support_v1",
-            "good_basis_normalized": False,
+            "C_good": 1.0,
+            "normalization_version": "finite_support_exact_t8_1",
+            "good_basis_normalized": True,
             "good_basis_support": [0.0, 80.0],
             "good_basis_constant": 5.434e-3,
             "good_basis_quadratic": 2.544e-3,
             "good_basis_turnover": 35.67,
             "good_basis_scale": 3.100,
-            "good_basis_support_integral": 0.9978600946,
+            "good_basis_support_integral": 1.0,
             "jacobian": "1/s",
             "scale_definition": "s=sqrt(Mtot/Msun)",
             "integration_coordinate": "v=s*tilde_u",
             "velocity_units": "km s^-1 sqrt(AU)",
             "interpolation": "linear_log_likelihood_in_raw_s",
             "row_order": "row_indices order",
-            "mixture_weight_semantics": "basis weight; not a physical outlier fraction",
+            "mixture_weight_semantics": "physical outlier fraction (T8.1 exact component normalization)",
             "floor": 1e-30,
             "migration_applied": False,
             "convergence_check": {
@@ -468,9 +469,7 @@ class HierarchicalMetallicityTests(unittest.TestCase):
             )
 
         def physical_pdf(tilde_u):
-            return 5.434e-3 * tilde_u * np.exp(
-                -(2.544e-3 * tilde_u**2 + np.exp((tilde_u - 35.67) / 3.100))
-            )
+            return rice_good_raw(tilde_u)
 
         reference = np.array(
             [
@@ -566,6 +565,68 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         )
         self.assertLessEqual(float(np.max(np.diff(values, axis=0))), 1e-10)
         self.assertGreaterEqual(float(np.min(np.diff(values, axis=1))), -1e-10)
+
+    def _real_parsec_mass_surface(self):
+        surface = IsochroneMassSurfaceModel.from_interpolated_mass_data(
+            Path(__file__).resolve().parent.parent / "data" / "interpolated_mass_data",
+            mass_min=0.05,
+        )
+        # T8's clamped knot vector ends at M_G=13.5 while the packaged
+        # interpolation grid extends to 14.0, so restrict the domain exactly
+        # as the production runner does.
+        x_mask = surface.absg_grid_np < 13.5 - 1e-12
+        x_grid = np.concatenate([surface.absg_grid_np[x_mask], [13.5]])
+        mass_grid = np.column_stack(
+            [surface.mass_grid_np[:, x_mask],
+             np.array([surface.mass_from_absg_mh(13.5, mh) for mh in surface.mh_grid_np])]
+        )
+        return IsochroneMassSurfaceModel(
+            x_grid, surface.mh_grid_np, mass_grid, mass_min=0.05
+        )
+
+    def test_t8_real_parsec_surface_z_monotone_with_negative_corrections(self):
+        """The final MLR on real PARSEC data keeps d log M / d Z >= 0 and
+        d log M / d M_G <= 0 even when the PARSEC-relative correction is
+        driven far below zero."""
+        mlr = MonotoneTensorSplineMLR(self._real_parsec_mass_surface())
+        x = np.linspace(3.5, 13.5, 201)
+        z = np.linspace(-1.0, 0.6, 81)
+        rng = np.random.default_rng(20260913)
+        for _ in range(3):
+            params = {
+                "c0": rng.normal(),
+                "a": rng.normal(scale=2.0, size=3),
+                "b": rng.normal(scale=2.0, size=7),
+                "r": rng.normal(scale=2.0, size=(7, 3)),
+                "log_lambda_x": rng.normal(),
+                "log_lambda_z": rng.normal(),
+            }
+            log_mass = mlr.g_from_raw(x[:, None], z[None, :], params)
+            self.assertLessEqual(float(np.max(np.diff(log_mass, axis=0))), 1e-10)
+            self.assertGreaterEqual(float(np.min(np.diff(log_mass, axis=1))), -1e-10)
+            mass = mlr.mass_from_absg_mh(x[:, None], z[None, :], params)
+            self.assertLessEqual(float(np.max(np.diff(mass, axis=0))), 0.0)
+            self.assertGreaterEqual(float(np.min(np.diff(mass, axis=1))), 0.0)
+
+        # Lowering c0 by delta lowers every theta entry by exactly delta, so
+        # the PARSEC-relative correction can reach arbitrarily negative
+        # values; shift just far enough to sit strictly below PARSEC
+        # everywhere without depending on any absolute magnitude.
+        initial_params = mlr.initial_raw_parameters()
+        initial_correction = mlr.correction_log10(
+            x[None, :], z[:, None], initial_params
+        )
+        shift = 0.5 + float(np.max(initial_correction))
+        params = dict(initial_params)
+        params["c0"] = params["c0"] - shift
+        correction = mlr.correction_log10(x[None, :], z[:, None], params)
+        self.assertTrue(
+            np.allclose(correction, initial_correction - shift, atol=1e-12)
+        )
+        self.assertLess(float(np.max(correction)), 0.0)
+        log_mass = mlr.g_from_raw(x[:, None], z[None, :], params)
+        self.assertLessEqual(float(np.max(np.diff(log_mass, axis=0))), 1e-10)
+        self.assertGreaterEqual(float(np.min(np.diff(log_mass, axis=1))), -1e-10)
 
     def test_t8_bspline_boundaries_projection_and_spacing_penalties(self):
         mlr = MonotoneTensorSplineMLR(simple_mass_surface())

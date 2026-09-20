@@ -28,7 +28,11 @@ if ! command -v conda >/dev/null 2>&1; then
 fi
 CONDA_BASE="$(conda info --base)"
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
+# Conda's activate.d toolchain scripts read unset variables; nounset must be
+# suspended around activation (recommended by conda for strict-mode scripts).
+set +u
 conda activate "${CONDA_ENV}"
+set -u
 
 SCRIPT="${SCRIPT:-${PROJECT_ROOT}/src/examples/run_hierarchical_metallicity_test.py}"
 if [[ ! -f "${SCRIPT}" ]]; then
@@ -57,5 +61,5 @@ fi
 python -u "${SCRIPT}" \
     --stage "${STAGE}" \
     --output-dir "${OUTPUT_DIR}" \
-    "${data_args[@]}" \
-    "${extra_args[@]}"
+    ${data_args[@]+"${data_args[@]}"} \
+    ${extra_args[@]+"${extra_args[@]}"}
