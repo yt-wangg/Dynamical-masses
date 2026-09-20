@@ -1041,7 +1041,7 @@ class HierarchicalMetallicityCalibrator:
 
     def _build_numpyro_model(self):
         import jax
-        if getattr(self, "shape_stack_mode", "smoothstep") == "direct":
+        if getattr(self, "shape_stack_mode", "linear") == "direct":
             jax.config.update("jax_enable_x64", True)
         import jax.numpy as jnp
         from jax.scipy.special import i0e as jax_i0e
@@ -1894,7 +1894,7 @@ def shape_trilinear_weights_numpy(values, axes):
         cell = 1 if value > n1 else 0
         lo, hi = (n1, n2) if cell else (n0, n1)
         t = float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
-        frac = t * t * (3.0 - 2.0 * t)
+        frac = t
         cells.append(cell); fracs.append(frac)
     for c_b in (0, 1):
         for c_u in (0, 1):
@@ -2433,7 +2433,7 @@ class MonotoneTensorSplineMLR:
                 for name, axis in stack_axes.items()
             }
 
-            direct_mode = getattr(self, "shape_stack_mode", "smoothstep") == "direct"
+            direct_mode = getattr(self, "shape_stack_mode", "linear") == "direct"
             if direct_mode:
                 if self.raw_u_outlier_log_likelihood is None:
                     raise ValueError(
@@ -2592,10 +2592,8 @@ class MonotoneTensorSplineMLR:
 
                 Each corner table is first interpolated at the required
                 sqrt(mtot) (n x n_z points), and only the eight n x n_z
-                results are mixed, so the 27 x n x n_s stack is never touched
-                per draw.  Smoothstep fractions keep the weights C1 across
-                cell boundaries; at the nodes the mix still reproduces the
-                member tables exactly.
+                results are mixed. Linear cell fractions avoid zero-gradient
+                stationarity at shape-grid nodes while reproducing node tables exactly.
                 """
                 fracs, cells = [], []
                 for axis_value, name in zip((log_b, log_uc, log_c), DynamicsLikelihoodShapeStack.AXIS_NAMES):
@@ -2604,10 +2602,7 @@ class MonotoneTensorSplineMLR:
                     lo = jnp.where(cell == 1, n1, n0)
                     hi = jnp.where(cell == 1, n2, n1)
                     t = jnp.clip((axis_value - lo) / (hi - lo), 0.0, 1.0)
-                    if getattr(self, "shape_stack_mode", "smoothstep") == "linear":
-                        fracs.append(t)
-                    else:
-                        fracs.append(t * t * (3.0 - 2.0 * t))
+                    fracs.append(t)
                     cells.append(cell)
                 corner_log_weights = []
                 corner_indices = []
