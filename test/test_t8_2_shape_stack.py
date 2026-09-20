@@ -51,13 +51,13 @@ def test_node_reproduction_and_weight_properties():
     # at a node the trilinear mix must return exactly that member
     values = (AXES["log_b"][1], AXES["log_uc"][2], AXES["log_c"][0])
     idx, w = shape_trilinear_weights_numpy(values, AXES)
-    assert idx[np.argmax(w)] == 1 + 3 * 2 + 9 * 0
+    assert idx[np.argmax(w)] == 9 * 1 + 3 * 2 + 0
     assert abs(w.sum() - 1.0) < 1e-12
     assert np.all(w >= 0)
     # exactly at the middle nodes all weight lands on that single member
     middle = tuple(float(a[1]) for a in AXES.values())
     idx_m, wm = shape_trilinear_weights_numpy(middle, AXES)
-    assert idx_m[np.argmax(wm)] == 1 + 3 * 1 + 9 * 1
+    assert idx_m[np.argmax(wm)] == 9 * 1 + 3 * 1 + 1
     assert abs(wm.max() - 1.0) < 1e-12
     # random interior points: weights valid
     rng = np.random.default_rng(0)
@@ -71,7 +71,7 @@ def test_effective_table_at_node_matches_member():
     stack = build_tiny_stack()
     values = (AXES["log_b"][0], AXES["log_uc"][1], AXES["log_c"][2])
     idx, w = shape_trilinear_weights_numpy(values, AXES)
-    member = 0 + 3 * 1 + 9 * 2
+    member = 9 * 0 + 3 * 1 + 2
     effective = np.logaddexp.reduce(
         np.log(w)[:, None, None] + stack.log_good_stack[idx], axis=0
     )

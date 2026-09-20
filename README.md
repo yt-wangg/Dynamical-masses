@@ -1,14 +1,33 @@
 # Bayesian Binary Masses
 
-The main entry point of this repository is
+The current dynamical MLR workflow is **T8**, run through
+[`src/examples/run_hierarchical_metallicity_test.py`](src/examples/run_hierarchical_metallicity_test.py).
+See [T8 run instructions](docs/T8_SERVER_RUN.md) for calibration, fitting, and plotting.
+
+T8 fits a PARSEC-relative mass surface with a shared metallicity posterior for
+each wide binary. Over `3.5 <= M_G <= 13.5` and `-1.0 <= [M/H] <= 0.6`,
+the final mass decreases or stays constant toward fainter magnitudes and
+increases or stays constant toward higher metallicity. These constraints apply
+to the final mass, while the correction relative to PARSEC may have either sign.
+Fitted T8 curves are evaluated from `mlr_mcmc_t8.npz`.
+
+## Joint velocity-shape and MLR fitting
+
+The [T8.2 pipeline](docs/T82_JOINT_SHAPE_PIPELINE.md) fits independent [M/H]
+bins from S2 and PARSEC initializations, with a mass-independent raw-u outlier
+component. It includes full-sample MCMC commands, posterior comparison plots,
+and the limitations of the saved runs.
+
+## Legacy polynomial workflow
+
+The instructions below describe
 [`src/examples/run_on_data_feh_global.py`](src/examples/run_on_data_feh_global.py).
 It fits a mass–absolute-magnitude relation with continuous metallicity
 `[Fe/H]` to real Gaia wide-binary data, using NUTS sampling with JAX and
 NumPyro.
 
-This document focuses on getting that script running successfully. Other
-examples and legacy models in the repository are not part of the current
-primary workflow.
+This polynomial model allows unrestricted metallicity corrections. Its results
+and the T7 three-knot fits are separate from the monotone T8 inference.
 
 ## Model overview
 
