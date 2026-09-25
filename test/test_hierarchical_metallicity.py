@@ -26,6 +26,8 @@ from binary_masses.hierarchical_metallicity import (
     JCAPS_BIAS_VALUES,
     JCAPS_EXTRA_SCALE,
     JCAPS_STUDENT_DF,
+    DEFAULT_COLOR_ANCHOR,
+    DEFAULT_SOLAR_MG,
     MetallicityPosteriorGrid,
     MonotoneTensorSplineMLR,
     ThreeKnotMetallicityMLR,
@@ -47,6 +49,7 @@ from run_hierarchical_metallicity_test import (
     T8_WORKFLOW_ID,
     _require_t8_posterior_metadata,
     _require_t8_lookup_metadata,
+    load_color_anchors,
 )
 from run_t8_holdout_validation import (
     evaluate_heldout,
@@ -83,7 +86,7 @@ def simple_mass_surface():
 def set_small_calibrator(surface):
     calibrator = HierarchicalMetallicityCalibrator(
         surface, z_grid=np.linspace(-1.0, 0.6, 9), population_components=3,
-        cmd_min_teff=None,
+        cmd_min_teff=None, color_anchor_mode="anchors",
     )
     absg = np.array([[5.0, 8.0], [7.0, 10.0], [9.0, 12.0]])
     true_z = np.array([-0.7, -0.2, 0.3])
@@ -160,6 +163,182 @@ def simple_dynamics_lookup(rows, u, u_sigma):
 
 
 class HierarchicalMetallicityTests(unittest.TestCase):
+    def test_default_solar_color_anchor_is_constant_calibration(self):
+        calibrator = HierarchicalMetallicityCalibrator(
+            simple_color_surface(), cmd_min_teff=None
+        )
+        self.assertEqual(calibrator.global_calibration_order, 0)
+        self.assertEqual(calibrator.color_anchors, ())
+        self.assertAlmostEqual(calibrator.calibration_pivot, 0.0)
+        self.assertEqual(calibrator.color_anchor_mode, "solar_only")
+        self.assertEqual(
+            calibrator.observation_model_metadata()["sampled_parameters"],
+            ["population_weights"],
+        )
+
+    def test_solar_only_uses_full_grid_and_trace_is_minimal(self):
+        calibrator = HierarchicalMetallicityCalibrator(
+            simple_color_surface(), z_grid=np.linspace(-0.95, 0.55, 9),
+            population_components=3, cmd_min_teff=None,
+        )
+        calibrator.set_data(
+            row_indices=np.array([1, 2]),
+            absg=np.array([[4.66, 8.0], [7.0, 9.0]]),
+            feh_observed=np.zeros((2, 2)), feh_sigma=np.full((2, 2), 0.1),
+            color_observed=np.array([[0.818, 1.0], [1.0, 1.1]]),
+            color_sigma=np.full((2, 2), 0.02),
+        )
+        calibrator.posterior_samples = {
+            "population_weights": np.full((2, 3), 1.0 / 3.0),
+        }
+        posterior = calibrator.posterior_grid(max_draws=2)
+        self.assertTrue(np.all(posterior.probabilities > 0.0))
+        import jax.numpy as jnp
+        from numpyro import handlers
+        trace = handlers.trace(handlers.seed(calibrator._build_numpyro_model(), rng_seed=8)).get_trace(
+            jnp.asarray(calibrator.absg), jnp.asarray(calibrator.feh_observed),
+            jnp.asarray(calibrator.feh_sigma), jnp.asarray(calibrator.color_observed),
+            jnp.asarray(calibrator.color_sigma),
+        )
+        for name in ("delta_z", "z_offset", "s_C", "color_a", "color_d"):
+            self.assertNotIn(name, trace)
+
+    def test_custom_constant_color_anchor_is_accepted(self):
+        anchor = {"absg": 6.0, "z_ref": 0.0, "color_ref": 1.2, "sigma_color": 0.04}
+        calibrator = HierarchicalMetallicityCalibrator(
+            simple_color_surface(), color_anchors=[anchor], color_anchor_mode="anchors",
+            cmd_min_teff=None
+        )
+        self.assertEqual(calibrator.color_anchors, (anchor,))
+        self.assertEqual(calibrator.observation_model_metadata()["global_calibration_order"], 0)
+
+    def test_multi_anchor_linear_map_recovers_supplied_slope(self):
+        anchors = [
+            {"absg": 4.66, "z_ref": -0.5, "color_ref": 0.7, "sigma_color": 0.03},
+            {"absg": 4.66, "z_ref": 0.4, "color_ref": 0.9, "sigma_color": 0.03},
+        ]
+        calibrator = HierarchicalMetallicityCalibrator(
+            simple_color_surface(), color_anchors=anchors, color_anchor_mode="anchors",
+            global_calibration_order=1, cmd_min_teff=None,
+        )
+        means = calibrator.metallicity_mean(
+            np.array([-0.5, 0.4]), z_offset=0.1, z_slope=0.2
+        )
+        self.assertTrue(np.allclose(means, np.array([-0.5, 0.58])))
+        self.assertIn("w_Z", calibrator.observation_model_metadata()["sampled_parameters"])
+
+    def test_learned_surface_coefficients_change_anchor_likelihood(self):
+        calibrator = HierarchicalMetallicityCalibrator(
+            simple_color_surface(), color_anchors=[DEFAULT_COLOR_ANCHOR],
+            color_anchor_mode="anchors", cmd_min_teff=None
+        )
+        zero = calibrator.color_anchor_log_likelihood(
+            np.zeros(4), np.zeros(4)
+        )
+        shifted = calibrator.color_anchor_log_likelihood(
+            np.array([0.5, 0.0, 0.0, 0.0]), np.zeros(4)
+        )
+        self.assertNotEqual(zero, shifted)
+
+    def test_multi_z_anchors_evaluate_distinct_surface_positions(self):
+        anchors = [
+            {"absg": 4.66, "z_ref": -0.5, "color_ref": 0.2, "sigma_color": 0.03},
+            {"absg": 4.66, "z_ref": 0.5, "color_ref": 0.7, "sigma_color": 0.03},
+        ]
+        calibrator = HierarchicalMetallicityCalibrator(
+            simple_color_surface(), color_anchors=anchors, color_anchor_mode="anchors",
+            cmd_min_teff=None
+        )
+        coeff_a = np.array([0.45, 0.0, 0.0, 0.0])
+        coeff_d = np.array([0.40, 0.0, 0.0, 0.0])
+        self.assertNotEqual(
+            calibrator._learned_color_numpy(4.66, -0.5, coeff_a, coeff_d),
+            calibrator._learned_color_numpy(4.66, 0.5, coeff_a, coeff_d),
+        )
+
+    def test_parsec_surface_has_legacy_trace_without_learned_coefficients(self):
+        calibrator = HierarchicalMetallicityCalibrator(
+            simple_color_surface(), color_anchor_mode="parsec_surface", cmd_min_teff=None
+        )
+        self.assertEqual(calibrator.color_anchors, ())
+        self.assertEqual(
+            calibrator.observation_model_metadata()["color_surface_parameterization"],
+            "legacy fixed PARSEC surface",
+        )
+        import jax.numpy as jnp
+        from numpyro import handlers
+        calibrator.set_data(
+            row_indices=np.array([1]),
+            absg=np.array([[5.0, 7.0]]),
+            feh_observed=np.zeros((1, 2)),
+            feh_sigma=np.full((1, 2), 0.1),
+            color_observed=np.ones((1, 2)),
+            color_sigma=np.full((1, 2), 0.02),
+        )
+        trace = handlers.trace(handlers.seed(calibrator._build_numpyro_model(), rng_seed=6)).get_trace(
+            jnp.asarray(calibrator.absg), jnp.asarray(calibrator.feh_observed),
+            jnp.asarray(calibrator.feh_sigma), jnp.asarray(calibrator.color_observed),
+            jnp.asarray(calibrator.color_sigma),
+        )
+        self.assertNotIn("color_a", trace)
+        self.assertNotIn("color_d", trace)
+        self.assertNotIn("color_anchors", trace)
+        self.assertIn("delta_z", trace)
+        self.assertIn("z_offset", trace)
+
+    def test_linear_calibration_rejects_single_reference_metallicity(self):
+        with self.assertRaisesRegex(ValueError, "at least two.*distinct.*Z_ref"):
+            HierarchicalMetallicityCalibrator(
+                simple_color_surface(),
+                global_calibration_order=1, color_anchor_mode="anchors",
+                cmd_min_teff=None,
+            )
+
+    def test_learned_surface_requires_posterior_coefficients(self):
+        calibrator = set_small_calibrator(simple_color_surface())
+        with self.assertRaisesRegex(ValueError, "requires color_a and color_d"):
+            calibrator.log_joint_numpy({
+                "z_offset": 0.0,
+                "cmd_scatter": 0.03,
+                "population_weights": np.ones(3) / 3.0,
+            })
+        calibrator.posterior_samples = {
+            "z_offset": np.zeros(2),
+            "cmd_scatter": np.full(2, 0.03),
+            "population_weights": np.full((2, 3), 1.0 / 3.0),
+        }
+        with self.assertRaisesRegex(ValueError, "requires color_a and color_d"):
+            calibrator.posterior_grid(max_draws=2)
+
+    def test_parsec_surface_allows_linear_calibration_without_explicit_anchors(self):
+        calibrator = HierarchicalMetallicityCalibrator(
+            simple_color_surface(), color_anchor_mode="parsec_surface",
+            global_calibration_order=1, cmd_min_teff=None,
+        )
+        self.assertEqual(calibrator.color_anchors, ())
+        self.assertTrue(calibrator.observation_model_metadata()["w_Z_prior"]["enabled"])
+
+    def test_solar_only_allows_grid_without_exact_zero_node(self):
+        HierarchicalMetallicityCalibrator(
+            simple_color_surface(), z_grid=np.array([-1.0, 0.2]),
+            color_anchor_mode="anchors", cmd_min_teff=None,
+        )
+        calibrator = HierarchicalMetallicityCalibrator(
+            simple_color_surface(), z_grid=np.array([-1.0, 0.2]),
+            color_anchor_mode="solar_only", cmd_min_teff=None,
+        )
+        self.assertEqual(calibrator.observation_model_metadata()["sampled_parameters"], ["population_weights"])
+
+    def test_color_anchor_json_loader(self):
+        payload = {"anchors": [
+            {"absg": 4.66, "z_ref": 0.0, "color_ref": 0.818, "sigma_color": 0.029}
+        ]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "anchors.json"
+            path.write_text(__import__("json").dumps(payload), encoding="utf-8")
+            loaded = load_color_anchors(path)
+        self.assertEqual(loaded, payload["anchors"])
+
     def test_trapezoid_weights_integrate_constant(self):
         grid = np.linspace(-1.0, 0.6, 81)
         weights = trapezoid_weights(grid)
@@ -184,10 +363,32 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         self.assertTrue(np.allclose(numpy_value, expected))
 
     def test_t6d_fixed_observation_parameters_and_bias_anchor(self):
+        raw_solar = np.interp(DEFAULT_SOLAR_MG, JCAPS_BIAS_MG_KNOTS, JCAPS_BIAS_VALUES)
         self.assertTrue(
-            np.allclose(jcaps_magnitude_bias(JCAPS_BIAS_MG_KNOTS), JCAPS_BIAS_VALUES)
+            np.allclose(
+                jcaps_magnitude_bias(JCAPS_BIAS_MG_KNOTS),
+                JCAPS_BIAS_VALUES - raw_solar,
+            )
         )
-        self.assertAlmostEqual(float(jcaps_magnitude_bias(8.5)), 0.0)
+        self.assertAlmostEqual(float(jcaps_magnitude_bias(DEFAULT_SOLAR_MG)), 0.0)
+        for mode in ("solar_only", "anchors", "parsec_surface"):
+            calibrator = HierarchicalMetallicityCalibrator(
+                simple_color_surface(), color_anchor_mode=mode, cmd_min_teff=None
+            )
+            self.assertAlmostEqual(
+                float(calibrator.bias_from_absg(DEFAULT_SOLAR_MG)), 0.0
+            )
+            self.assertTrue(np.allclose(
+                calibrator.bias_from_absg(JCAPS_BIAS_MG_KNOTS),
+                JCAPS_BIAS_VALUES - raw_solar,
+            ))
+            metadata = calibrator.observation_model_metadata()
+            self.assertEqual(metadata["bias_anchor"], "b_G(M_G=4.66)=0")
+            self.assertTrue(np.allclose(
+                metadata["bias_values_dex"], JCAPS_BIAS_VALUES - raw_solar
+            ))
+        self.assertIn("bp_snr", INPUT_COLUMNS)
+        self.assertIn("rp_snr", INPUT_COLUMNS)
         self.assertAlmostEqual(JCAPS_EXTRA_SCALE, 0.04646502063846824)
         self.assertAlmostEqual(JCAPS_STUDENT_DF, 2.5236494464371377)
 
@@ -195,7 +396,7 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         surface = simple_color_surface()
         calibrator = HierarchicalMetallicityCalibrator(
             surface, z_grid=np.array([-0.2, 0.0, 0.2]),
-            population_components=3, cmd_min_teff=None,
+            population_components=3, cmd_min_teff=None, color_anchor_mode="anchors",
         )
         calibrator.set_data(
             row_indices=np.array([1]),
@@ -205,7 +406,10 @@ class HierarchicalMetallicityTests(unittest.TestCase):
             color_observed=np.array([[1.7, 1.7]]),
             color_sigma=np.array([[0.02, 0.02]]),
         )
-        common = {"s_C": 0.03, "population_weights": np.ones(3) / 3.0}
+        common = {
+            "s_C": 0.03, "population_weights": np.ones(3) / 3.0,
+            "color_a": np.zeros(4), "color_d": np.zeros(4),
+        }
         positive = calibrator.log_joint_numpy({**common, "delta_z": 0.2})[0, 1]
         negative = calibrator.log_joint_numpy({**common, "delta_z": -0.2})[0, 1]
         self.assertGreater(positive, negative)
@@ -218,7 +422,7 @@ class HierarchicalMetallicityTests(unittest.TestCase):
             surface,
             z_grid=np.linspace(-1.0, 0.6, 9),
             population_components=3,
-            cmd_min_teff=4730.0,
+            cmd_min_teff=4730.0, color_anchor_mode="anchors",
         )
         base_color = surface.color_from_absg_mh(np.array([[5.0, 12.0]]), 0.0)
         calibrator.set_data(
@@ -234,6 +438,8 @@ class HierarchicalMetallicityTests(unittest.TestCase):
             "z_offset": 0.0,
             "cmd_scatter": 0.03,
             "population_weights": np.ones(3) / 3.0,
+            "color_a": np.zeros(4),
+            "color_d": np.zeros(4),
         }
         reference = calibrator.log_joint_numpy(params)
         calibrator.color_observed[0, 1] += 100.0
@@ -246,7 +452,9 @@ class HierarchicalMetallicityTests(unittest.TestCase):
         self.assertEqual(calibrator.cmd_min_teff, 4000.0)
 
     def test_t8_cmd_threshold_requires_temperature_grid(self):
-        calibrator = HierarchicalMetallicityCalibrator(simple_color_surface())
+        calibrator = HierarchicalMetallicityCalibrator(
+            simple_color_surface(), color_anchor_mode="anchors"
+        )
         with self.assertRaisesRegex(ValueError, "temperature grid"):
             calibrator.set_data(
                 row_indices=np.array([1]),
@@ -281,6 +489,8 @@ class HierarchicalMetallicityTests(unittest.TestCase):
                 "z_offset": 0.0,
                 "cmd_scatter": 0.03,
                 "population_weights": np.ones(3) / 3.0,
+                "color_a": np.zeros(4),
+                "color_d": np.zeros(4),
             }
         )
         self.assertEqual(log_joint.shape, (3, 9))
@@ -295,6 +505,8 @@ class HierarchicalMetallicityTests(unittest.TestCase):
             "z_offset": np.zeros(draws),
             "cmd_scatter": np.full(draws, 0.03),
             "population_weights": np.full((draws, 3), 1.0 / 3.0),
+            "color_a": np.zeros((draws, 4)),
+            "color_d": np.zeros((draws, 4)),
         }
         posterior = calibrator.posterior_grid(max_draws=draws, system_chunk=2)
         posterior.validate()

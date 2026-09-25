@@ -32,7 +32,7 @@ DATA_PATH = (
 OUTPUT_PATH = (
     REPO_ROOT
     / "results"
-    / "hierarchical_metallicity_t8_20260913"
+    / "solar_bg466_zero_20260923"
     / "cmd_by_zj_bin.png"
 )
 POSTERIOR_PATH = OUTPUT_PATH.parent / "latent_metallicity_weights_t8.npz"

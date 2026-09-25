@@ -25,6 +25,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from binary_masses import hierarchical_metallicity as _hm  # noqa: E402
 from binary_masses.hierarchical_metallicity import (  # noqa: E402
+    DEFAULT_SOLAR_MG,
     DynamicsLikelihoodLookup,
     HierarchicalMetallicityCalibrator,
     IsochroneColorSurfaceModel,
@@ -53,8 +54,8 @@ INPUT_COLUMNS = {
 }
 
 CMD_MIN_PARSEC_TEFF_K = 4000.0
-T8_MODEL_ID = "t8_1_jcaps_student_t_independent_members"
-T8_WORKFLOW_ID = "hierarchical_metallicity_t8_1_jcaps_student_t_teff4000_v1"
+T8_MODEL_ID = "t8_1_jcaps_student_t_bg_solar_zero"
+T8_WORKFLOW_ID = "hierarchical_metallicity_t8_1_jcaps_student_t_bg466_v2"
 CALIBRATION_MODEL_ID = T8_MODEL_ID
 T8_POSTERIOR_NAME = "latent_metallicity_weights_t8.npz"
 T8_LOOKUP_NAME = "dynamics_likelihood_lookup_t8.npz"
@@ -91,6 +92,23 @@ def _selected_draw_indices(sample_count: int, max_draws: int, seed: int) -> np.n
     if count == sample_count:
         return np.arange(sample_count, dtype=np.int64)
     return np.sort(np.random.default_rng(int(seed)).choice(sample_count, size=count, replace=False)).astype(np.int64)
+
+
+def load_color_anchors(path: Optional[Path]):
+    """Load explicit CMD anchors from a JSON list or ``{"anchors": [...]}``."""
+    if path is None:
+        return None
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    anchors = payload.get("anchors") if isinstance(payload, dict) else payload
+    if not isinstance(anchors, list):
+        raise ValueError("Color-anchor JSON must be a list or an object with an 'anchors' list.")
+    required = {"absg", "z_ref", "color_ref", "sigma_color"}
+    for index, anchor in enumerate(anchors):
+        if not isinstance(anchor, dict) or set(anchor) != required:
+            raise ValueError(
+                f"Color anchor {index} must contain exactly {sorted(required)}."
+            )
+    return anchors
 
 
 def load_real_data(data_path: Path) -> Dict[str, np.ndarray]:
@@ -144,7 +162,12 @@ def _require_t8_posterior_metadata(
         raise ValueError("T8 posterior does not use the required raw feh_jcaps_1/2 columns.")
     if metadata.get("feh_sigma_columns") != INPUT_COLUMNS["feh_sigma"]:
         raise ValueError("T8 posterior does not use the required raw jc_sigma_m_h_1/2 columns.")
-    if not np.isclose(float(metadata.get("cmd_min_parsec_teff_k", np.nan)), CMD_MIN_PARSEC_TEFF_K):
+    color_anchor_mode = metadata.get("metallicity_observation_model", {}).get("color_anchor_mode")
+    cmd_min_teff = metadata.get("cmd_min_parsec_teff_k")
+    if color_anchor_mode == "solar_only":
+        if cmd_min_teff is not None:
+            raise ValueError("Solar-only T8 posterior must not use a CMD temperature mask.")
+    elif not np.isclose(float(cmd_min_teff if cmd_min_teff is not None else np.nan), CMD_MIN_PARSEC_TEFF_K):
         raise ValueError("T8 posterior does not use the 4000 K full-grid CMD mask.")
     expected_grid = np.linspace(-1.0, 0.6, 81, dtype=np.float64)
     expected_weights = np.empty_like(expected_grid)
@@ -251,7 +274,9 @@ def filter_data(
 ) -> Dict[str, np.ndarray]:
     n_total = len(arrays["row_indices"])
     finite = np.ones(n_total, dtype=bool)
-    for key in ("absg", "feh_observed", "feh_sigma", "color_observed", "color_sigma"):
+    for key in (
+        "absg", "feh_observed", "feh_sigma", "color_observed", "color_sigma",
+    ):
         finite &= np.all(np.isfinite(arrays[key]), axis=1)
     finite &= np.isfinite(arrays["u"]) & np.isfinite(arrays["u_sigma"])
     finite &= np.all(arrays["feh_sigma"] > 0, axis=1)
@@ -465,14 +490,36 @@ def save_sampler_diagnostics(sampler, path: Path) -> None:
         "num_chains": int(sampler.num_chains),
         "num_samples_per_chain": int(sampler.num_samples),
     }
+    grouped_samples = sampler.get_samples(group_by_chain=True)
+    per_chain = {}
+    for name in ("delta_z", "w_Z"):
+        if name not in grouped_samples:
+            continue
+        values = np.asarray(grouped_samples[name])
+        per_chain[name] = [
+            {
+                "median": float(np.median(chain_values)),
+                "sd": float(np.std(chain_values, ddof=1)),
+                "q16": float(np.percentile(chain_values, 16)),
+                "q84": float(np.percentile(chain_values, 84)),
+            }
+            for chain_values in values
+        ]
+    diagnostics["per_chain_parameters"] = per_chain
     if sampler.num_samples >= 4:
         from numpyro.diagnostics import summary
         chain_summary = summary(sampler.get_samples(group_by_chain=True), group_by_chain=True)
         rhat = np.concatenate([np.asarray(item["r_hat"]).reshape(-1) for item in chain_summary.values()])
         ess = np.concatenate([np.asarray(item["n_eff"]).reshape(-1) for item in chain_summary.values()])
+        finite_rhat = rhat[np.isfinite(rhat)]
+        finite_ess = ess[np.isfinite(ess)]
         diagnostics.update({
-            "max_r_hat": float(np.max(rhat)) if np.all(np.isfinite(rhat)) else None,
-            "min_n_eff": float(np.min(ess)) if np.all(np.isfinite(ess)) else None,
+            # Deterministic compatibility aliases such as z_slope=0 and
+            # cmd_scatter=0 have zero variance, so their R-hat/ESS are not
+            # defined.  Keep counting them, but do not let those constants
+            # hide the diagnostics of the genuinely sampled parameters.
+            "max_r_hat": float(np.max(finite_rhat)) if finite_rhat.size else None,
+            "min_n_eff": float(np.min(finite_ess)) if finite_ess.size else None,
             "nonfinite_r_hat_count": int(np.sum(~np.isfinite(rhat))),
             "nonfinite_n_eff_count": int(np.sum(~np.isfinite(ess))),
         })
@@ -489,37 +536,197 @@ def save_latent_summary(posterior: MetallicityPosteriorGrid, path: Path) -> None
             writer.writerow([int(row), *quantile.tolist(), *bad.tolist()])
 
 
+def color_anchor_diagnostics(calibrator: HierarchicalMetallicityCalibrator) -> Dict[str, object]:
+    """Summarize posterior colour-anchor predictions and residuals."""
+    samples = calibrator.posterior_samples or {}
+    if calibrator.color_anchor_mode == "solar_only":
+        return {
+            "mode": "solar_only",
+            "absolute_calibration": "Z_off fixed to 0 and b_G(M_G=4.66)=0",
+            "cmd_likelihood": "not used",
+        }
+    if calibrator.color_anchor_mode == "parsec_surface":
+        return {"mode": "parsec_surface", "hard_solar_max_abs_residual_mag": None}
+    color_a = np.asarray(samples.get("color_a"))
+    color_d = np.asarray(samples.get("color_d"))
+    if color_a.ndim != 2 or color_d.ndim != 2:
+        raise ValueError("Color-anchor diagnostics require color_a and color_d posterior samples.")
+    rows = []
+    for anchor in calibrator.color_anchors:
+        predictions = np.asarray([
+            calibrator._learned_color_numpy(anchor["absg"], anchor["z_ref"], a, d)
+            for a, d in zip(color_a, color_d)
+        ])
+        residual = predictions - anchor["color_ref"]
+        rows.append({
+            **anchor,
+            "prediction_median_mag": float(np.median(predictions)),
+            "residual_p16_mag": float(np.percentile(residual, 16)),
+            "residual_p50_mag": float(np.percentile(residual, 50)),
+            "residual_p84_mag": float(np.percentile(residual, 84)),
+        })
+    return {"mode": "anchors", "anchors": rows}
+
+
+def plot_color_anchor_curve(calibrator: HierarchicalMetallicityCalibrator, output_dir: Path) -> None:
+    """Plot the learned/fixed colour at the solar magnitude across metallicity."""
+    z_grid = np.linspace(-1.0, 0.6, 161)
+    fig, ax = plt.subplots(figsize=(6.0, 4.5))
+    if calibrator.color_anchor_mode == "parsec_surface":
+        curve = calibrator.color_surface.color_from_absg_mh(4.66, z_grid)
+        ax.plot(z_grid, curve, color="0.25", label="fixed PARSEC surface")
+    else:
+        samples = calibrator.posterior_samples or {}
+        color_a = np.asarray(samples["color_a"])
+        color_d = np.asarray(samples["color_d"])
+        curves = np.asarray([
+            calibrator._learned_color_numpy(4.66, z_grid, a, d)
+            for a, d in zip(color_a, color_d)
+        ])
+        lo, med, hi = np.percentile(curves, [16, 50, 84], axis=0)
+        ax.fill_between(z_grid, lo, hi, color="tab:blue", alpha=0.2, label="68% posterior")
+        ax.plot(z_grid, med, color="tab:blue", label="learned $C_\\theta(4.66,Z)$")
+    ax.scatter([0.0], [0.818], color="black", zorder=5, label="solar reference")
+    ax.set(xlabel="$Z$ ([M/H])", ylabel="$C_\\theta(4.66,Z)$ [mag]")
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(output_dir / "color_anchor_curve.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_bg_vs_mg(
+    output_dir: Path,
+    calibrator: Optional[HierarchicalMetallicityCalibrator] = None,
+) -> None:
+    """Plot the correction added to observed XP metallicity, ``-b_G(M_G)``.
+
+    The curve is a deterministic relative calibration, so this figure is
+    intentionally free of posterior bands and legends.  ``calibrator`` is
+    optional so the same plot can be regenerated from an existing output
+    directory without rerunning calibration.
+    """
+    mg = np.linspace(3.5, 13.5, 300)
+    bias = (
+        calibrator.bias_from_absg(mg)
+        if calibrator is not None
+        else _hm.jcaps_magnitude_bias(mg)
+    )
+    solar_bias = float(
+        calibrator.bias_from_absg(DEFAULT_SOLAR_MG)
+        if calibrator is not None
+        else _hm.jcaps_magnitude_bias(DEFAULT_SOLAR_MG)
+    )
+    if not np.isclose(solar_bias, 0.0, atol=1e-12):
+        raise ValueError(f"The plotted bias is not solar-centered: b_G(4.66)={solar_bias:.3e}.")
+
+    fig, ax = plt.subplots(figsize=(5.2, 3.7))
+    curve_color = "#A65D3A"  # muted terracotta/copper
+    correction = -np.asarray(bias)
+    guide_color = "#8A8A8A"
+    ax.axhline(
+        0.0, color=guide_color, linewidth=0.9, linestyle="--", alpha=0.75, zorder=0
+    )
+    ax.axvline(
+        DEFAULT_SOLAR_MG, color=guide_color, linewidth=0.9,
+        linestyle="--", alpha=0.75, zorder=0,
+    )
+    ax.plot(mg, correction, color=curve_color, linewidth=2.3, zorder=2)
+    ax.scatter(
+        [DEFAULT_SOLAR_MG], [0.0], s=92, marker="*",
+        facecolor=curve_color, edgecolor=curve_color, linewidth=0.8, zorder=4,
+    )
+    ax.annotate(
+        r"$b_G(M_{G,\odot})=0$",
+        xy=(DEFAULT_SOLAR_MG, 0.0),
+        xytext=(8, 12),
+        textcoords="offset points",
+        fontsize=12,
+        color="#3F3935",
+        ha="left",
+        va="bottom",
+    )
+    ax.set_xlabel(r"$M_G$ [mag]", fontsize=13)
+    ax.set_ylabel(
+        "Correction to observed [M/H]\n$-b_G(M_G)$ [dex]",
+        fontsize=12,
+        labelpad=9,
+    )
+    ax.tick_params(axis="both", labelsize=11)
+    ax.tick_params(
+        axis="both", which="both", direction="in", top=True, right=True,
+        labeltop=False, labelright=False, length=4.0, width=0.8,
+    )
+    ax.invert_xaxis()
+    ax.margins(x=0.025, y=0.16)
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(0.8)
+    fig.tight_layout(pad=1.0)
+    fig.savefig(
+        output_dir / "bg_vs_mg.png", dpi=220, bbox_inches="tight", pad_inches=0.14
+    )
+    plt.close(fig)
+
+
 def plot_calibration(
     calibrator: HierarchicalMetallicityCalibrator,
     posterior: MetallicityPosteriorGrid,
     output_dir: Path,
 ) -> None:
+    plot_bg_vs_mg(output_dir, calibrator)
     samples = calibrator.posterior_samples
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
     mg = np.linspace(3.5, 13.5, 300)
     fixed_bias = calibrator.bias_from_absg(mg)
     offset_name = "delta_z" if "delta_z" in samples else "z_offset"
-    correction = samples[offset_name][:, None] + fixed_bias[None, :]
+    offset_samples = (
+        np.asarray(samples[offset_name], dtype=float)
+        if offset_name in samples
+        else np.zeros(next(iter(samples.values())).shape[0], dtype=float)
+    )
+    z_slice = 0.0
+    slope_samples = samples.get("w_Z", samples.get("z_slope", np.zeros_like(offset_samples)))
+    # Applied correction added to the observed XP metallicity to recover the
+    # latent Z on the displayed Z=0 slice: it is the negative of the forward
+    # offset/bias map (the inverse map is used below for the histogram).
+    correction = -(
+        offset_samples[:, None]
+        + slope_samples[:, None] * (z_slice - calibrator.calibration_pivot)
+        + fixed_bias[None, :]
+    )
     lo, med, hi = np.percentile(correction, [16, 50, 84], axis=0)
     axes[0].fill_between(mg, lo, hi, color="tab:blue", alpha=0.20, label="68% interval")
-    axes[0].plot(mg, med, color="tab:blue", label="T8 JCAPS bias + absolute offset")
-    axes[0].plot(mg, fixed_bias, color="0.35", linestyle=":", label="Fixed JCAPS relative bias")
+    axes[0].plot(mg, med, color="tab:blue", label="Applied correction at $Z=0$")
+    axes[0].plot(mg, -fixed_bias, color="0.35", linestyle=":", label="Applied $-b_G(M_G)$")
     axes[0].axhline(0, color="0.4", linestyle="--", linewidth=1)
-    axes[0].axvline(8.5, color="0.75", linestyle="--", linewidth=1)
+    axes[0].axvline(DEFAULT_SOLAR_MG, color="0.75", linestyle="--", linewidth=1,
+                    label="$b_G(4.66)=0$")
     axes[0].set(
         xlabel="$M_G$",
-        ylabel="Observed JCAPS minus latent PARSEC [M/H] (dex)",
+        ylabel="Correction added to observed XP [M/H] (dex)",
     )
     axes[0].legend(frameon=False)
 
     axes[1].hist(posterior.z_quantiles[:, 1], bins=50, histtype="step", density=True, label="posterior median Z")
-    corrected_feh = calibrator.feh_observed - calibrator.fixed_bias
+    z_offset_draws = offset_samples
+    w_draws = np.asarray(slope_samples, dtype=float)
+    calibrated_values = []
+    for draw_offset, draw_slope in zip(z_offset_draws, w_draws):
+        calibrated_values.append(
+            (
+                calibrator.feh_observed
+                - draw_offset
+                - calibrator.fixed_bias
+                + draw_slope * calibrator.calibration_pivot
+            ) / (1.0 + draw_slope)
+        )
+    corrected_feh = np.asarray(calibrated_values).reshape(-1)
     axes[1].hist(
         corrected_feh.ravel(),
         bins=70,
         histtype="step",
         density=True,
-        label="JCAPS after fixed relative correction",
+        label="Globally calibrated XP [M/H]",
     )
     axes[1].set(xlabel="[M/H]", ylabel="density")
     axes[1].legend(frameon=False)
@@ -527,15 +734,28 @@ def plot_calibration(
     fig.savefig(output_dir / "metallicity_systematics.png", dpi=180)
     plt.close(fig)
 
+    if calibrator.color_anchor_mode == "solar_only":
+        return
+
     median_z = posterior.z_quantiles[:, 1]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    surface_label = ""
     for component, color in enumerate(("tab:blue", "tab:orange")):
         used = calibrator.cmd_mask[:, component]
         if not np.any(used):
             continue
-        predicted = calibrator.color_surface.color_from_absg_mh(
-            calibrator.absg[used, component], median_z[used]
-        )
+        if calibrator.color_anchor_mode == "parsec_surface":
+            predicted = calibrator.color_surface.color_from_absg_mh(
+                calibrator.absg[used, component], median_z[used]
+            )
+            surface_label = "fixed PARSEC surface"
+        else:
+            color_a = np.median(np.asarray(samples["color_a"]), axis=0)
+            color_d = np.median(np.asarray(samples["color_d"]), axis=0)
+            predicted = calibrator._learned_color_numpy(
+                calibrator.absg[used, component], median_z[used], color_a, color_d
+            )
+            surface_label = "learned $C_\\theta(M_G,Z)$"
         residual = calibrator.color_observed[used, component] - predicted
         axes[0].scatter(
             calibrator.absg[used, component], residual, s=3, alpha=0.12, color=color,
@@ -546,13 +766,14 @@ def plot_calibration(
     axes[0].set(xlabel="$M_G$", ylabel="BP-RP residual (mag)")
     axes[0].set_title(
         f"CMD terms used: {np.sum(calibrator.cmd_mask):,}/{calibrator.cmd_mask.size:,} "
-        f"(PARSEC $T_{{\\rm eff}}\\geq{calibrator.cmd_min_teff:g}$ K)"
+        f"({surface_label}; PARSEC $T_{{\\rm eff}}\\geq{calibrator.cmd_min_teff:g}$ K mask)"
     )
     axes[0].legend(frameon=False, markerscale=3)
     axes[1].set(xlabel="BP-RP residual (mag)", ylabel="density")
     fig.tight_layout()
     fig.savefig(output_dir / "cmd_residuals.png", dpi=180)
     plt.close(fig)
+    plot_color_anchor_curve(calibrator, output_dir)
 
 
 def plot_mlr_grid(grid: Mapping[str, np.ndarray], output_dir: Path) -> None:
@@ -739,7 +960,12 @@ def run_calibration(
     truth: Optional[Mapping[str, object]],
 ) -> MetallicityPosteriorGrid:
     calibrator = HierarchicalMetallicityCalibrator(
-        color_surface, cmd_min_teff=CMD_MIN_PARSEC_TEFF_K
+        color_surface,
+        cmd_min_teff=CMD_MIN_PARSEC_TEFF_K,
+        color_anchor_mode=args.color_anchor_mode,
+        color_anchors=args.color_anchors,
+        global_calibration_order=args.global_calibration_order,
+        calibration_pivot=args.calibration_pivot,
     )
     calibrator.set_data(
         row_indices=arrays["row_indices"],
@@ -749,13 +975,18 @@ def run_calibration(
         color_observed=arrays["color_observed"],
         color_sigma=arrays["color_sigma"],
     )
-    n_cmd_components = int(np.sum(calibrator.cmd_mask))
-    n_cmd_systems = int(np.sum(np.any(calibrator.cmd_mask, axis=1)))
-    print(
-        f"CMD selection: {n_cmd_components}/{calibrator.cmd_mask.size} components in "
-        f"{n_cmd_systems}/{calibrator.row_indices.size} systems have PARSEC "
-        f"Teff >= {CMD_MIN_PARSEC_TEFF_K:g} K over the full metallicity grid."
-    )
+    if calibrator.color_anchor_mode == "solar_only":
+        n_cmd_components = 0
+        n_cmd_systems = 0
+        print("Solar-only convention: b_G(4.66)=0 and Z_off=0; no CMD likelihood.")
+    else:
+        n_cmd_components = int(np.sum(calibrator.cmd_mask))
+        n_cmd_systems = int(np.sum(np.any(calibrator.cmd_mask, axis=1)))
+        print(
+            f"CMD selection: {n_cmd_components}/{calibrator.cmd_mask.size} components in "
+            f"{n_cmd_systems}/{calibrator.row_indices.size} systems have PARSEC "
+            f"Teff >= {CMD_MIN_PARSEC_TEFF_K:g} K over the full metallicity grid."
+        )
     print("Running stage-one metallicity calibration...")
     sampler = calibrator.run_mcmc(
         num_warmup=args.warmup,
@@ -785,8 +1016,13 @@ def run_calibration(
         "seed": int(args.seed),
         "mock": bool(args.mock),
         "n_systems": int(len(arrays["row_indices"])),
-        "cmd_min_parsec_teff_k": CMD_MIN_PARSEC_TEFF_K,
-        "cmd_temperature_selection": "minimum PARSEC Teff over the full latent metallicity grid",
+        "cmd_min_parsec_teff_k": (
+            None if calibrator.color_anchor_mode == "solar_only" else CMD_MIN_PARSEC_TEFF_K
+        ),
+        "cmd_temperature_selection": (
+            None if calibrator.color_anchor_mode == "solar_only"
+            else "minimum PARSEC Teff over the full latent metallicity grid"
+        ),
         "n_cmd_components": n_cmd_components,
         "n_cmd_systems": n_cmd_systems,
         "metallicity_observation_model": calibrator.observation_model_metadata(),
@@ -801,6 +1037,8 @@ def run_calibration(
         "posterior_draw_indices_digest": array_digest(selected_draw_indices),
         "population_prior": "six truncated Gaussian bases, Dirichlet(1,...,1)",
         "cmd_surface_construction": {
+            "default_model": "learned cubic M_G basis with coefficients linear in Z",
+            "reference_mode": "fixed PARSEC likelihood only when color_anchor_mode=parsec_surface",
             "source_age_selection": "9.3 < log10(age/yr) < 10.0",
             "source_gmag_selection": "3 < G_mag < 15",
             "evaluation_grid": "500 equally spaced M_G points on [3.5,13.5]",
@@ -817,6 +1055,12 @@ def run_calibration(
             arrays["absg"], arrays["color_observed"], arrays["color_sigma"]
         ),
     }
+    anchor_diagnostics = color_anchor_diagnostics(calibrator)
+    metadata["color_anchor_diagnostics"] = anchor_diagnostics
+    (output_dir / "color_anchor_diagnostics.json").write_text(
+        json.dumps(anchor_diagnostics, indent=2), encoding="utf-8"
+    )
+    print("Color-anchor diagnostics:", json.dumps(anchor_diagnostics, sort_keys=True))
     posterior = calibrator.posterior_grid(
         max_draws=args.posterior_grid_draws, seed=args.seed, metadata=metadata
     )
@@ -1249,6 +1493,20 @@ def parse_args():
     parser.add_argument("--mock-systems", type=int, default=300)
     parser.add_argument("--max-systems", type=int, default=None)
     parser.add_argument(
+        "--color-anchor-mode", choices=("solar_only", "anchors", "parsec_surface"),
+        default="solar_only",
+        help="Calibration convention; solar_only fixes b_G(4.66)=0 and Z_off=0 without a CMD likelihood.",
+    )
+    parser.add_argument(
+        "--color-anchors", type=Path, default=None,
+        help="JSON list of {absg,z_ref,color_ref,sigma_color} CMD anchors.",
+    )
+    parser.add_argument(
+        "--global-calibration-order", type=int, choices=(0, 1), default=0,
+        help="For CMD modes, 0 fits Z_off and 1 also fits w_Z; solar_only fixes both to zero.",
+    )
+    parser.add_argument("--calibration-pivot", type=float, default=0.0)
+    parser.add_argument(
         "--cmd-anchored-only",
         action="store_true",
         help=(
@@ -1317,6 +1575,14 @@ def parse_args():
                              "(log B, log uc, log C) jointly with the MLR surface.")
     parser.add_argument("--target-accept", type=float, default=0.9)
     args = parser.parse_args()
+    try:
+        args.color_anchors = load_color_anchors(args.color_anchors)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        parser.error(f"Invalid --color-anchors JSON: {exc}")
+    if args.color_anchor_mode == "parsec_surface" and args.color_anchors is not None:
+        parser.error("--color-anchors cannot be combined with --color-anchor-mode parsec_surface.")
+    if args.color_anchor_mode == "solar_only" and args.global_calibration_order != 0:
+        parser.error("solar_only requires --global-calibration-order=0 because Z_off and w_Z are fixed to zero.")
     if args.cmd_anchored_only and args.both_cmd_anchored_only:
         parser.error(
             "--cmd-anchored-only and --both-cmd-anchored-only are mutually exclusive."

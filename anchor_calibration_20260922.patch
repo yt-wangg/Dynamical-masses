@@ -1,0 +1,814 @@
+diff --git a/src/binary_masses/hierarchical_metallicity.py b/src/binary_masses/hierarchical_metallicity.py
+index 41236d8..026768d 100644
+--- a/src/binary_masses/hierarchical_metallicity.py
++++ b/src/binary_masses/hierarchical_metallicity.py
+@@ -55,6 +55,15 @@ JCAPS_BIAS_VALUES = np.array(
+ )
+ JCAPS_EXTRA_SCALE = 0.04646502063846824
+ JCAPS_STUDENT_DF = 2.5236494464371377
++# Default absolute CMD information.  This is a solar colour anchor, not a
++# metallicity or magnitude-bias anchor.  The latter remains relative and is
++# supplied by the binary-difference fit below.
++DEFAULT_COLOR_ANCHOR = {
++    "absg": 4.66,
++    "z_ref": 0.0,
++    "color_ref": 0.818,
++    "sigma_color": 0.029,
++}
+ RICE_GOOD_A = 5.434e-3
+ RICE_GOOD_B = 2.544e-3
+ RICE_GOOD_UC = 35.67
+@@ -812,12 +821,14 @@ class MetallicityPosteriorGrid:
+ 
+ 
+ class HierarchicalMetallicityCalibrator:
+-    """Stage-one T6d JCAPS observation model plus a warm-PARSEC CMD anchor.
++    """Stage-one T6d JCAPS observation model plus joint CMD calibration.
+ 
+     The relative magnitude bias, per-star extra Student-t scale, and degrees of
+     freedom are fixed to the pair-difference calibration documented in T6d.
+-    Only the absolute JCAPS-minus-PARSEC offset, CMD scatter, and population
+-    prior weights are inferred here.
++    The absolute metallicity map has an optional linear term, while the CMD
++    surface has a learned low-dimensional colour model constrained by explicit
++    colour anchors.  The default anchor is the solar point
++    ``(M_G, Z, BP-RP)=(4.66, 0, 0.818 +/- 0.029)``.
+     """
+ 
+     def __init__(
+@@ -831,6 +842,10 @@ class HierarchicalMetallicityCalibrator:
+         bias_values: Sequence[float] = JCAPS_BIAS_VALUES,
+         extra_scale: float = JCAPS_EXTRA_SCALE,
+         student_df: float = JCAPS_STUDENT_DF,
++        color_anchors: Optional[Sequence[Mapping[str, float]]] = None,
++        color_anchor_mode: str = "solar_only",
++        global_calibration_order: int = 0,
++        calibration_pivot: float = 0.0,
+     ):
+         self.color_surface = color_surface
+         self.z_grid = _as_native_f64(z_grid, name="z_grid", ndim=1)
+@@ -859,12 +874,109 @@ class HierarchicalMetallicityCalibrator:
+         self.population_sigma = (
+             self.z_grid[-1] - self.z_grid[0]
+         ) / self.population_components
++        self.calibration_pivot = float(calibration_pivot)
++        self.color_anchor_mode = str(color_anchor_mode)
++        if self.color_anchor_mode not in ("solar_only", "anchors", "parsec_surface"):
++            raise ValueError(
++                "color_anchor_mode must be 'solar_only', 'anchors', or 'parsec_surface'."
++            )
++        self.global_calibration_order = int(global_calibration_order)
++        if self.global_calibration_order not in (0, 1):
++            raise ValueError("global_calibration_order must be 0 (constant) or 1 (linear).")
++        if self.color_anchor_mode == "parsec_surface":
++            if color_anchors is not None:
++                raise ValueError(
++                    "color_anchors cannot be supplied with parsec_surface; "
++                    "use color_anchor_mode='anchors'."
++                )
++            color_anchors = ()
++        elif color_anchors is None:
++            color_anchors = (DEFAULT_COLOR_ANCHOR,)
++        elif self.color_anchor_mode == "solar_only":
++            self.color_anchor_mode = "anchors"
++        self.color_anchors = (
++            tuple() if self.color_anchor_mode == "parsec_surface"
++            else self._validate_color_anchors(color_anchors)
++        )
++        if self.global_calibration_order == 1 and self.color_anchor_mode != "parsec_surface":
++            unique_z = np.unique([anchor["z_ref"] for anchor in self.color_anchors])
++            if unique_z.size < 2:
++                raise ValueError(
++                    "Fitting w_Z requires at least two color anchors with distinct "
++                    "reference metallicities Z_ref."
++                )
+         self.sampler = None
+         self.posterior_samples = None
+         self._data_set = False
+         self.selected_draw_indices = None
+         self.posterior_draw_seed = None
+ 
++    def _validate_color_anchors(self, anchors):
++        """Normalize user color anchors and enforce the absolute-CMD schema."""
++        required = ("absg", "z_ref", "color_ref", "sigma_color")
++        normalized = []
++        for index, anchor in enumerate(anchors):
++            if isinstance(anchor, Mapping):
++                values = anchor
++            else:
++                if len(anchor) != 4:
++                    raise ValueError(
++                        "Each color anchor must contain (absg, z_ref, color_ref, sigma_color)."
++                    )
++                values = dict(zip(required, anchor))
++            missing = [name for name in required if name not in values]
++            if missing:
++                raise ValueError(f"Color anchor {index} is missing fields: {missing}.")
++            item = {name: float(values[name]) for name in required}
++            if not np.all(np.isfinite(list(item.values()))):
++                raise ValueError(f"Color anchor {index} must contain finite values.")
++            if item["sigma_color"] <= 0:
++                raise ValueError(f"Color anchor {index} sigma_color must be positive.")
++            normalized.append(item)
++        if not normalized:
++            raise ValueError("At least one color anchor is required for absolute calibration.")
++        return tuple(normalized)
++
++    def _color_basis_numpy(self, absg):
++        """Cubic basis used by the learned intrinsic color surface."""
++        grid = self.color_surface.absg_grid_np
++        center = 0.5 * (grid[0] + grid[-1])
++        x = (np.asarray(absg, dtype=np.float64) - center)
++        x /= max(float(grid[-1] - grid[0]), 1e-12) / 2.0
++        return np.stack([np.ones_like(x), x, x**2, x**3], axis=-1)
++
++    def _learned_color_numpy(self, absg, z, color_a=None, color_d=None):
++        basis = self._color_basis_numpy(absg)
++        a = np.zeros(4, dtype=np.float64) if color_a is None else np.asarray(color_a, dtype=float)
++        d = np.zeros(4, dtype=np.float64) if color_d is None else np.asarray(color_d, dtype=float)
++        if a.shape != (4,) or d.shape != (4,):
++            raise ValueError("color_a and color_d must each have four cubic-basis coefficients.")
++        return np.einsum("...i,i->...", basis, a) + np.asarray(z) * np.einsum("...i,i->...", basis, d)
++
++    def color_anchor_log_likelihood(self, color_a=None, color_d=None) -> float:
++        """Gaussian log likelihood for absolute intrinsic-color anchors."""
++        if self.color_anchor_mode == "parsec_surface":
++            return 0.0
++        value = 0.0
++        for anchor in self.color_anchors:
++            model = float(self._learned_color_numpy(
++                anchor["absg"], anchor["z_ref"], color_a, color_d
++            ))
++            sigma = anchor["sigma_color"]
++            residual = (anchor["color_ref"] - model) / sigma
++            value += -0.5 * residual**2 - np.log(sigma * np.sqrt(2.0 * np.pi))
++        return float(value)
++
++    def metallicity_mean(self, z_true, *, z_offset=0.0, z_slope=0.0, bias=0.0):
++        """Map latent true metallicity to JCAPS mean, including only relative b_G."""
++        return (
++            np.asarray(z_true) + float(z_slope) * (
++                np.asarray(z_true) - self.calibration_pivot
++            )
++            + float(z_offset)
++            + np.asarray(bias)
++        )
++
+     def bias_from_absg(self, absg) -> np.ndarray:
+         """Interpolate the fixed T6d relative metallicity bias in dex."""
+         return np.interp(
+@@ -876,10 +988,31 @@ class HierarchicalMetallicityCalibrator:
+     def observation_model_metadata(self) -> Dict[str, object]:
+         """Return the fixed T6d plug-in parameters in a serializable form."""
+         return {
+-            "model": "t8_jcaps_student_t_independent_members",
+-            "sampled_parameters": ["delta_z", "s_C", "population_weights"],
++            "model": "t8_jcaps_student_t_independent_members_joint_cmd",
++            "sampled_parameters": ["delta_z"] + (
++                ["w_Z"] if self.global_calibration_order == 1 else []
++            ) + ["s_C", "population_weights"] + (
++                [] if self.color_anchor_mode == "parsec_surface" else ["color_a", "color_d"]
++            ),
+             "delta_z_prior": {"distribution": "Normal", "loc_dex": 0.0, "scale_dex": 0.3},
++            "w_Z_prior": {"distribution": "Normal", "loc": 0.0, "scale": 0.3,
++                          "enabled": bool(self.global_calibration_order == 1)},
++            "global_calibration_order": self.global_calibration_order,
++            "calibration_pivot_dex": self.calibration_pivot,
++            "metallicity_map": "Z_true + w_Z*(Z_true-Z_piv) + Z_off + b_G(M_G)",
++            "absolute_calibration": "color anchors constrain intrinsic CMD surface; b_G is excluded",
++            "color_surface_parameterization": (
++                "legacy fixed PARSEC surface"
++                if self.color_anchor_mode == "parsec_surface"
++                else "C_theta=B(M_G)@color_a + Z*B(M_G)@color_d"
++            ),
++            "color_anchor_mode": self.color_anchor_mode,
++            "color_anchors": [dict(anchor) for anchor in self.color_anchors],
+             "s_C_prior": {"distribution": "HalfNormal", "scale_mag": 0.1},
++            "color_coefficient_priors": (
++                None if self.color_anchor_mode == "parsec_surface"
++                else {"color_a": "Normal(0,2) per coefficient", "color_d": "Normal(0,1) per coefficient"}
++            ),
+             "cmd_min_parsec_teff_k": float(self.cmd_min_teff) if self.cmd_min_teff is not None else None,
+             "metallicity_grid": self.z_grid.tolist(),
+             "metallicity_grid_weights": self.grid_weights.tolist(),
+@@ -996,11 +1129,20 @@ class HierarchicalMetallicityCalibrator:
+         if not self._data_set:
+             raise ValueError("Call set_data() first.")
+         z_value = params.get("delta_z", params.get("z_offset"))
++        slope_value = params.get("w_Z", params.get("z_slope", 0.0))
+         scatter_value = params.get("s_C", params.get("cmd_scatter"))
+         if z_value is None or scatter_value is None:
+             raise KeyError("log_joint_numpy requires delta_z and s_C.")
+         z_offset = float(np.asarray(z_value))
++        z_slope = float(np.asarray(slope_value))
+         cmd_scatter = float(np.asarray(scatter_value))
++        color_a = params.get("color_a")
++        color_d = params.get("color_d")
++        if self.color_anchor_mode != "parsec_surface" and (color_a is None or color_d is None):
++            raise ValueError(
++                "Learned color surface requires color_a and color_d coefficients; "
++                "use color_anchor_mode='parsec_surface' for the legacy fixed surface."
++            )
+         population_weights = np.asarray(params["population_weights"], dtype=float)
+         population_density = self._population_component_density_np() @ population_weights
+         log_joint = np.log(self.grid_weights)[None, :] + np.log(population_density)[None, :]
+@@ -1008,10 +1150,9 @@ class HierarchicalMetallicityCalibrator:
+             log_joint, (self.row_indices.size, self.z_grid.size)
+         ).copy()
+         for component in range(2):
+-            loc = (
+-                z_offset
+-                + self.z_grid[None, :]
+-                + self.fixed_bias[:, component, None]
++            loc = self.metallicity_mean(
++                self.z_grid[None, :], z_offset=z_offset, z_slope=z_slope,
++                bias=self.fixed_bias[:, component, None]
+             )
+             scale = np.sqrt(
+                 self.feh_sigma[:, component, None] ** 2 + self.extra_scale**2
+@@ -1022,9 +1163,14 @@ class HierarchicalMetallicityCalibrator:
+                 loc=loc,
+                 scale=scale,
+             )
+-            predicted_color = self.color_surface.color_from_absg_mh(
+-                self.absg[:, component, None], self.z_grid[None, :]
+-            )
++            if self.color_anchor_mode == "parsec_surface":
++                predicted_color = self.color_surface.color_from_absg_mh(
++                    self.absg[:, component, None], self.z_grid[None, :]
++                )
++            else:
++                predicted_color = self._learned_color_numpy(
++                    self.absg[:, component, None], self.z_grid[None, :], color_a, color_d
++                )
+             color_scale = np.sqrt(
+                 self.color_sigma[:, component, None] ** 2 + cmd_scatter**2
+             )
+@@ -1064,24 +1210,71 @@ class HierarchicalMetallicityCalibrator:
+         fixed_bias = jnp.asarray(self.fixed_bias)
+         extra_scale = float(self.extra_scale)
+         student_df = float(self.student_df)
++        learned_color = self.color_anchor_mode != "parsec_surface"
++        color_grid = self.color_surface.absg_grid_np
++        color_center = 0.5 * float(color_grid[0] + color_grid[-1])
++        color_half_range = max(float(color_grid[-1] - color_grid[0]) / 2.0, 1e-12)
++        if learned_color:
++            anchor_absg = jnp.asarray([anchor["absg"] for anchor in self.color_anchors])
++            anchor_z = jnp.asarray([anchor["z_ref"] for anchor in self.color_anchors])
++            anchor_color = jnp.asarray([anchor["color_ref"] for anchor in self.color_anchors])
++            anchor_sigma = jnp.asarray([anchor["sigma_color"] for anchor in self.color_anchors])
++        calibration_pivot = float(self.calibration_pivot)
++        fit_slope = self.global_calibration_order == 1
++
++        def learned_color_jax(absg, z, color_a, color_d):
++            x = (absg - color_center) / color_half_range
++            basis = jnp.stack([jnp.ones_like(x), x, x**2, x**3], axis=-1)
++            return jnp.einsum("...i,i->...", basis, color_a) + z * jnp.einsum(
++                "...i,i->...", basis, color_d
++            )
+ 
+         def model(absg, feh_observed, feh_sigma, color_observed, color_sigma):
+             delta_z = numpyro.sample("delta_z", dist.Normal(0.0, 0.3))
++            if fit_slope:
++                w_z = numpyro.sample("w_Z", dist.Normal(0.0, 0.3))
++            else:
++                w_z = 0.0
+             s_C = numpyro.sample("s_C", dist.HalfNormal(0.1))
++            if learned_color:
++                color_a = numpyro.sample(
++                    "color_a", dist.Normal(0.0, 2.0).expand([4]).to_event(1)
++                )
++                color_d = numpyro.sample(
++                    "color_d", dist.Normal(0.0, 1.0).expand([4]).to_event(1)
++                )
+             population_weights = numpyro.sample(
+                 "population_weights", dist.Dirichlet(jnp.ones(self.population_components))
+             )
++            if learned_color:
++                anchor_prediction = learned_color_jax(
++                    anchor_absg, anchor_z, color_a, color_d
++                )
++                numpyro.factor(
++                    "color_anchors",
++                    jnp.sum(dist.Normal(anchor_prediction, anchor_sigma).log_prob(anchor_color)),
++                )
+             population_density = component_density @ population_weights
+             log_joint = log_grid_weights[None, :] + jnp.log(population_density)[None, :]
+             for component in range(2):
+-                loc = delta_z + z_grid[None, :] + fixed_bias[:, component, None]
++                loc = (
++                    z_grid[None, :]
++                    + w_z * (z_grid[None, :] - calibration_pivot)
++                    + delta_z
++                    + fixed_bias[:, component, None]
++                )
+                 scale = jnp.sqrt(feh_sigma[:, component, None] ** 2 + extra_scale**2)
+                 log_metal = dist.StudentT(
+                     student_df, loc=loc, scale=scale
+                 ).log_prob(feh_observed[:, component, None])
+-                predicted_color = self.color_surface.color_from_absg_mh_jax(
+-                    absg[:, component, None], z_grid[None, :]
+-                )
++                if learned_color:
++                    predicted_color = learned_color_jax(
++                        absg[:, component, None], z_grid[None, :], color_a, color_d
++                    )
++                else:
++                    predicted_color = self.color_surface.color_from_absg_mh_jax(
++                        absg[:, component, None], z_grid[None, :]
++                    )
+                 effective_color_sigma = jnp.sqrt(
+                     color_sigma[:, component, None] ** 2 + s_C**2
+                 )
+@@ -1094,8 +1287,9 @@ class HierarchicalMetallicityCalibrator:
+             log_likelihood = jax_logsumexp(log_joint, axis=1)
+             numpyro.factor("observations", jnp.sum(log_likelihood))
+             # Compatibility aliases are deterministic, not additional sampled
+-            # global parameters; the T8 vector remains (delta_z, s_C, omega).
++            # global parameters.
+             numpyro.deterministic("z_offset", delta_z)
++            numpyro.deterministic("z_slope", w_z)
+             numpyro.deterministic("cmd_scatter", s_C)
+ 
+         return model
+@@ -1169,7 +1363,18 @@ class HierarchicalMetallicityCalibrator:
+             name: values[draw_indices] for name, values in self.posterior_samples.items()
+         }
+         delta_samples = samples.get("delta_z", samples.get("z_offset"))
++        slope_samples = samples.get("w_Z", samples.get("z_slope"))
++        if slope_samples is None:
++            slope_samples = np.zeros(draw_count, dtype=np.float64)
+         scatter_samples = samples.get("s_C", samples.get("cmd_scatter"))
++        color_a_samples = samples.get("color_a")
++        color_d_samples = samples.get("color_d")
++        if self.color_anchor_mode != "parsec_surface":
++            if color_a_samples is None or color_d_samples is None:
++                raise ValueError(
++                    "Learned color surface posterior requires color_a and color_d samples; "
++                    "use color_anchor_mode='parsec_surface' for the legacy fixed surface."
++                )
+         if delta_samples is None or scatter_samples is None:
+             raise KeyError("Posterior samples must contain delta_z and s_C.")
+         component_density = self._population_component_density_np()
+@@ -1191,8 +1396,10 @@ class HierarchicalMetallicityCalibrator:
+             ).copy()
+             for component in range(2):
+                 loc = (
+-                    delta_samples[:, None, None]
+-                    + self.z_grid[None, None, :]
++                    self.z_grid[None, None, :]
++                    + slope_samples[:, None, None]
++                    * (self.z_grid[None, None, :] - self.calibration_pivot)
++                    + delta_samples[:, None, None]
+                     + self.fixed_bias[start:stop, component][None, :, None]
+                 )
+                 effective_sigma = np.sqrt(
+@@ -1208,9 +1415,18 @@ class HierarchicalMetallicityCalibrator:
+                     loc=loc,
+                     scale=effective_sigma,
+                 )
+-                predicted_color = self.color_surface.color_from_absg_mh(
+-                    self.absg[start:stop, component, None], self.z_grid[None, :]
+-                )[None, :, :]
++                if self.color_anchor_mode == "parsec_surface":
++                    predicted_color = self.color_surface.color_from_absg_mh(
++                        self.absg[start:stop, component, None], self.z_grid[None, :]
++                    )[None, :, :]
++                else:
++                    basis = self._color_basis_numpy(self.absg[start:stop, component])
++                    intercept = np.einsum("bi,di->db", basis, color_a_samples)
++                    slope = np.einsum("bi,di->db", basis, color_d_samples)
++                    predicted_color = (
++                        intercept[:, :, None]
++                        + slope[:, :, None] * self.z_grid[None, None, :]
++                    )
+                 effective_color_sigma = np.sqrt(
+                     self.color_sigma[
+                         start:stop, component
+diff --git a/src/examples/run_hierarchical_metallicity_test.py b/src/examples/run_hierarchical_metallicity_test.py
+index 62639ac..18c62ab 100755
+--- a/src/examples/run_hierarchical_metallicity_test.py
++++ b/src/examples/run_hierarchical_metallicity_test.py
+@@ -93,6 +93,23 @@ def _selected_draw_indices(sample_count: int, max_draws: int, seed: int) -> np.n
+     return np.sort(np.random.default_rng(int(seed)).choice(sample_count, size=count, replace=False)).astype(np.int64)
+ 
+ 
++def load_color_anchors(path: Optional[Path]):
++    """Load explicit CMD anchors from a JSON list or ``{"anchors": [...]}``."""
++    if path is None:
++        return None
++    payload = json.loads(Path(path).read_text(encoding="utf-8"))
++    anchors = payload.get("anchors") if isinstance(payload, dict) else payload
++    if not isinstance(anchors, list):
++        raise ValueError("Color-anchor JSON must be a list or an object with an 'anchors' list.")
++    required = {"absg", "z_ref", "color_ref", "sigma_color"}
++    for index, anchor in enumerate(anchors):
++        if not isinstance(anchor, dict) or set(anchor) != required:
++            raise ValueError(
++                f"Color anchor {index} must contain exactly {sorted(required)}."
++            )
++    return anchors
++
++
+ def load_real_data(data_path: Path) -> Dict[str, np.ndarray]:
+     table = Table.read(data_path)
+     arrays = {key: _stack_columns(table, names) for key, names in INPUT_COLUMNS.items()}
+@@ -499,16 +516,22 @@ def plot_calibration(
+     mg = np.linspace(3.5, 13.5, 300)
+     fixed_bias = calibrator.bias_from_absg(mg)
+     offset_name = "delta_z" if "delta_z" in samples else "z_offset"
+-    correction = samples[offset_name][:, None] + fixed_bias[None, :]
++    z_slice = 0.0
++    slope_samples = samples.get("w_Z", samples.get("z_slope", np.zeros_like(samples[offset_name])))
++    correction = (
++        samples[offset_name][:, None]
++        + slope_samples[:, None] * (z_slice - calibrator.calibration_pivot)
++        + fixed_bias[None, :]
++    )
+     lo, med, hi = np.percentile(correction, [16, 50, 84], axis=0)
+     axes[0].fill_between(mg, lo, hi, color="tab:blue", alpha=0.20, label="68% interval")
+-    axes[0].plot(mg, med, color="tab:blue", label="T8 JCAPS bias + absolute offset")
++    axes[0].plot(mg, med, color="tab:blue", label="JCAPS correction at $Z=0$ + $Z_{\\rm off}$")
+     axes[0].plot(mg, fixed_bias, color="0.35", linestyle=":", label="Fixed JCAPS relative bias")
+     axes[0].axhline(0, color="0.4", linestyle="--", linewidth=1)
+     axes[0].axvline(8.5, color="0.75", linestyle="--", linewidth=1)
+     axes[0].set(
+         xlabel="$M_G$",
+-        ylabel="Observed JCAPS minus latent PARSEC [M/H] (dex)",
++        ylabel="Observed JCAPS minus latent $Z$ (dex)",
+     )
+     axes[0].legend(frameon=False)
+ 
+@@ -533,9 +556,18 @@ def plot_calibration(
+         used = calibrator.cmd_mask[:, component]
+         if not np.any(used):
+             continue
+-        predicted = calibrator.color_surface.color_from_absg_mh(
+-            calibrator.absg[used, component], median_z[used]
+-        )
++        if calibrator.color_anchor_mode == "parsec_surface":
++            predicted = calibrator.color_surface.color_from_absg_mh(
++                calibrator.absg[used, component], median_z[used]
++            )
++            surface_label = "fixed PARSEC surface"
++        else:
++            color_a = np.median(np.asarray(samples["color_a"]), axis=0)
++            color_d = np.median(np.asarray(samples["color_d"]), axis=0)
++            predicted = calibrator._learned_color_numpy(
++                calibrator.absg[used, component], median_z[used], color_a, color_d
++            )
++            surface_label = "learned $C_\\theta(M_G,Z)$"
+         residual = calibrator.color_observed[used, component] - predicted
+         axes[0].scatter(
+             calibrator.absg[used, component], residual, s=3, alpha=0.12, color=color,
+@@ -546,7 +578,7 @@ def plot_calibration(
+     axes[0].set(xlabel="$M_G$", ylabel="BP-RP residual (mag)")
+     axes[0].set_title(
+         f"CMD terms used: {np.sum(calibrator.cmd_mask):,}/{calibrator.cmd_mask.size:,} "
+-        f"(PARSEC $T_{{\\rm eff}}\\geq{calibrator.cmd_min_teff:g}$ K)"
++        f"({surface_label}; PARSEC $T_{{\\rm eff}}\\geq{calibrator.cmd_min_teff:g}$ K mask)"
+     )
+     axes[0].legend(frameon=False, markerscale=3)
+     axes[1].set(xlabel="BP-RP residual (mag)", ylabel="density")
+@@ -739,7 +771,12 @@ def run_calibration(
+     truth: Optional[Mapping[str, object]],
+ ) -> MetallicityPosteriorGrid:
+     calibrator = HierarchicalMetallicityCalibrator(
+-        color_surface, cmd_min_teff=CMD_MIN_PARSEC_TEFF_K
++        color_surface,
++        cmd_min_teff=CMD_MIN_PARSEC_TEFF_K,
++        color_anchor_mode=args.color_anchor_mode,
++        color_anchors=args.color_anchors,
++        global_calibration_order=args.global_calibration_order,
++        calibration_pivot=args.calibration_pivot,
+     )
+     calibrator.set_data(
+         row_indices=arrays["row_indices"],
+@@ -801,6 +838,8 @@ def run_calibration(
+         "posterior_draw_indices_digest": array_digest(selected_draw_indices),
+         "population_prior": "six truncated Gaussian bases, Dirichlet(1,...,1)",
+         "cmd_surface_construction": {
++            "default_model": "learned cubic M_G basis with coefficients linear in Z",
++            "reference_mode": "fixed PARSEC likelihood only when color_anchor_mode=parsec_surface",
+             "source_age_selection": "9.3 < log10(age/yr) < 10.0",
+             "source_gmag_selection": "3 < G_mag < 15",
+             "evaluation_grid": "500 equally spaced M_G points on [3.5,13.5]",
+@@ -1248,6 +1287,20 @@ def parse_args():
+     parser.add_argument("--mock", action="store_true", help="Use a generated recovery data set instead of the real FITS table.")
+     parser.add_argument("--mock-systems", type=int, default=300)
+     parser.add_argument("--max-systems", type=int, default=None)
++    parser.add_argument(
++        "--color-anchor-mode", choices=("solar_only", "anchors", "parsec_surface"),
++        default="solar_only",
++        help="Absolute CMD calibration mode; solar_only uses the default solar color anchor.",
++    )
++    parser.add_argument(
++        "--color-anchors", type=Path, default=None,
++        help="JSON list of {absg,z_ref,color_ref,sigma_color} CMD anchors.",
++    )
++    parser.add_argument(
++        "--global-calibration-order", type=int, choices=(0, 1), default=0,
++        help="0: fit Z_off only; 1: also fit w_Z (requires multi-Z anchors unless parsec_surface).",
++    )
++    parser.add_argument("--calibration-pivot", type=float, default=0.0)
+     parser.add_argument(
+         "--cmd-anchored-only",
+         action="store_true",
+@@ -1317,6 +1370,12 @@ def parse_args():
+                              "(log B, log uc, log C) jointly with the MLR surface.")
+     parser.add_argument("--target-accept", type=float, default=0.9)
+     args = parser.parse_args()
++    try:
++        args.color_anchors = load_color_anchors(args.color_anchors)
++    except (OSError, ValueError, json.JSONDecodeError) as exc:
++        parser.error(f"Invalid --color-anchors JSON: {exc}")
++    if args.color_anchor_mode == "parsec_surface" and args.color_anchors is not None:
++        parser.error("--color-anchors cannot be combined with --color-anchor-mode parsec_surface.")
+     if args.cmd_anchored_only and args.both_cmd_anchored_only:
+         parser.error(
+             "--cmd-anchored-only and --both-cmd-anchored-only are mutually exclusive."
+diff --git a/test/test_hierarchical_metallicity.py b/test/test_hierarchical_metallicity.py
+index 210a544..ede485b 100755
+--- a/test/test_hierarchical_metallicity.py
++++ b/test/test_hierarchical_metallicity.py
+@@ -26,6 +26,7 @@ from binary_masses.hierarchical_metallicity import (
+     JCAPS_BIAS_VALUES,
+     JCAPS_EXTRA_SCALE,
+     JCAPS_STUDENT_DF,
++    DEFAULT_COLOR_ANCHOR,
+     MetallicityPosteriorGrid,
+     MonotoneTensorSplineMLR,
+     ThreeKnotMetallicityMLR,
+@@ -47,6 +48,7 @@ from run_hierarchical_metallicity_test import (
+     T8_WORKFLOW_ID,
+     _require_t8_posterior_metadata,
+     _require_t8_lookup_metadata,
++    load_color_anchors,
+ )
+ from run_t8_holdout_validation import (
+     evaluate_heldout,
+@@ -160,6 +162,138 @@ def simple_dynamics_lookup(rows, u, u_sigma):
+ 
+ 
+ class HierarchicalMetallicityTests(unittest.TestCase):
++    def test_default_solar_color_anchor_is_constant_calibration(self):
++        calibrator = HierarchicalMetallicityCalibrator(
++            simple_color_surface(), cmd_min_teff=None
++        )
++        self.assertEqual(calibrator.global_calibration_order, 0)
++        self.assertEqual(len(calibrator.color_anchors), 1)
++        self.assertEqual(calibrator.color_anchors[0], DEFAULT_COLOR_ANCHOR)
++        self.assertAlmostEqual(calibrator.calibration_pivot, 0.0)
++        self.assertEqual(calibrator.color_anchor_mode, "solar_only")
++        self.assertEqual(len(calibrator.observation_model_metadata()["sampled_parameters"]), 5)
++
++    def test_custom_constant_color_anchor_is_accepted(self):
++        anchor = {"absg": 6.0, "z_ref": 0.0, "color_ref": 1.2, "sigma_color": 0.04}
++        calibrator = HierarchicalMetallicityCalibrator(
++            simple_color_surface(), color_anchors=[anchor], cmd_min_teff=None
++        )
++        self.assertEqual(calibrator.color_anchors, (anchor,))
++        self.assertEqual(calibrator.observation_model_metadata()["global_calibration_order"], 0)
++
++    def test_multi_anchor_linear_map_recovers_supplied_slope(self):
++        anchors = [
++            {"absg": 4.66, "z_ref": -0.5, "color_ref": 0.7, "sigma_color": 0.03},
++            {"absg": 4.66, "z_ref": 0.4, "color_ref": 0.9, "sigma_color": 0.03},
++        ]
++        calibrator = HierarchicalMetallicityCalibrator(
++            simple_color_surface(), color_anchors=anchors,
++            global_calibration_order=1, cmd_min_teff=None,
++        )
++        means = calibrator.metallicity_mean(
++            np.array([-0.5, 0.4]), z_offset=0.1, z_slope=0.2
++        )
++        self.assertTrue(np.allclose(means, np.array([-0.5, 0.58])))
++        self.assertIn("w_Z", calibrator.observation_model_metadata()["sampled_parameters"])
++
++    def test_learned_surface_coefficients_change_anchor_likelihood(self):
++        calibrator = HierarchicalMetallicityCalibrator(
++            simple_color_surface(), color_anchors=[DEFAULT_COLOR_ANCHOR], cmd_min_teff=None
++        )
++        zero = calibrator.color_anchor_log_likelihood(
++            np.zeros(4), np.zeros(4)
++        )
++        shifted = calibrator.color_anchor_log_likelihood(
++            np.array([0.5, 0.0, 0.0, 0.0]), np.zeros(4)
++        )
++        self.assertNotEqual(zero, shifted)
++
++    def test_multi_z_anchors_evaluate_distinct_surface_positions(self):
++        anchors = [
++            {"absg": 4.66, "z_ref": -0.5, "color_ref": 0.2, "sigma_color": 0.03},
++            {"absg": 4.66, "z_ref": 0.5, "color_ref": 0.7, "sigma_color": 0.03},
++        ]
++        calibrator = HierarchicalMetallicityCalibrator(
++            simple_color_surface(), color_anchors=anchors, cmd_min_teff=None
++        )
++        coeff_a = np.array([0.45, 0.0, 0.0, 0.0])
++        coeff_d = np.array([0.40, 0.0, 0.0, 0.0])
++        self.assertNotEqual(
++            calibrator._learned_color_numpy(4.66, -0.5, coeff_a, coeff_d),
++            calibrator._learned_color_numpy(4.66, 0.5, coeff_a, coeff_d),
++        )
++
++    def test_parsec_surface_has_legacy_trace_without_learned_coefficients(self):
++        calibrator = HierarchicalMetallicityCalibrator(
++            simple_color_surface(), color_anchor_mode="parsec_surface", cmd_min_teff=None
++        )
++        self.assertEqual(calibrator.color_anchors, ())
++        self.assertEqual(
++            calibrator.observation_model_metadata()["color_surface_parameterization"],
++            "legacy fixed PARSEC surface",
++        )
++        import jax.numpy as jnp
++        from numpyro import handlers
++        calibrator.set_data(
++            row_indices=np.array([1]),
++            absg=np.array([[5.0, 7.0]]),
++            feh_observed=np.zeros((1, 2)),
++            feh_sigma=np.full((1, 2), 0.1),
++            color_observed=np.ones((1, 2)),
++            color_sigma=np.full((1, 2), 0.02),
++        )
++        trace = handlers.trace(handlers.seed(calibrator._build_numpyro_model(), rng_seed=6)).get_trace(
++            jnp.asarray(calibrator.absg), jnp.asarray(calibrator.feh_observed),
++            jnp.asarray(calibrator.feh_sigma), jnp.asarray(calibrator.color_observed),
++            jnp.asarray(calibrator.color_sigma),
++        )
++        self.assertNotIn("color_a", trace)
++        self.assertNotIn("color_d", trace)
++        self.assertNotIn("color_anchors", trace)
++
++    def test_linear_calibration_rejects_single_reference_metallicity(self):
++        with self.assertRaisesRegex(ValueError, "at least two.*distinct.*Z_ref"):
++            HierarchicalMetallicityCalibrator(
++                simple_color_surface(),
++                color_anchors=[DEFAULT_COLOR_ANCHOR],
++                global_calibration_order=1,
++                cmd_min_teff=None,
++            )
++
++    def test_learned_surface_requires_posterior_coefficients(self):
++        calibrator = set_small_calibrator(simple_color_surface())
++        with self.assertRaisesRegex(ValueError, "requires color_a and color_d"):
++            calibrator.log_joint_numpy({
++                "z_offset": 0.0,
++                "cmd_scatter": 0.03,
++                "population_weights": np.ones(3) / 3.0,
++            })
++        calibrator.posterior_samples = {
++            "z_offset": np.zeros(2),
++            "cmd_scatter": np.full(2, 0.03),
++            "population_weights": np.full((2, 3), 1.0 / 3.0),
++        }
++        with self.assertRaisesRegex(ValueError, "requires color_a and color_d"):
++            calibrator.posterior_grid(max_draws=2)
++
++    def test_parsec_surface_allows_linear_calibration_without_explicit_anchors(self):
++        calibrator = HierarchicalMetallicityCalibrator(
++            simple_color_surface(), color_anchor_mode="parsec_surface",
++            global_calibration_order=1, cmd_min_teff=None,
++        )
++        self.assertEqual(calibrator.color_anchors, ())
++        self.assertTrue(calibrator.observation_model_metadata()["w_Z_prior"]["enabled"])
++
++    def test_color_anchor_json_loader(self):
++        payload = {"anchors": [
++            {"absg": 4.66, "z_ref": 0.0, "color_ref": 0.818, "sigma_color": 0.029}
++        ]}
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / "anchors.json"
++            path.write_text(__import__("json").dumps(payload), encoding="utf-8")
++            loaded = load_color_anchors(path)
++        self.assertEqual(loaded, payload["anchors"])
++
+     def test_trapezoid_weights_integrate_constant(self):
+         grid = np.linspace(-1.0, 0.6, 81)
+         weights = trapezoid_weights(grid)
+@@ -205,7 +339,10 @@ class HierarchicalMetallicityTests(unittest.TestCase):
+             color_observed=np.array([[1.7, 1.7]]),
+             color_sigma=np.array([[0.02, 0.02]]),
+         )
+-        common = {"s_C": 0.03, "population_weights": np.ones(3) / 3.0}
++        common = {
++            "s_C": 0.03, "population_weights": np.ones(3) / 3.0,
++            "color_a": np.zeros(4), "color_d": np.zeros(4),
++        }
+         positive = calibrator.log_joint_numpy({**common, "delta_z": 0.2})[0, 1]
+         negative = calibrator.log_joint_numpy({**common, "delta_z": -0.2})[0, 1]
+         self.assertGreater(positive, negative)
+@@ -234,6 +371,8 @@ class HierarchicalMetallicityTests(unittest.TestCase):
+             "z_offset": 0.0,
+             "cmd_scatter": 0.03,
+             "population_weights": np.ones(3) / 3.0,
++            "color_a": np.zeros(4),
++            "color_d": np.zeros(4),
+         }
+         reference = calibrator.log_joint_numpy(params)
+         calibrator.color_observed[0, 1] += 100.0
+@@ -281,6 +420,8 @@ class HierarchicalMetallicityTests(unittest.TestCase):
+                 "z_offset": 0.0,
+                 "cmd_scatter": 0.03,
+                 "population_weights": np.ones(3) / 3.0,
++                "color_a": np.zeros(4),
++                "color_d": np.zeros(4),
+             }
+         )
+         self.assertEqual(log_joint.shape, (3, 9))
+@@ -295,6 +436,8 @@ class HierarchicalMetallicityTests(unittest.TestCase):
+             "z_offset": np.zeros(draws),
+             "cmd_scatter": np.full(draws, 0.03),
+             "population_weights": np.full((draws, 3), 1.0 / 3.0),
++            "color_a": np.zeros((draws, 4)),
++            "color_d": np.zeros((draws, 4)),
+         }
+         posterior = calibrator.posterior_grid(max_draws=draws, system_chunk=2)
+         posterior.validate()
+diff --git a/docs/workflows/T8_JOINT_COLOR_ANCHOR_CALIBRATION.md b/docs/workflows/T8_JOINT_COLOR_ANCHOR_CALIBRATION.md
+new file mode 100644
+index 0000000..3772988
+--- /dev/null
++++ b/docs/workflows/T8_JOINT_COLOR_ANCHOR_CALIBRATION.md
+@@ -0,0 +1,81 @@
++# T8 joint metallicity and CMD anchor calibration
++
++本流程把双星的两类观测放在同一个逐系统模型中，并最终输出
++\(p(Z_j\mid \widehat z_{j1},\widehat z_{j2},C_{j1},C_{j2},M_{G,j1},M_{G,j2})\)。
++这里 \(Z_j\) 是系统的共同真实金属丰度；每颗星的光谱金属丰度测量仍使用原始
++`feh_jcaps_1/2`，对应误差使用 `jc_sigma_m_h_1/2`。
++
++## 光谱项与相对星等偏差
++
++对成员 \(k\in\{1,2\}\)，采用 Student-t 光谱项
++
++\[
++\widehat z_{jk}\mid Z_j,M_{G,jk}
++\sim t_{\nu}\left(\mu_{jk},
++\sqrt{\sigma_{jk}^2+s^2}\right),
++\]
++
++\[
++\mu_{jk}=Z_j+w_Z(Z_j-Z_{\rm piv})+Z_{\rm off}+b_G(M_{G,jk}),
++\qquad Z_{\rm piv}=0\;\mathrm{dex}.
++\]
++
++其中 \(s\) 和 \(\nu\) 继续采用已经由双星差值确定的 Student-t 核心参数；两颗星的
++差值方差因此含有 \(2s^2\)。\(b_G\) 仍是相对偏差，保持
++\(b_G(8.5)=0\) 的 gauge，并且只由双星差值拟合。绝对颜色锚点的似然中不放入
++\(b_G\)，避免把相对星等趋势与绝对锚点混在一起。
++
++单个太阳锚点时固定 \(w_Z=0\)，只允许常数零点 \(Z_{\rm off}\)。若要拟合
++\(w_Z\)，必须提供至少两个具有不同 \(Z_{\rm ref}\) 的颜色锚点；代码会在构造校正器时
++拒绝单一参考金属丰度的线性模型。
++
++## CMD 项与绝对锚点
++
++默认 `solar_only`/`anchors` 模式不把 PARSEC 颜色当作绝对参考，而是从样本中学习一个
++低维的内禀颜色面。为避免在探索阶段引入过多自由度，当前限制为
++
++\[
++C_\theta(M_G,Z)=\bm B(M_G)\cdot\bm a
++ +Z\,\bm B(M_G)\cdot\bm d,
++\]
++
++其中 \(\bm B=(1,x,x^2,x^3)\) 是把 \(M_G\) 线性缩放到 \([-1,1]\) 后的三次基函数。
++\(\bm a\) 和 \(\bm d\) 是由数据与锚点共同学习的系数，使用宽的正态先验。这个
++低维线性金属丰度形式是当前模型的明确限制，不能代表任意复杂的颜色--金属丰度关系。
++
++颜色项为
++
++\[
++C_{jk}\mid M_{G,jk},Z_j
++\sim t_4\left(C_\theta(M_{G,jk},Z_j),
++\sqrt{\sigma_{C,jk}^2+s_C^2}\right).
++\]
++
++默认绝对信息是太阳颜色锚点
++
++\[
++(M_G,Z_{\rm ref},C_{\rm ref},\sigma_C)
++=(4.66,0,0.818,0.029\;\mathrm{mag}),
++\]
++
++其似然为
++
++\[
++C_{\rm ref}\sim\mathcal N\left(
++C_\theta(4.66,0),\,0.029^2\right).
++\]
++
++用户可以传入任意一组 `(absg, z_ref, color_ref, sigma_color)` 锚点。单个锚点只
++提供常数绝对校准；多个不同 \(Z_{\rm ref}\) 的锚点才提供随金属丰度变化的校准信息。
++锚点直接约束 \(C_\theta\)，并通过每个双星的潜在 \(Z_j\) 与 \(Z_{\rm off},w_Z\)
++形成联合似然；它们不直接进入 \(b_G\)。
++`color_anchor_mode="parsec_surface"` 才启用旧的固定 PARSEC CMD 似然，此模式没有
++学习颜色系数，也不再额外加入锚点因子。
++
++## 输出与限制
++
++对每个系统，在 \(Z\) 网格上联合边缘化光谱项、颜色项和总体先验，并对全局后验
++\((Z_{\rm off},w_Z,\bm a,\bm d,s_C,\boldsymbol\omega)\) 的抽样取平均，得到最终的
++\(p(Z_j\mid\text{all data})\)。由于默认颜色面是低维且可学习的，单个太阳锚点并不能
++单独消除所有 \(Z\)--颜色面退化；这是当前探索模型的识别限制，后续若需要更强的
++绝对校准，应增加独立的多金属丰度颜色锚点或更有信息的颜色面先验。
