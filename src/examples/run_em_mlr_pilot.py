@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Small alternating-MAP pilot for the T8 mass--velocity model.
+"""Alternating-MAP exploration for the T8 mass--velocity model.
 
-The pilot uses one fixed subset of the formal T8 metallicity posterior and
+The run uses one fixed selection of the formal T8 metallicity posterior and
 alternates two conditional MAP updates:
 
 * the hard-monotone MLR parameters, and
@@ -72,11 +72,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--baseline", type=Path, required=True,
-                        help="Formal T8.1 directory holding the metallicity posterior and MLR.")
+                        help="Directory holding the frozen T8 metallicity posterior.")
     parser.add_argument("--initial-mlr", type=Path, default=None,
                         help="MLR posterior used only for the common starting state; defaults to --baseline.")
-    parser.add_argument("--shape-stack", type=Path, required=True,
+    parser.add_argument("--shape-stack", type=Path, default=None,
                         help="Formal T8.2 27-node shape stack.")
+    parser.add_argument("--dynamics-lookup", type=Path, default=None,
+                        help="Validated full-sample T8 dynamics lookup used to define the mass grid and data rows in direct mode.")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-systems", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=20260919)
@@ -238,10 +240,12 @@ def build_objective(mlr, args):
     bx1 = jnp.asarray(hm._bspline_basis_numpy(mlr.absg[:, 0], mlr.knots_x, mlr.degree_x), dtype=jnp.float64)
     bx2 = jnp.asarray(hm._bspline_basis_numpy(mlr.absg[:, 1], mlr.knots_x, mlr.degree_x), dtype=jnp.float64)
     bz = jnp.asarray(hm._bspline_basis_numpy(mlr.z_grid, mlr.knots_z, mlr.degree_z), dtype=jnp.float64)
-    log_good_stack = jnp.asarray(mlr.dynamics_shape_stack.log_good_stack, dtype=jnp.float64)
-    log_bad_stack = jnp.asarray(mlr.dynamics_shape_stack.log_bad_stack, dtype=jnp.float64)
-    axes = {name: jnp.asarray(mlr.dynamics_shape_stack.axes[name], dtype=jnp.float64)
-            for name in SHAPE_NAMES}
+    stack_mode = args.shape_evaluation == "linear_stack"
+    if stack_mode:
+        log_good_stack = jnp.asarray(mlr.dynamics_shape_stack.log_good_stack, dtype=jnp.float64)
+        log_bad_stack = jnp.asarray(mlr.dynamics_shape_stack.log_bad_stack, dtype=jnp.float64)
+        axes = {name: jnp.asarray(mlr.dynamics_shape_stack.axes[name], dtype=jnp.float64)
+                for name in SHAPE_NAMES}
     parsec_projection = jnp.asarray(mlr.parsec_projection, dtype=jnp.float64)
     hx = jnp.asarray(np.diff(mlr.greville_x), dtype=jnp.float64)
     hz = jnp.asarray(np.diff(mlr.greville_z), dtype=jnp.float64)
@@ -265,10 +269,13 @@ def build_objective(mlr, args):
     )
     u_observed = jnp.asarray(mlr.u, dtype=jnp.float64)
     u_sigma = jnp.asarray(mlr.u_sigma, dtype=jnp.float64)
-    raw_bad = jnp.asarray(
-        np.asarray(mlr.dynamics_shape_stack.log_bad_stack[0, :, 0], dtype=np.float64),
-        dtype=jnp.float64,
-    )
+    if mlr.raw_u_outlier_log_likelihood is not None:
+        raw_bad_np = np.asarray(mlr.raw_u_outlier_log_likelihood, dtype=np.float64)
+    elif mlr.dynamics_shape_stack is not None:
+        raw_bad_np = np.asarray(mlr.dynamics_shape_stack.log_bad_stack[0, :, 0], dtype=np.float64)
+    else:
+        raise ValueError("A raw-u outlier likelihood is required for EM direct mode.")
+    raw_bad = jnp.asarray(raw_bad_np, dtype=jnp.float64)
 
     gl_x_np, gl_w_np = np.polynomial.legendre.leggauss(int(args.direct_nodes))
     norm_x_np, norm_w_np = np.polynomial.legendre.leggauss(256)
@@ -585,11 +592,16 @@ def representative_masses(mlr, vector):
 def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args):
     current = np.asarray(start_vector, dtype=np.float64).copy()
     trace = []
+    partial_path = args.output / f"trace_{name}.partial.jsonl"
+    partial_stream = partial_path.open("w", encoding="utf-8")
     initial = summarize_objective(mlr, current, logpost, loglike)
     initial.update({"run": name, "iteration": 0, "block": "initial",
                     "objective_change": 0.0, "accepted": True})
     initial["representative_masses"] = representative_masses(mlr, current)
     trace.append(initial)
+    partial_stream.write(json.dumps(initial) + "\n")
+    partial_stream.flush()
+    print(f"EM-like run {name}: start, N={mlr.u.size}, log-posterior={initial['log_posterior']:.6g}", flush=True)
     mlr_indices = np.arange(MLR_DIM, dtype=np.int64)
     shape_indices = np.arange(F_INDEX, FULL_DIM, dtype=np.int64)
     shape_bounds = [(float(SHAPE_AXES[n][0]), float(SHAPE_AXES[n][-1])) for n in SHAPE_NAMES]
@@ -657,6 +669,14 @@ def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args):
         })
         row["representative_masses"] = current_masses.tolist()
         trace.append(row)
+        partial_stream.write(json.dumps(row) + "\n")
+        partial_stream.flush()
+        print(
+            f"EM-like run {name}: iteration {iteration}, "
+            f"dlogpost={cycle_delta:.4g}, B={row['shape_B']:.5g}, "
+            f"uc={row['shape_uc']:.5g}, C={row['shape_C']:.5g}, "
+            f"max dM/M={mass_max_rel_change:.3g}", flush=True,
+        )
         statuses.append({
             "iteration": iteration,
             "mlr_success": bool(result_mlr.success),
@@ -674,6 +694,7 @@ def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args):
         previous_shape = current_shape
         if stable_count >= int(args.stable_cycles):
             break
+    partial_stream.close()
     return current, trace, statuses
 
 
@@ -687,10 +708,14 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
     serializable = {
         "settings": {
             "algorithm": "alternating conditional MAP",
-            "posterior_scope": "formal T8 metallicity posterior, fixed 2000-system subset",
+            "posterior_scope": f"formal T8 metallicity posterior, fixed {int(selection_meta['n_selected'])}-system selection",
             "outlier": "raw-u TN(40,13,[0,80]) with Rice convolution; mass independent",
             "shape_evaluation": args.shape_evaluation,
-            "normal_shape_stack": "formal T8.2 27-node stack with linear trilinear interpolation when linear_stack mode is selected",
+            "good_shape_likelihood": (
+                "continuous direct Rice quadrature; no shape stack"
+                if args.dynamics_lookup is not None
+                else "27-node shape stack (linear trilinear interpolation only in linear_stack mode)"
+            ),
             "direct_quadrature": {"nodes_per_interval": int(args.direct_nodes), "system_chunk": int(args.direct_chunk)},
             "convergence": {
                 "objective_relative_tolerance": float(args.objective_rtol),
@@ -716,6 +741,7 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
         "validation": validation,
         "stack": stack_meta,
         "formal_fixed_shape_B_initial": [0.002544, 35.67, 3.1],
+        "formal_fixed_shape_initial_state_note": "The formal fixed-shape posterior-median MLR is used as the common initial state; it is not a fixed-shape MAP optimized under this EM-like objective.",
         "results": {},
     }
     baseline_masses = representative_masses(mlr, baseline_vector)
@@ -730,7 +756,7 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
             "final_shape": [final["shape_B"], final["shape_uc"], final["shape_C"]],
             "final_representative_masses": final["representative_masses"],
             "final_residual_percent": (100.0 * (np.asarray(final["representative_masses"]) / parsec - 1.0)).tolist(),
-            "relative_to_formal_fixed_B_percent": (100.0 * (np.asarray(final["representative_masses"]) / baseline_masses - 1.0)).tolist(),
+            "relative_to_fixed_shape_initial_state_percent": (100.0 * (np.asarray(final["representative_masses"]) / baseline_masses - 1.0)).tolist(),
             "statuses": statuses,
         }
         with (args.output / f"trace_{name}.jsonl").open("w", encoding="utf-8") as stream:
@@ -739,33 +765,30 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
     serializable["comparison"] = {
         "M_G": REPRESENTATIVE_MG.tolist(),
         "parsec_mass": parsec.tolist(),
-        "formal_fixed_B_initial_mass": baseline_masses,
+        "fixed_shape_initial_state_mass": baseline_masses,
     }
     (args.output / "summary.json").write_text(json.dumps(serializable, indent=2), encoding="utf-8")
     np.savez_compressed(args.output / "map_states.npz",
                         **{f"{name}_vector": payload[0] for name, payload in results.items()},
-                        formal_fixed_B_vector=baseline_vector,
+                        fixed_shape_initial_state_vector=baseline_vector,
                         M_G=REPRESENTATIVE_MG,
                         parsec_mass=parsec)
-    plot_results(args.output, results, mlr, baseline_vector, parsec)
+    plot_results(args.output, results, mlr, baseline_vector, parsec, int(selection_meta["n_selected"]))
 
 
-def plot_results(output, results, mlr, baseline_vector, parsec):
+def plot_results(output, results, mlr, baseline_vector, parsec, n_systems):
     grid = np.linspace(3.5, 13.5, 300)
-    mh_values = [-1.0, 0.0, 0.3, 0.6]
+    mh = 0.0
     colors = {"default": "tab:blue", "S2": "tab:orange"}
     fig, axes = plt.subplots(3, 2, figsize=(12, 12), constrained_layout=True)
     for name, payload in results.items():
         final_vector, trace, _ = payload
         color = colors[name]
-        for mh in mh_values:
-            vals = [float(mlr.mass_from_absg_mh(x, mh, vector_to_params(final_vector))) for x in grid]
-            axes[0, 0].plot(grid, vals, color=color, lw=1.5,
-                            label=f"{name} final" if mh == 0.0 else None)
-            if mh == 0.0:
-                axes[0, 1].plot(grid, 100.0 * (np.asarray(vals) /
-                                                np.asarray([mlr.mass_surface.mass_from_absg_mh(x, mh) for x in grid]) - 1.0),
-                                color=color, lw=1.5, label=f"{name} final")
+        vals = [float(mlr.mass_from_absg_mh(x, mh, vector_to_params(final_vector))) for x in grid]
+        axes[0, 0].plot(grid, vals, color=color, lw=1.5, label=f"{name} final")
+        axes[0, 1].plot(grid, 100.0 * (np.asarray(vals) /
+                                        np.asarray([mlr.mass_surface.mass_from_absg_mh(x, mh) for x in grid]) - 1.0),
+                        color=color, lw=1.5, label=f"{name} final")
         # Trajectory at solar metallicity.
         iterations = [row["iteration"] for row in trace]
         axes[1, 0].plot(iterations, [row["shape_B"] for row in trace], color=color, marker="o", ms=3, label=name)
@@ -775,12 +798,12 @@ def plot_results(output, results, mlr, baseline_vector, parsec):
     parsec_grid = np.asarray([float(mlr.mass_surface.mass_from_absg_mh(x, 0.0)) for x in grid])
     formal_grid = np.asarray([float(mlr.mass_from_absg_mh(x, 0.0, vector_to_params(baseline_vector))) for x in grid])
     axes[0, 0].plot(grid, parsec_grid, "--", color="0.35", label="PARSEC")
-    axes[0, 0].plot(grid, formal_grid, ":", color="k", label="formal fixed-shape B median")
+    axes[0, 0].plot(grid, formal_grid, ":", color="k", label="Fixed-shape initial state")
     axes[0, 1].plot(grid, np.zeros_like(grid), "--", color="0.35")
     axes[0, 1].plot(grid, 100.0 * (formal_grid / parsec_grid - 1.0), ":", color="k")
     axes[0, 0].set_ylabel(r"$M$ [$M_\odot$] at [M/H]=0")
     axes[0, 1].set_ylabel(r"$100(M/M_{\rm PARSEC}-1)$ [%]")
-    axes[0, 0].set_title("Final MLR on fixed 2000-system subset")
+    axes[0, 0].set_title(f"Final MLR on fixed {int(n_systems):,}-system sample")
     axes[0, 1].set_title("Final MLR residual relative to PARSEC")
     axes[1, 0].set_ylabel("B")
     axes[1, 1].set_ylabel(r"$u_c$")
@@ -806,6 +829,13 @@ def main():
         raise ValueError("Shape-prior log sigmas must be finite and strictly positive.")
     if args.direct_nodes < 4 or args.direct_chunk < 1:
         raise ValueError("Direct quadrature requires --direct-nodes >= 4 and --direct-chunk >= 1.")
+    if args.shape_evaluation == "direct":
+        if args.dynamics_lookup is None and args.shape_stack is None:
+            raise ValueError("Direct mode requires --dynamics-lookup or the legacy --shape-stack.")
+        if args.dynamics_lookup is not None and args.shape_stack is not None:
+            raise ValueError("Provide only one of --dynamics-lookup and --shape-stack in direct mode.")
+    elif args.shape_stack is None:
+        raise ValueError("linear_stack mode requires --shape-stack.")
     if args.stable_cycles < 1:
         raise ValueError("--stable-cycles must be positive.")
     if min(args.objective_rtol, args.shape_tol, args.mass_rtol) <= 0:
@@ -820,7 +850,20 @@ def main():
         seed=args.seed, fixed_rows=posterior.row_indices,
     )
     workflow._require_t8_posterior_metadata(posterior, mock=False, arrays=arrays)
-    if args.data_subset is not None and args.data_subset.exists():
+    full_lookup = None
+    if args.dynamics_lookup is not None:
+        full_lookup = hm.DynamicsLikelihoodLookup.load(args.dynamics_lookup)
+        if args.max_systems < len(posterior.row_indices):
+            raise ValueError(
+                "Direct mode with --dynamics-lookup requires the full formal sample: "
+                f"--max-systems >= {len(posterior.row_indices)}."
+            )
+        if not np.array_equal(full_lookup.row_indices, posterior.row_indices):
+            raise ValueError("Dynamics lookup rows do not match the formal metallicity posterior rows.")
+        if args.data_subset is not None:
+            raise ValueError("--data-subset is not supported with a full-sample --dynamics-lookup.")
+        positions = np.arange(len(posterior.row_indices), dtype=np.int64)
+    elif args.data_subset is not None and args.data_subset.exists():
         subset_info = np.load(args.data_subset, allow_pickle=False)
         positions = np.asarray(subset_info["positions"], dtype=np.int64)
     else:
@@ -842,19 +885,32 @@ def main():
                       "n_selected": int(len(positions)), "positions_file": "selected_subset.npz"}
 
     validation = validate_outlier_integral(subset_arrays["u"], subset_arrays["u_sigma"], args.seed)
-    stack_full = hm.DynamicsLikelihoodShapeStack.load(args.shape_stack)
-    if not np.array_equal(stack_full.row_indices, posterior.row_indices):
-        raise ValueError("T8.2 formal shape stack rows do not match formal metallicity posterior rows.")
     log_bad = outlier_log_likelihood(subset_arrays["u"], subset_arrays["u_sigma"])
-    stack = subset_shape_stack(stack_full, subset_shape_positions, subset.row_indices,
-                               subset_arrays["u"], subset_arrays["u_sigma"], log_bad)
-    stack_meta = {
-        "source": str(args.shape_stack),
-        "n_nodes": int(stack.n_nodes),
-        "sqrt_mtot_range": [float(stack.sqrt_mtot_grid[0]), float(stack.sqrt_mtot_grid[-1])],
-        "axes": {key: value.tolist() for key, value in stack.axes.items()},
-        "interpolation": "linear trilinear probability interpolation in finite 3-node log-shape box (diagnostic fallback only)",
-    }
+    if full_lookup is not None:
+        dynamics_source = full_lookup
+        stack = None
+        stack_meta = {
+            "source": str(args.dynamics_lookup),
+            "source_type": "validated full-sample dynamics lookup; used for mass grid and row/data validation",
+            "n_nodes": 0,
+            "sqrt_mtot_range": [float(full_lookup.sqrt_mtot_grid[0]), float(full_lookup.sqrt_mtot_grid[-1])],
+            "interpolation": "continuous direct Rice quadrature for good shape; lookup good table is not read by the direct objective",
+        }
+    else:
+        stack_full = hm.DynamicsLikelihoodShapeStack.load(args.shape_stack)
+        if not np.array_equal(stack_full.row_indices, posterior.row_indices):
+            raise ValueError("T8.2 formal shape stack rows do not match formal metallicity posterior rows.")
+        stack = subset_shape_stack(stack_full, subset_shape_positions, subset.row_indices,
+                                   subset_arrays["u"], subset_arrays["u_sigma"], log_bad)
+        dynamics_source = None
+        stack_meta = {
+            "source": str(args.shape_stack),
+            "source_type": "formal T8.2 27-node shape stack",
+            "n_nodes": int(stack.n_nodes),
+            "sqrt_mtot_range": [float(stack.sqrt_mtot_grid[0]), float(stack.sqrt_mtot_grid[-1])],
+            "axes": {key: value.tolist() for key, value in stack.axes.items()},
+            "interpolation": "linear trilinear probability interpolation in finite 3-node log-shape box (diagnostic fallback only)",
+        }
     mass_surface, _ = workflow.build_surfaces()
     mlr = workflow._make_t8_mlr(mass_surface, argparse.Namespace(
         mlr_knot_x=workflow.T8_MLR_DEFAULT_KNOT_X,
@@ -865,7 +921,8 @@ def main():
     ))
     mlr.set_data(row_indices=subset.row_indices, u=subset_arrays["u"],
                  u_sigma=subset_arrays["u_sigma"], absg=subset_arrays["absg"],
-                 metallicity_grid=subset, dynamics_shape_stack=stack)
+                 metallicity_grid=subset, dynamics_lookup=dynamics_source,
+                 dynamics_shape_stack=stack, raw_u_outlier_log_likelihood=log_bad)
     objective, logpost, loglike = build_objective(mlr, args)
     initial_mlr_path = args.initial_mlr or (args.baseline / T8_MLR_NAME)
     baseline_vector, _ = initial_vector(initial_mlr_path, "default")
