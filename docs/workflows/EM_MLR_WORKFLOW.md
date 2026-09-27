@@ -37,6 +37,33 @@ selected systems and from the same initial MLR state. The two starts are a
 stability diagnostic: agreement increases confidence that the optimizer is
 finding the same basin, but it is not a substitute for posterior uncertainty.
 
+### Resume a saved pair of trajectories
+
+Continuation reads both vectors from the checkpoint and writes a new result
+directory. For the full solar-only result, the formal continuation command is:
+
+```bash
+MPLCONFIGDIR=/tmp/dyn-em-mpl-cache \
+  bash scripts/run_mlr.sh \
+  --data results/em_solar_only_full_rebuild_20260925/input.fits \
+  --baseline results/em_solar_only_full_rebuild_20260925 \
+  --dynamics-lookup results/em_solar_only_full_rebuild_20260925/dynamics_likelihood_lookup_t8.npz \
+  --initial-map-states results/em_solar_only_full_rebuild_20260925/em_like/map_states.npz \
+  --output results/em_solar_only_full_rebuild_20260926_em_continuation \
+  --max-systems 14876 \
+  --max-iterations 100 --block-maxiter 200 \
+  --direct-nodes 12 --direct-chunk 128
+```
+
+`--direct-chunk 128` changes only CPU batching and has been validated against
+the source objective; the quadrature order remains 12 nodes per interval.
+The resume check requires the adjacent `selected_subset.npz` to have exactly
+the same `positions` and `row_indices` as the current selection, validates
+both finite 38-component vectors, and rejects writing back into the source
+directory. `summary.json` records the source checkpoint and prior iteration
+metadata. A resumed trace may restart its local cycle counter at zero, while
+`cumulative_iteration` preserves the provenance.
+
 ## Good-shape likelihood evaluation
 
 The default is now:
@@ -111,14 +138,23 @@ from the shape half-step alone.
 
 A cycle is stable only when all of the following hold:
 
-1. the relative full-cycle log-posterior improvement is below
+1. every cycle metric is finite, and the absolute full-cycle log-posterior
+   change divided by `1 + |log posterior at cycle start|` is below
    `--objective-rtol` (default `1e-7`);
-2. the maximum change in `log B`, `log uc`, and `log C` is below
-   `--shape-tol` (default `1e-3`);
-3. the maximum relative change in the inferred MLR mass at
-   `M_G = 5, 7, 9, 11, 13` and solar metallicity is below
-   `--mass-rtol` (default `1e-3`);
-4. both optimizer blocks are accepted.
+2. both optimizer blocks report success and their candidate states are
+   accepted;
+3. the maximum change in `log B`, `log uc`, and `log C` is below
+   `--shape-tol` (default `1e-3`), the maximum relative mass change on the
+   fixed grid `M_G = 3.5..13.5` and `[M/H] = -1..0.6` is below
+   `--mass-rtol` (default `1e-3`), and the absolute outlier-fraction change is
+   below `--f-tol` (default `1e-3`);
+4. the scaled projected-gradient infinity norms of both blocks are below
+   `--projected-grad-tol` (default `1e-6`). The optimizer coordinates use
+   displacement scales 0.02 for `c0` and 0.10 for every other coordinate.
+   At a lower bound, a bounded component contributes zero only when the
+   minimization gradient is non-negative; at an upper bound it contributes
+   zero only when that gradient is non-positive. Boundary flags are saved in
+   each trace row.
 
 By default, the criteria must hold for two consecutive full cycles:
 
@@ -127,7 +163,9 @@ By default, the criteria must hold for two consecutive full cycles:
 ```
 
 The trace records the full-cycle objective improvement, relative improvement,
-shape change, MLR mass change, and consecutive-stability count.
+shape change, MLR mass change, outlier-fraction change, projected-gradient
+norms, boundary flags, and consecutive-stability count. All conditions must
+hold for two consecutive complete cycles.
 
 ## Default optimization settings
 

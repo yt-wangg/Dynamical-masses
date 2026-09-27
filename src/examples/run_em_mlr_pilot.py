@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import copy
 import gc
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -66,6 +67,10 @@ FULL_DIM = 38
 F_INDEX = 34
 SHAPE_OFFSET = 35
 REPRESENTATIVE_MG = np.array([5.0, 7.0, 9.0, 11.0, 13.0])
+# A small fixed grid spanning the fitted support for convergence diagnostics.
+# The five solar-metallicity points above remain the presentation grid.
+CONVERGENCE_MG = np.array([3.5, 6.0, 8.5, 11.0, 13.5])
+CONVERGENCE_MH = np.array([-1.0, -0.5, 0.0, 0.3, 0.6])
 
 
 def parse_args():
@@ -75,6 +80,8 @@ def parse_args():
                         help="Directory holding the frozen T8 metallicity posterior.")
     parser.add_argument("--initial-mlr", type=Path, default=None,
                         help="MLR posterior used only for the common starting state; defaults to --baseline.")
+    parser.add_argument("--initial-map-states", type=Path, default=None,
+                        help="Resume both trajectories from an existing map_states.npz checkpoint.")
     parser.add_argument("--shape-stack", type=Path, default=None,
                         help="Formal T8.2 27-node shape stack.")
     parser.add_argument("--dynamics-lookup", type=Path, default=None,
@@ -100,6 +107,10 @@ def parse_args():
                         help="Maximum absolute change in log(B), log(uc), log(C) for convergence.")
     parser.add_argument("--mass-rtol", type=float, default=1e-3,
                         help="Maximum relative MLR mass change at representative M_G points for convergence.")
+    parser.add_argument("--f-tol", type=float, default=1e-3,
+                        help="Maximum absolute change in the outlier fraction for convergence.")
+    parser.add_argument("--projected-grad-tol", type=float, default=1e-6,
+                        help="Maximum scaled projected-gradient infinity norm for convergence.")
     parser.add_argument("--stable-cycles", type=int, default=2,
                         help="Number of consecutive stable full cycles required for convergence.")
     parser.add_argument("--shape-prior-sigma-log-b", type=float,
@@ -192,6 +203,46 @@ def subset_shape_stack(stack, positions, rows, u, u_sigma, log_bad):
         node_constants=stack.node_constants,
         metadata=metadata,
     )
+
+
+def validate_resume_input_file(args, posterior, arrays):
+    """Verify the exact source FITS when its stored/current byte digests differ."""
+    recorded_path = Path(posterior.metadata.get("input_path", "")).resolve()
+    current_path = Path(args.data).resolve()
+    if recorded_path != current_path:
+        raise ValueError(
+            "Resume input-data digest mismatch and the input path differs from the source run.")
+    checksum_path = Path(args.baseline) / "input.sha256"
+    if not checksum_path.is_file():
+        raise FileNotFoundError(
+            "Resume input-data digest mismatch and input.sha256 is unavailable.")
+    checksum_fields = checksum_path.read_text(encoding="utf-8").split()
+    if not checksum_fields:
+        raise ValueError(f"Resume input checksum file is empty: {checksum_path}")
+    expected_sha256 = checksum_fields[0]
+    digest = hashlib.sha256()
+    with current_path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual_sha256 = digest.hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise ValueError("Resume input FITS SHA-256 does not match the source checksum.")
+    current_array_digest = hm.array_digest(
+        arrays["row_indices"], arrays["feh_observed"], arrays["feh_sigma"],
+        arrays["absg"], arrays["color_observed"], arrays["color_sigma"],
+    )
+    return {
+        "fallback_reason": (
+            "stored/current derived-array byte digests differ for an undetermined reason; "
+            "the exact source FITS and starting objectives are independently checked"
+        ),
+        "source_input_path": str(recorded_path),
+        "source_input_sha256": expected_sha256,
+        "exact_fits_sha256_match": True,
+        "stored_derived_array_digest": posterior.metadata.get("input_data_digest"),
+        "current_derived_array_digest": current_array_digest,
+        "starting_objective_check_required": True,
+    }
 
 
 def params_to_vector(params, f, shape_logs):
@@ -358,7 +409,8 @@ def build_objective(mlr, args):
             )
             return logsumexp(log_interval, axis=-1)
 
-        good = jax.lax.map(integrate_chunk, (s_chunks, u_chunks, sigma_chunks))
+        good = jax.lax.map(jax.checkpoint(integrate_chunk),
+                           (s_chunks, u_chunks, sigma_chunks))
         good = good.reshape((n_pad, sqrt_mtot.shape[1]))[:n_systems]
         bad = raw_bad[:, None] + jnp.zeros_like(good)
         return good, bad
@@ -546,22 +598,29 @@ def initial_vector(initial_mlr_path, shape_name):
     return params_to_vector(params, f, SHAPE_STARTS[shape_name]), f
 
 
-def optimize_block(objective, current, indices, bounds, maxiter):
+def optimize_block(objective, current, indices, bounds, maxiter, label=None):
     current = np.asarray(current, dtype=np.float64)
     start = current[indices].copy()
     # Optimize dimensionless displacements.  The raw T8 recursion mixes c0,
     # softplus logits, and log-scales, so scaling improves the numerical line
     # search while leaving the target in the original constrained coordinates.
-    scales = np.full(len(indices), 0.10, dtype=np.float64)
-    for j, index in enumerate(indices):
-        if index == 0:
-            scales[j] = 0.02
+    scales = optimizer_scales(indices)
     x0 = np.zeros(len(indices), dtype=np.float64)
+    evaluations = 0
+    started = time.monotonic()
 
     def fun(block):
+        nonlocal evaluations
         candidate = current.copy()
         candidate[indices] = start + scales * block
         value, grad = objective(candidate)
+        evaluations += 1
+        if label is not None and evaluations % 20 == 0:
+            print(
+                f"{label}: {evaluations} objective/gradient evaluations, "
+                f"elapsed={time.monotonic() - started:.1f}s, objective={value:.9g}",
+                flush=True,
+            )
         return value, grad[indices] * scales
 
     displacement_bounds = None
@@ -578,6 +637,56 @@ def optimize_block(objective, current, indices, bounds, maxiter):
     return candidate, result
 
 
+def optimizer_scales(indices):
+    """Return the displacement scales used by ``optimize_block``."""
+    indices = np.asarray(indices, dtype=np.int64)
+    scales = np.full(indices.size, 0.10, dtype=np.float64)
+    scales[indices == 0] = 0.02
+    return scales
+
+
+def projected_gradient_metrics(objective, vector, shape_bounds):
+    """Compute scaled projected gradients for the final full-cycle vector.
+
+    ``objective`` is the minimization target, so its gradient is the gradient
+    of negative log posterior.  At a finite lower/upper bound, a component is
+    projected to zero only when the descent direction points outside the
+    feasible interval.
+    """
+    value, gradient = objective(vector)
+    gradient = np.asarray(gradient, dtype=np.float64)
+    finite = bool(np.isfinite(value) and value < 1e99 and gradient.shape == (FULL_DIM,)
+                  and np.all(np.isfinite(gradient)))
+    if not finite:
+        return {
+            "finite": False,
+            "mlr_inf_norm": float("inf"),
+            "shape_inf_norm": float("inf"),
+            "boundary_flags": {},
+        }
+
+    mlr_gradient = gradient[:MLR_DIM] * optimizer_scales(np.arange(MLR_DIM))
+    shape_indices = np.arange(F_INDEX, FULL_DIM, dtype=np.int64)
+    shape_gradient = gradient[shape_indices] * optimizer_scales(shape_indices)
+    shape_projected = shape_gradient.copy()
+    boundary_flags = {}
+    for j, (name, (lower, upper)) in enumerate(
+            zip(("f_outlier",) + SHAPE_NAMES, shape_bounds)):
+        value_j = float(vector[shape_indices[j]])
+        at_lower = bool(np.isclose(value_j, lower, rtol=0.0, atol=1e-9))
+        at_upper = bool(np.isclose(value_j, upper, rtol=0.0, atol=1e-9))
+        boundary_flags[name] = {"at_lower": at_lower, "at_upper": at_upper}
+        if (at_lower and gradient[shape_indices[j]] >= 0.0) or (
+                at_upper and gradient[shape_indices[j]] <= 0.0):
+            shape_projected[j] = 0.0
+    return {
+        "finite": True,
+        "mlr_inf_norm": float(np.max(np.abs(mlr_gradient))),
+        "shape_inf_norm": float(np.max(np.abs(shape_projected))),
+        "boundary_flags": boundary_flags,
+    }
+
+
 def representative_masses(mlr, vector):
     params = vector_to_params(vector)
     params["f_outlier"] = float(vector[F_INDEX])
@@ -589,13 +698,135 @@ def representative_masses(mlr, vector):
     return [float(mlr.mass_from_absg_mh(mg, 0.0, params)) for mg in REPRESENTATIVE_MG]
 
 
-def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args):
+def convergence_masses(mlr, vector):
+    params = vector_to_params(vector)
+    params["f_outlier"] = float(vector[F_INDEX])
+    return np.asarray([
+        float(mlr.mass_from_absg_mh(mg, mh, params))
+        for mh in CONVERGENCE_MH for mg in CONVERGENCE_MG
+    ], dtype=np.float64)
+
+
+def load_resume_checkpoint(initial_map_states, current_positions, current_rows,
+                           args):
+    """Load and validate both trajectory states from a prior result."""
+    map_path = Path(initial_map_states).expanduser().resolve()
+    if not map_path.is_file():
+        raise FileNotFoundError(f"Resume map-states file does not exist: {map_path}")
+    source_dir = map_path.parent.resolve()
+    if Path(args.output).expanduser().resolve() == source_dir:
+        raise ValueError("Resume output must be a new directory, not the source result directory.")
+    subset_path = source_dir / "selected_subset.npz"
+    if not subset_path.is_file():
+        raise FileNotFoundError(
+            f"Resume source is missing its adjacent selected_subset.npz: {subset_path}")
+    with np.load(subset_path, allow_pickle=False) as selected:
+        for key in ("positions", "row_indices"):
+            if key not in selected:
+                raise ValueError(f"Resume selected subset is missing {key!r}: {subset_path}")
+        raw_positions = np.asarray(selected["positions"])
+        raw_rows = np.asarray(selected["row_indices"])
+        if (not np.issubdtype(raw_positions.dtype, np.integer)
+                or not np.issubdtype(raw_rows.dtype, np.integer)):
+            raise ValueError("Resume selected subset positions and row_indices must be integer arrays.")
+        source_positions = raw_positions.astype(np.int64, copy=False)
+        source_rows = raw_rows.astype(np.int64, copy=False)
+    current_positions = np.asarray(current_positions, dtype=np.int64)
+    current_rows = np.asarray(current_rows, dtype=np.int64)
+    if not np.array_equal(source_positions, current_positions):
+        raise ValueError("Resume source positions do not match the current selection exactly.")
+    if not np.array_equal(source_rows, current_rows):
+        raise ValueError("Resume source row_indices do not match the current selection exactly.")
+
+    with np.load(map_path, allow_pickle=False) as saved:
+        vectors = {}
+        for name in ("default", "S2"):
+            key = f"{name}_vector"
+            if key not in saved:
+                raise ValueError(f"Resume map states are missing {key!r}: {map_path}")
+            vector = np.asarray(saved[key], dtype=np.float64)
+            if vector.shape != (FULL_DIM,) or not np.all(np.isfinite(vector)):
+                raise ValueError(f"Resume {key} must be finite with shape ({FULL_DIM},).")
+            vectors[name] = vector.copy()
+        if "fixed_shape_initial_state_vector" not in saved:
+            raise ValueError(
+                "Resume map states are missing 'fixed_shape_initial_state_vector'.")
+        baseline = np.asarray(saved["fixed_shape_initial_state_vector"], dtype=np.float64)
+        if baseline.shape != (FULL_DIM,) or not np.all(np.isfinite(baseline)):
+            raise ValueError(
+                f"Resume fixed_shape_initial_state_vector must be finite with shape ({FULL_DIM},).")
+
+    summary_path = source_dir / "summary.json"
+    if not summary_path.is_file():
+        raise FileNotFoundError(f"Resume source is missing its summary: {summary_path}")
+    try:
+        source_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not read resume source summary: {summary_path}") from exc
+
+    settings = source_summary.get("settings", {})
+    if settings.get("shape_evaluation") != args.shape_evaluation:
+        raise ValueError("Resume shape-evaluation mode does not match the source run.")
+    direct = settings.get("direct_quadrature", {})
+    if (args.shape_evaluation == "direct"
+            and direct.get("nodes_per_interval") != int(args.direct_nodes)):
+        raise ValueError("Resume direct-quadrature order does not match the source run.")
+    source_box = settings.get("shape_box", {})
+    if any(not np.array_equal(np.asarray(source_box.get(name)), SHAPE_AXES[name])
+           for name in SHAPE_NAMES):
+        raise ValueError("Resume shape box does not match the source run.")
+    source_sigmas = np.asarray(
+        settings.get("shape_prior", {}).get("sigma_log_b_log_uc_log_c"),
+        dtype=np.float64,
+    )
+    current_sigmas = np.asarray([
+        args.shape_prior_sigma_log_b,
+        args.shape_prior_sigma_log_uc,
+        args.shape_prior_sigma_log_c,
+    ], dtype=np.float64)
+    if source_sigmas.shape != (3,) or not np.array_equal(source_sigmas, current_sigmas):
+        raise ValueError("Resume shape-prior widths do not match the source run.")
+    prior_iterations = {}
+    for name in ("default", "S2"):
+        prior = source_summary.get("results", {}).get(name, {})
+        prior_final = prior.get("final", {})
+        prior_iterations[name] = {
+            "iterations": prior.get("iterations"),
+            "cumulative_iteration": prior_final.get(
+                "cumulative_iteration", prior.get("iterations")),
+            "converged": prior.get("converged"),
+            "stable_cycle_count": prior_final.get("stable_cycle_count"),
+            "log_posterior": prior_final.get("log_posterior"),
+        }
+    metadata = {
+        "source_map_states": str(map_path),
+        "source_output_directory": str(source_dir),
+        "source_selected_subset": str(subset_path),
+        "source_summary": str(summary_path) if summary_path.is_file() else None,
+        "direct_batching": {
+            "source_system_chunk": direct.get("system_chunk"),
+            "current_system_chunk": int(args.direct_chunk),
+            "interpretation": (
+                "System chunk changes numerical batching only; source-objective equality "
+                "is required before continuation."
+            ),
+        },
+        "prior_iterations": prior_iterations,
+    }
+    return vectors, baseline, metadata
+
+
+def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args,
+                   source_iteration=0):
     current = np.asarray(start_vector, dtype=np.float64).copy()
     trace = []
     partial_path = args.output / f"trace_{name}.partial.jsonl"
     partial_stream = partial_path.open("w", encoding="utf-8")
     initial = summarize_objective(mlr, current, logpost, loglike)
-    initial.update({"run": name, "iteration": 0, "block": "initial",
+    initial.update({"run": name, "iteration": 0,
+                    "cumulative_iteration": int(source_iteration),
+                    "source_iteration": int(source_iteration),
+                    "block": "initial",
                     "objective_change": 0.0, "accepted": True})
     initial["representative_masses"] = representative_masses(mlr, current)
     trace.append(initial)
@@ -607,17 +838,20 @@ def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args):
     shape_bounds = [(float(SHAPE_AXES[n][0]), float(SHAPE_AXES[n][-1])) for n in SHAPE_NAMES]
     shape_bounds = [(1e-5, 1.0 - 1e-5)] + shape_bounds
     previous_target = float(initial["log_posterior"])
-    previous_masses = np.asarray(initial["representative_masses"], dtype=np.float64)
+    previous_masses = convergence_masses(mlr, current)
     previous_shape = current[SHAPE_OFFSET:SHAPE_OFFSET + 3].copy()
     statuses = []
     stable_count = 0
     for iteration in range(1, int(args.max_iterations) + 1):
+        cycle_started = time.monotonic()
         cycle_start_target = previous_target
         cycle_start_masses = previous_masses.copy()
         cycle_start_shape = previous_shape.copy()
+        cycle_start_f = float(current[F_INDEX])
 
         candidate, result_mlr = optimize_block(
-            objective, current, mlr_indices, None, args.block_maxiter
+            objective, current, mlr_indices, None, args.block_maxiter,
+            label=f"EM-like run {name} iteration {iteration} MLR",
         )
         candidate_target = float(logpost(candidate))
         if np.isfinite(candidate_target) and candidate_target >= previous_target - 1e-6:
@@ -628,7 +862,8 @@ def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args):
             accepted_mlr = False
 
         candidate, result_shape = optimize_block(
-            objective, current, shape_indices, shape_bounds, args.block_maxiter
+            objective, current, shape_indices, shape_bounds, args.block_maxiter,
+            label=f"EM-like run {name} iteration {iteration} shape",
         )
         candidate_target = float(logpost(candidate))
         if np.isfinite(candidate_target) and candidate_target >= previous_target - 1e-6:
@@ -639,33 +874,69 @@ def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args):
             accepted_shape = False
 
         current_masses = np.asarray(representative_masses(mlr, current), dtype=np.float64)
+        current_convergence_masses = convergence_masses(mlr, current)
         current_shape = current[SHAPE_OFFSET:SHAPE_OFFSET + 3].copy()
         cycle_delta = float(previous_target - cycle_start_target)
-        objective_rel_change = cycle_delta / (1.0 + abs(cycle_start_target))
+        objective_rel_change = abs(cycle_delta) / (1.0 + abs(cycle_start_target))
         shape_max_change = float(np.max(np.abs(current_shape - cycle_start_shape)))
-        mass_max_rel_change = float(np.max(np.abs(current_masses / cycle_start_masses - 1.0)))
+        mass_max_rel_change = float(np.max(np.abs(
+            current_convergence_masses / cycle_start_masses - 1.0)))
+        f_abs_change = abs(float(current[F_INDEX]) - cycle_start_f)
+        shape_bounds = [(1e-5, 1.0 - 1e-5)] + [
+            (float(SHAPE_AXES[n][0]), float(SHAPE_AXES[n][-1])) for n in SHAPE_NAMES
+        ]
+        projected = projected_gradient_metrics(objective, current, shape_bounds)
+        cycle_metrics_finite = bool(
+            np.isfinite(cycle_delta)
+            and np.isfinite(objective_rel_change)
+            and np.isfinite(shape_max_change)
+            and np.isfinite(mass_max_rel_change)
+            and np.isfinite(f_abs_change)
+            and np.all(np.isfinite(cycle_start_masses))
+            and np.all(np.isfinite(current_convergence_masses))
+        )
         stable = (
             accepted_mlr and accepted_shape
+            and bool(result_mlr.success) and bool(result_shape.success)
+            and cycle_metrics_finite
+            and projected["finite"]
             and objective_rel_change < float(args.objective_rtol)
             and shape_max_change < float(args.shape_tol)
             and mass_max_rel_change < float(args.mass_rtol)
+            and f_abs_change < float(args.f_tol)
+            and projected["mlr_inf_norm"] < float(args.projected_grad_tol)
+            and projected["shape_inf_norm"] < float(args.projected_grad_tol)
         )
         stable_count = stable_count + 1 if stable else 0
 
         row = summarize_objective(mlr, current, logpost, loglike)
         row.update({
-            "run": name, "iteration": iteration, "block": "full_cycle",
+            "run": name, "iteration": iteration,
+            "cumulative_iteration": int(source_iteration + iteration),
+            "source_iteration": int(source_iteration),
+            "block": "full_cycle",
             "objective_change": cycle_delta,
             "objective_relative_change": float(objective_rel_change),
             "shape_log_max_change": shape_max_change,
             "mass_max_relative_change": mass_max_rel_change,
+            "f_abs_change": float(f_abs_change),
+            "cycle_metrics_finite": cycle_metrics_finite,
+            "mlr_projected_gradient_inf_norm": projected["mlr_inf_norm"],
+            "shape_projected_gradient_inf_norm": projected["shape_inf_norm"],
+            "projected_gradient_finite": projected["finite"],
+            "projected_gradient_boundary_flags": projected["boundary_flags"],
             "stable_cycle": bool(stable),
             "stable_cycle_count": int(stable_count),
             "accepted": bool(accepted_mlr and accepted_shape),
             "mlr_optimizer_success": bool(result_mlr.success),
             "shape_optimizer_success": bool(result_shape.success),
+            "mlr_optimizer_nit": int(result_mlr.nit),
+            "mlr_optimizer_nfev": int(result_mlr.nfev),
+            "shape_optimizer_nit": int(result_shape.nit),
+            "shape_optimizer_nfev": int(result_shape.nfev),
             "mlr_optimizer_message": str(result_mlr.message),
             "shape_optimizer_message": str(result_shape.message),
+            "cycle_elapsed_seconds": float(time.monotonic() - cycle_started),
         })
         row["representative_masses"] = current_masses.tolist()
         trace.append(row)
@@ -681,16 +952,27 @@ def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args):
             "iteration": iteration,
             "mlr_success": bool(result_mlr.success),
             "shape_success": bool(result_shape.success),
+            "mlr_nit": int(result_mlr.nit),
+            "mlr_nfev": int(result_mlr.nfev),
+            "shape_nit": int(result_shape.nit),
+            "shape_nfev": int(result_shape.nfev),
+            "cycle_elapsed_seconds": float(time.monotonic() - cycle_started),
             "accepted_mlr": accepted_mlr,
             "accepted_shape": accepted_shape,
             "full_cycle_delta": cycle_delta,
             "objective_relative_change": float(objective_rel_change),
             "shape_log_max_change": shape_max_change,
             "mass_max_relative_change": mass_max_rel_change,
+            "f_abs_change": float(f_abs_change),
+            "cycle_metrics_finite": cycle_metrics_finite,
+            "mlr_projected_gradient_inf_norm": projected["mlr_inf_norm"],
+            "shape_projected_gradient_inf_norm": projected["shape_inf_norm"],
+            "projected_gradient_finite": projected["finite"],
+            "projected_gradient_boundary_flags": projected["boundary_flags"],
             "stable_cycle": bool(stable),
             "stable_cycle_count": int(stable_count),
         })
-        previous_masses = current_masses
+        previous_masses = current_convergence_masses
         previous_shape = current_shape
         if stable_count >= int(args.stable_cycles):
             break
@@ -703,7 +985,8 @@ def parsec_masses(mlr):
                      for mg in REPRESENTATIVE_MG])
 
 
-def write_outputs(args, mlr, results, baseline_vector, validation, selection_meta, stack_meta):
+def write_outputs(args, mlr, results, baseline_vector, validation, selection_meta,
+                  stack_meta, resume_metadata=None):
     args.output.mkdir(parents=True, exist_ok=True)
     serializable = {
         "settings": {
@@ -721,7 +1004,16 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
                 "objective_relative_tolerance": float(args.objective_rtol),
                 "shape_log_max_change_tolerance": float(args.shape_tol),
                 "mass_max_relative_change_tolerance": float(args.mass_rtol),
+                "f_absolute_change_tolerance": float(args.f_tol),
+                "projected_gradient_infinity_tolerance": float(args.projected_grad_tol),
                 "required_consecutive_stable_cycles": int(args.stable_cycles),
+                "mass_diagnostic_M_G": CONVERGENCE_MG.tolist(),
+                "mass_diagnostic_metallicity": CONVERGENCE_MH.tolist(),
+                "projected_gradient_scaling": {"c0": 0.02, "all_other_coordinates": 0.10},
+                "projected_gradient_boundary_rule": (
+                    "For minimization, zero a bounded component at its lower bound only "
+                    "when gradient >= 0, and at its upper bound only when gradient <= 0."
+                ),
             },
             "shape_box": {k: v.tolist() for k, v in SHAPE_AXES.items()},
             "shape_prior": {
@@ -740,6 +1032,7 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
         "selection": selection_meta,
         "validation": validation,
         "stack": stack_meta,
+        "resume": resume_metadata,
         "formal_fixed_shape_B_initial": [0.002544, 35.67, 3.1],
         "formal_fixed_shape_initial_state_note": "The formal fixed-shape posterior-median MLR is used as the common initial state; it is not a fixed-shape MAP optimized under this EM-like objective.",
         "results": {},
@@ -767,6 +1060,26 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
         "parsec_mass": parsec.tolist(),
         "fixed_shape_initial_state_mass": baseline_masses,
     }
+    if "default" in results and "S2" in results:
+        endpoint_grid_mg = np.linspace(3.5, 13.5, 101)
+        endpoint_pairs = np.asarray([
+            [float(mlr.mass_from_absg_mh(mg, mh, vector_to_params(results[name][0])))
+             for mh in CONVERGENCE_MH for mg in endpoint_grid_mg]
+            for name in ("default", "S2")
+        ], dtype=np.float64)
+        endpoint_relative = np.abs(endpoint_pairs[0] / endpoint_pairs[1] - 1.0)
+        parameter_delta = results["default"][0] - results["S2"][0]
+        serializable["comparison"]["cross_start_endpoint"] = {
+            "M_G_grid": endpoint_grid_mg.tolist(),
+            "metallicity_grid": CONVERGENCE_MH.tolist(),
+            "max_absolute_relative_mass_difference": float(np.max(endpoint_relative)),
+            "median_absolute_relative_mass_difference": float(np.median(endpoint_relative)),
+            "parameter_max_absolute_difference": float(np.max(np.abs(parameter_delta))),
+            "final_log_posterior_difference": float(
+                results["default"][1][-1]["log_posterior"]
+                - results["S2"][1][-1]["log_posterior"]
+            ),
+        }
     (args.output / "summary.json").write_text(json.dumps(serializable, indent=2), encoding="utf-8")
     np.savez_compressed(args.output / "map_states.npz",
                         **{f"{name}_vector": payload[0] for name, payload in results.items()},
@@ -774,6 +1087,7 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
                         M_G=REPRESENTATIVE_MG,
                         parsec_mass=parsec)
     plot_results(args.output, results, mlr, baseline_vector, parsec, int(selection_meta["n_selected"]))
+    plot_convergence_diagnostics(args.output, results, args)
 
 
 def plot_results(output, results, mlr, baseline_vector, parsec, n_systems):
@@ -818,6 +1132,37 @@ def plot_results(output, results, mlr, baseline_vector, parsec, n_systems):
     plt.close(fig)
 
 
+def plot_convergence_diagnostics(output, results, args):
+    colors = {"default": "tab:blue", "S2": "tab:orange"}
+    fig, axes = plt.subplots(2, 1, figsize=(9, 7), constrained_layout=True)
+    for name, (_, trace, _) in results.items():
+        cycles = [row["iteration"] for row in trace if row["block"] == "full_cycle"]
+        if not cycles:
+            continue
+        rows = [row for row in trace if row["block"] == "full_cycle"]
+        axes[0].plot(cycles, [row["mass_max_relative_change"] for row in rows],
+                     marker="o", ms=3, color=colors[name], label=f"{name} mass")
+        axes[0].plot(cycles, [row["f_abs_change"] for row in rows],
+                     linestyle="--", color=colors[name], label=f"{name} f")
+        axes[1].plot(cycles, [row["mlr_projected_gradient_inf_norm"] for row in rows],
+                     marker="o", ms=3, color=colors[name], label=f"{name} MLR")
+        axes[1].plot(cycles, [row["shape_projected_gradient_inf_norm"] for row in rows],
+                     linestyle="--", color=colors[name], label=f"{name} shape")
+    axes[0].axhline(float(args.mass_rtol), color="0.3", linestyle=":", label="mass tolerance")
+    axes[0].axhline(float(args.f_tol), color="0.5", linestyle="-.", label="f tolerance")
+    axes[1].axhline(float(args.projected_grad_tol), color="0.3", linestyle=":",
+                    label="projected-gradient tolerance")
+    axes[0].set_ylabel("Cycle change")
+    axes[1].set_ylabel("Scaled projected-gradient infinity norm")
+    axes[1].set_xlabel("Continuation cycle")
+    for axis in axes:
+        axis.set_yscale("log")
+        axis.grid(alpha=0.2)
+        axis.legend(fontsize=8, ncol=2)
+    fig.savefig(output / "convergence_diagnostics.png", dpi=180)
+    plt.close(fig)
+
+
 def main():
     args = parse_args()
     prior_sigmas = np.array([
@@ -838,8 +1183,12 @@ def main():
         raise ValueError("linear_stack mode requires --shape-stack.")
     if args.stable_cycles < 1:
         raise ValueError("--stable-cycles must be positive.")
-    if min(args.objective_rtol, args.shape_tol, args.mass_rtol) <= 0:
+    if min(args.objective_rtol, args.shape_tol, args.mass_rtol,
+           args.f_tol, args.projected_grad_tol) <= 0:
         raise ValueError("Convergence tolerances must be strictly positive.")
+    if (args.initial_map_states is not None and args.output.exists()
+            and any(args.output.iterdir())):
+        raise ValueError("Resume output directory must be new or empty.")
     args.output.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -849,7 +1198,19 @@ def main():
         workflow.load_real_data(args.data), max_systems=None,
         seed=args.seed, fixed_rows=posterior.row_indices,
     )
-    workflow._require_t8_posterior_metadata(posterior, mock=False, arrays=arrays)
+    input_identity_fallback = None
+    try:
+        workflow._require_t8_posterior_metadata(posterior, mock=False, arrays=arrays)
+    except ValueError as exc:
+        if (args.initial_map_states is None
+                or "input-data digest does not match" not in str(exc)):
+            raise
+        input_identity_fallback = validate_resume_input_file(args, posterior, arrays)
+        print(
+            "Resume input: stored/current derived-array byte digests differ; the exact "
+            "source FITS SHA-256 matches, and starting-objective checks are required.",
+            flush=True,
+        )
     full_lookup = None
     if args.dynamics_lookup is not None:
         full_lookup = hm.DynamicsLikelihoodLookup.load(args.dynamics_lookup)
@@ -879,6 +1240,13 @@ def main():
     subset_shape_positions = np.searchsorted(posterior.row_indices, subset.row_indices)
     if not np.array_equal(posterior.row_indices[subset_shape_positions], subset.row_indices):
         raise ValueError("Selected formal row indices are not found in posterior order.")
+    resume_vectors = None
+    resume_baseline = None
+    resume_metadata = None
+    if args.initial_map_states is not None:
+        resume_vectors, resume_baseline, resume_metadata = load_resume_checkpoint(
+            args.initial_map_states, positions, subset.row_indices, args)
+        resume_metadata["input_identity_fallback"] = input_identity_fallback
     np.savez_compressed(args.output / "selected_subset.npz",
                         positions=positions, row_indices=subset.row_indices)
     selection_meta = {"seed": int(args.seed), "n_formal": int(len(posterior.row_indices)),
@@ -924,37 +1292,89 @@ def main():
                  metallicity_grid=subset, dynamics_lookup=dynamics_source,
                  dynamics_shape_stack=stack, raw_u_outlier_log_likelihood=log_bad)
     objective, logpost, loglike = build_objective(mlr, args)
-    initial_mlr_path = args.initial_mlr or (args.baseline / T8_MLR_NAME)
-    baseline_vector, _ = initial_vector(initial_mlr_path, "default")
-    probe_value, probe_grad = objective(baseline_vector)
-    probe_plus = baseline_vector.copy()
-    probe_plus[0] += 1e-3
-    probe_plus_value, _ = objective(probe_plus)
-    probe_candidate, probe_result = optimize_block(
-        objective, baseline_vector, np.arange(MLR_DIM, dtype=np.int64), None, 20
-    )
-    (args.output / "objective_probe.json").write_text(json.dumps({
-        "baseline_objective": float(probe_value),
-        "baseline_gradient_norm_mlr": float(np.linalg.norm(probe_grad[:MLR_DIM])),
-        "baseline_gradient_max_mlr": float(np.max(np.abs(probe_grad[:MLR_DIM]))),
-        "c0_plus_1e-3_objective": float(probe_plus_value),
-        "c0_finite_difference": float(probe_plus_value - probe_value),
-        "probe_optimizer_success": bool(probe_result.success),
-        "probe_optimizer_message": str(probe_result.message),
-        "probe_optimizer_nit": int(probe_result.nit),
-        "probe_optimizer_fun": float(probe_result.fun),
-        "probe_candidate_objective": float(objective(probe_candidate)[0]),
-        "probe_candidate_mlr_max_change": float(np.max(np.abs(probe_candidate[:MLR_DIM] - baseline_vector[:MLR_DIM]))),
-    }, indent=2), encoding="utf-8")
+    if resume_vectors is not None:
+        objective_checks = {}
+        for name in ("default", "S2"):
+            source_value = resume_metadata["prior_iterations"][name]["log_posterior"]
+            if source_value is None:
+                raise ValueError(f"Resume source summary lacks final log posterior for {name}.")
+            source_value = float(source_value)
+            print(f"Resume objective check {name}: evaluating...", flush=True)
+            recomputed_value = float(logpost(resume_vectors[name]))
+            tolerance = max(1e-6, 1e-10 * abs(source_value))
+            difference = recomputed_value - source_value
+            if (not np.isfinite(recomputed_value)
+                    or abs(difference) > tolerance):
+                raise ValueError(
+                    f"Resume objective mismatch for {name}: source={source_value:.12g}, "
+                    f"recomputed={recomputed_value:.12g}, tolerance={tolerance:.3g}.")
+            objective_checks[name] = {
+                "source_log_posterior": source_value,
+                "recomputed_log_posterior": recomputed_value,
+                "difference": difference,
+                "absolute_tolerance": tolerance,
+                "pass": True,
+            }
+            print(
+                f"Resume objective check {name}: difference={difference:.3g}, "
+                f"tolerance={tolerance:.3g}, pass=True",
+                flush=True,
+            )
+        resume_metadata["starting_objective_checks"] = objective_checks
+    if resume_baseline is not None:
+        baseline_vector = resume_baseline.copy()
+    else:
+        initial_mlr_path = args.initial_mlr or (args.baseline / T8_MLR_NAME)
+        baseline_vector, _ = initial_vector(initial_mlr_path, "default")
+    if resume_vectors is not None:
+        objective_probe = {
+            "skipped": True,
+            "reason": "The baseline optimizer probe is redundant for checkpoint continuation.",
+        }
+    else:
+        probe_value, probe_grad = objective(baseline_vector)
+        probe_plus = baseline_vector.copy()
+        probe_plus[0] += 1e-3
+        probe_plus_value, _ = objective(probe_plus)
+        probe_candidate, probe_result = optimize_block(
+            objective, baseline_vector, np.arange(MLR_DIM, dtype=np.int64), None, 20
+        )
+        objective_probe = {
+            "baseline_objective": float(probe_value),
+            "baseline_gradient_norm_mlr": float(np.linalg.norm(probe_grad[:MLR_DIM])),
+            "baseline_gradient_max_mlr": float(np.max(np.abs(probe_grad[:MLR_DIM]))),
+            "c0_plus_1e-3_objective": float(probe_plus_value),
+            "c0_finite_difference": float(probe_plus_value - probe_value),
+            "probe_optimizer_success": bool(probe_result.success),
+            "probe_optimizer_message": str(probe_result.message),
+            "probe_optimizer_nit": int(probe_result.nit),
+            "probe_optimizer_fun": float(probe_result.fun),
+            "probe_candidate_objective": float(objective(probe_candidate)[0]),
+            "probe_candidate_mlr_max_change": float(np.max(np.abs(
+                probe_candidate[:MLR_DIM] - baseline_vector[:MLR_DIM]))),
+        }
+    (args.output / "objective_probe.json").write_text(
+        json.dumps(objective_probe, indent=2), encoding="utf-8")
     results = {}
     for name in ("default", "S2"):
+        if resume_vectors is not None:
+            start_vector = resume_vectors[name]
+            prior_meta = resume_metadata["prior_iterations"][name]
+            source_iteration = (prior_meta["cumulative_iteration"]
+                                if prior_meta["cumulative_iteration"] is not None
+                                else prior_meta["iterations"]) or 0
+        else:
+            start_vector = (baseline_vector.copy() if name == "default" else
+                            params_to_vector(vector_to_params(baseline_vector),
+                                             baseline_vector[F_INDEX], SHAPE_STARTS[name]))
+            source_iteration = 0
         vector, trace, statuses = run_trajectory(
-            mlr, objective, logpost, loglike, baseline_vector.copy() if name == "default"
-            else params_to_vector(vector_to_params(baseline_vector), baseline_vector[F_INDEX], SHAPE_STARTS[name]),
-            name, args,
+            mlr, objective, logpost, loglike, start_vector, name, args,
+            source_iteration=source_iteration,
         )
         results[name] = (vector, trace, statuses)
-    write_outputs(args, mlr, results, baseline_vector, validation, selection_meta, stack_meta)
+    write_outputs(args, mlr, results, baseline_vector, validation, selection_meta,
+                  stack_meta, resume_metadata=resume_metadata)
     elapsed = time.monotonic() - started
     summary = json.loads((args.output / "summary.json").read_text())
     summary["elapsed_seconds"] = elapsed
