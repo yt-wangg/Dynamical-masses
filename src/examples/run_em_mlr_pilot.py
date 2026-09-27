@@ -82,6 +82,8 @@ def parse_args():
                         help="MLR posterior used only for the common starting state; defaults to --baseline.")
     parser.add_argument("--initial-map-states", type=Path, default=None,
                         help="Resume both trajectories from an existing map_states.npz checkpoint.")
+    parser.add_argument("--overwrite-output", action="store_true",
+                        help="Allow resuming into a non-empty output directory.")
     parser.add_argument("--shape-stack", type=Path, default=None,
                         help="Formal T8.2 27-node shape stack.")
     parser.add_argument("--dynamics-lookup", type=Path, default=None,
@@ -1187,7 +1189,7 @@ def main():
            args.f_tol, args.projected_grad_tol) <= 0:
         raise ValueError("Convergence tolerances must be strictly positive.")
     if (args.initial_map_states is not None and args.output.exists()
-            and any(args.output.iterdir())):
+            and any(args.output.iterdir()) and not args.overwrite_output):
         raise ValueError("Resume output directory must be new or empty.")
     args.output.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("JAX_PLATFORMS", "cpu")

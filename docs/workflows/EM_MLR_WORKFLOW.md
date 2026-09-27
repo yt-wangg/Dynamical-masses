@@ -64,6 +64,10 @@ directory. `summary.json` records the source checkpoint and prior iteration
 metadata. A resumed trace may restart its local cycle counter at zero, while
 `cumulative_iteration` preserves the provenance.
 
+If the destination already contains files, add `--overwrite-output` to allow
+the resumed run to replace its own output files. The destination must still be
+different from the source checkpoint directory.
+
 ## Good-shape likelihood evaluation
 
 The default is now:
