@@ -1,0 +1,335 @@
+\section{Method}
+\label{sec:methods}
+
+\subsection{Overview and notation}
+\label{sec:overview}
+
+We infer the stellar mass $M$ as a function of absolute magnitude
+$x\equiv M_G$ and metallicity $Z\equiv\mh$.  Binary systems are indexed by
+$j$, their components by $k\in\{1,2\}$, and the nodes of a metallicity grid
+by $q$.  Hats denote observed quantities; $\log_{10}$ is used for stellar-mass
+logarithms and $\log$ for natural logarithms.
+
+The analysis is modular \citep{LiuBayarriBerger2009Modularization,
+Plummer2015Cuts} (Fig.~\ref{fig:workflow}).  Stage~1a calibrates the relative,
+magnitude-dependent behaviour of the XP metallicities from within-binary
+differences.  Stage~1b combines the calibrated metallicities with the PARSEC
+colour--magnitude relation and a population distribution to obtain, for each
+system, a posterior probability mass $\overline P_{jq}$ for its shared
+metallicity on a fixed grid $\{Z_q\}$.  Stage~2 predicts the two component
+masses at every grid node, evaluates the dynamical likelihood of $u_j$, and
+sums over nodes with weights $\overline P_{jq}$.  Information flows in one
+direction only: the dynamics do not recalibrate the metallicity zero point,
+the colour scatter, or the population distribution.
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw,rounded corners,align=center,minimum height=11mm,
+              text width=34mm,fill=blue!5,font=\small},
+  data/.style={box,fill=gray!10},
+  model/.style={box,fill=orange!10},
+  result/.style={box,fill=green!10},
+  end/.style={box,fill=red!15},
+  arrow/.style={-{Latex[length=2.2mm]},thick}
+]
+\node[data]   (spec)   at (0, 2.6) {XP metallicities\\$\widehat z_{j1},\widehat z_{j2}$, $\sigma_{z,jk}$};
+\node[data]   (cmd)    at (0, 1.0) {\gaia\ CMD\\$M_G,(G_{\rm BP}-G_{\rm RP})_0$};
+\node[model]  (stage1) at (4.1, 1.8) {Stage 1a: relative XP calibration\\Stage 1b: shared $Z_j$ + CMD + population};
+\node[result] (weights)at (8.2, 1.8) {System metallicity posterior\\$\overline P_{jq}$};
+\node[data]   (phot)   at (0,-0.8) {Component magnitudes\\$x_{j1},x_{j2}$};
+\node[model]  (mlr)    at (4.1,-0.8) {PARSEC-relative\\hard-monotone MLR\\$g(x,Z)$};
+\node[result] (mass)   at (8.2,-0.8) {Total mass and scale\\$M_{{\rm tot},jq}$, $s_{jq}$};
+\node[data]   (dyn)    at (0,-2.6) {Wide-binary dynamics\\$u_j,\sigma_{u,j}$};
+\node[model]  (rice)   at (4.1,-2.6) {Rice-convolved\\normal/outlier likelihood\\shape $(B,u_c,C)$};
+\node[end]    (post)   at (4.1,-4.5) {Stage-2 posterior\\MLR, shape, $f_{\rm out}$};
+\draw[arrow] (spec) -- (stage1);
+\draw[arrow] (cmd) -- (stage1);
+\draw[arrow] (stage1) -- (weights);
+\draw[arrow] (phot) -- (mlr);
+\draw[arrow] (mlr) -- (mass);
+\draw[arrow] (mass) -- (rice);
+\draw[arrow] (dyn) -- (rice);
+\draw[arrow] (rice) -- (post);
+\draw[arrow] (weights.east) -- ++(7mm,0) |- node[pos=0.42,right,align=left]
+  {metallicity\\marginalisation} (rice.east);
+\end{tikzpicture}
+\caption{Structure of the inference.  Stage~1 returns a posterior probability
+mass over the shared metallicity of every system.  Stage~2 propagates this
+uncertainty into the dynamical fit of the MLR but does not feed back into
+Stage~1.}
+\label{fig:workflow}
+\end{figure*}
+
+\subsection{Stage 1: system metallicities}
+\label{sec:stage1}
+
+\subsubsection{XP measurement model}
+
+Each star carries an independent Student-$t$ measurement of the shared system
+metallicity $Z_j$,
+\begin{equation}
+ \widehat z_{jk}\mid Z_j
+ \sim \StudentT_{\nu}\!\left[
+ Z_j+\delta_z+b_G(x_{jk}),\
+ \left(\sigma_{z,jk}^2+s_z^2\right)^{1/2}\right]
+ \equiv\mathcal{L}^{\mathrm{XP}}_{jk}(Z_j),
+ \label{eq:spec-model}
+\end{equation}
+where the second and third arguments are the location and scale.  The
+function $b_G(x)$ is a magnitude-dependent relative bias, $s_z$ an additional
+per-star scatter, $\nu$ the degrees of freedom, and $\delta_z$ a global zero
+point.  In Stage~1a, $b_G$, $s_z$, and $\nu$ are estimated by maximum
+likelihood from the within-binary differences $\widehat z_{j1}-\widehat z_{j2}$,
+which do not depend on $Z_j$ or $\delta_z$; they are then held fixed.
+
+\subsubsection{Colour--magnitude likelihood}
+
+The zero point $\delta_z$ is not constrained by metallicity differences.  It
+is set in Stage~1b by requiring the observed colours to agree with the PARSEC
+colour $C_{\rm P}(x,Z)$ at the inferred metallicity.  For a component with
+formal colour uncertainty
+$\sigma_{C,jk}=(2.5/\ln10)\,(\mathrm{SNR}_{\rm BP}^{-2}+
+\mathrm{SNR}_{\rm RP}^{-2})^{1/2}$,
+\begin{equation}
+ C_{jk}\mid Z_j\sim\StudentT_{4}\!\left[
+ C_{\rm P}(x_{jk},Z_j),\ \left(\sigma_{C,jk}^2+s_C^2\right)^{1/2}\right]
+ \equiv\mathcal{L}^{\rm CMD}_{jk}(Z_j),
+ \label{eq:cmd}
+\end{equation}
+with an excess scatter $s_C\sim\text{Half-Normal}(0.1~{\rm mag})$.  Because
+PARSEC colours of cool dwarfs are less reliable, only components whose PARSEC
+effective temperature exceeds 4000~K at every grid metallicity enter this term:
+\begin{equation}
+ m_{jk}=\indicator\!\left[
+ \min_{q}T_{\rm eff,P}(x_{jk},Z_q)\ge4000\ {\rm K}\right].
+ \label{eq:warm-mask}
+\end{equation}
+The mask is independent of the proposed metallicity, so the set of stars that
+enter the CMD term does not change during sampling.  It retains 12\,167 stars;
+8\,247 systems have at least one and 3\,920 have two such components.  The
+PARSEC reference surface is the average over isochrones with
+$9.3<\log_{10}(\mathrm{age/yr})<10.0$, so age is not a latent variable.
+
+\subsubsection{System posteriors}
+
+The population distribution $p_{\rm pop}(Z\mid\bm\omega)$ is a six-component
+mixture with Dirichlet$(1,\ldots,1)$ weights $\bm\omega$, and
+$\delta_z\sim\Normal(0,0.3~{\rm dex})$.  On an 81-node grid spanning
+$-1.0\le Z\le0.6$, the posterior probability mass for system $j$ is
+\begin{equation}
+ \overline P_{jq}\propto w_q\,
+ \Big\langle p_{\rm pop}(Z_q\mid\bm\omega)
+ \prod_{k=1}^{2}\mathcal{L}^{\rm XP}_{jk}(Z_q)
+ \left[\mathcal{L}^{\rm CMD}_{jk}(Z_q)\right]^{m_{jk}}
+ \Big\rangle_{\bm\psi},
+ \label{eq:zpost}
+\end{equation}
+where $w_q$ are trapezoidal weights, $\sum_q\overline P_{jq}=1$, and the
+average is over the Stage-1b posterior of $\bm\psi=(\delta_z,s_C,\bm\omega)$.
+The global parameters are constrained by the product of the per-system
+evidences.  Stage~1b was sampled with the No-U-Turn Sampler
+\citep[NUTS;][]{HoffmanGelman2014NUTS} \unsure{(chains and draws of the
+formal run)}.
+
+\subsection{Stage 2: a PARSEC-relative hard-monotone MLR}
+\label{sec:mlr}
+
+\subsubsection{Spline representation}
+
+Let $g_{\rm P}(x,Z)=\log_{10}[M_{\rm P}(x,Z)/\msun]$ be the PARSEC mass
+surface.  The fitted surface is a tensor-product cubic B-spline
+\citep{deBoor2001Splines},
+\begin{equation}
+ g(x,Z)=\sum_{i=1}^{K_x}\sum_{h=1}^{K_Z}\Theta_{ih}B_i(x)C_h(Z)
+       =g_{\rm P}^{*}(x,Z)+\Delta_*(x,Z),
+ \label{eq:g-total}
+\end{equation}
+where $g_{\rm P}^*=\sum\Pi_{ih}B_iC_h$ is the least-squares projection of
+$g_{\rm P}$ onto the same basis and $\Delta_*=\sum D_{ih}B_iC_h$ with
+$D=\Theta-\Pi$ is the fitted correction.  The projection error
+$g_{\rm P}^*-g_{\rm P}$ has an rms of 0.002~dex and a maximum of 0.019~dex.
+We use $K_x\times K_Z=8\times4$ basis functions with clamped knot vectors
+$\bm\kappa_x=(3.5^{(4)},5.5,7.5,9.5,11.5,13.5^{(4)})$~mag and
+$\bm\kappa_Z=(-1.0^{(4)},0.6^{(4)})$~dex, where superscripts give
+multiplicities.  The metallicity dependence is therefore a single cubic
+polynomial segment.
+
+\subsubsection{Hard monotonicity}
+
+At fixed metallicity a fainter star must not be more massive, and at fixed
+magnitude we require that a more metal-rich star is not less massive.  We
+impose
+\begin{equation}
+ \Theta_{i+1,h}\le\Theta_{ih},\qquad
+ \Theta_{i,h+1}\ge\Theta_{ih},
+ \label{eq:coefficient-order}
+\end{equation}
+which, because the derivatives of a B-spline are non-negative combinations of
+adjacent coefficient differences, guarantees $\partial g/\partial x\le0$ and
+$\partial g/\partial Z\ge0$ everywhere in the domain.  The constraints act on
+the total surface $\Theta$, not on the correction $D$, which may take either
+sign.  Appendix~\ref{app:monotone} gives the constructive parametrisation.
+
+\subsubsection{Regularisation and solar anchor}
+
+The correction is shrunk towards PARSEC and towards smoothness through
+\begin{equation}
+\begin{aligned}
+ \log\pi(D)={}&-\frac{1}{2\tau_D^2}\sum_{i,h}D_{ih}^2
+ -\frac{1}{2}\sum\left(\frac{D^{(2,x)}_{ih}}{\tau_x}\right)^2\\
+ &-\frac{1}{2}\sum\left(\frac{D^{(2,Z)}_{ih}}{\tau_Z}\right)^2
+ -\frac{1}{2}\sum\left(\frac{D^{(xZ)}_{ih}}{\tau_{xZ}}\right)^2+{\rm const},
+\end{aligned}
+ \label{eq:shrink}
+\end{equation}
+where $D^{(2,x)}$ and $D^{(2,Z)}$ are second differences and $D^{(xZ)}$ the
+mixed difference of the coefficients, normalised by the Greville-abscissa
+spacing so that they retain units of dex \citep{EilersMarx1996PSplines}.  We
+adopt $\tau_D=0.10$~dex and $\tau_x=\tau_Z=\tau_{xZ}=0.05$~dex.  The absolute
+mass scale is anchored softly at the Sun,
+\begin{equation}
+ g(4.67,0)\sim\Normal\!\left(0,\ [0.01/\ln10]^2\right),
+ \label{eq:solar}
+\end{equation}
+i.e. a 1\% constraint on the mass of a solar-luminosity, solar-metallicity
+star.
+
+\subsection{Dynamical likelihood}
+\label{sec:dynamics}
+
+\subsubsection{Normal and outlier components}
+
+For a bound binary on a Keplerian orbit, the projected relative velocity and
+separation combine to
+$u=\sqrt{M_{\rm tot}/\msun}\;\tilde u$, where $\tilde u$ depends only on
+eccentricity, orbital phase, and orientation.  Marginalising these over an
+assumed orbital population gives a distribution $p(\tilde u)$ that is common
+to all systems.  We parametrise it with the functional form of
+\citet{Hwang2024DynamicalMasses},
+\begin{equation}
+ p_{\rm N}(\tilde u\mid B,u_c,C)\propto\tilde u\,
+ \exp\!\left[-B\tilde u^2-\exp\!\left(\frac{\tilde u-u_c}{C}\right)\right],
+ \qquad 0<\tilde u\le80,
+ \label{eq:good}
+\end{equation}
+normalised on its support.  The reference values
+$(B,u_c,C)=(2.544\times10^{-3},35.67,3.1)$ were obtained by fitting this form
+to simulated $\tilde u$ for an orbital population
+\unsure{(specify eccentricity distribution and separation range used in the
+simulation)}.
+
+Pairs that are not simple bound binaries, such as hierarchical triples with an
+unresolved inner companion or residual chance alignments, produce velocities
+that do not scale with the photometric mass.  We describe them with an outlier
+component defined directly on the latent observed-frame amplitude $v$,
+\begin{equation}
+ p_{\rm O}(v)=\frac{\phi[(v-40)/13]}
+ {13\,[2\Phi(40/13)-1]}\,
+ \indicator(0\le v\le80),
+ \label{eq:out}
+\end{equation}
+a normal distribution with mean 40 and dispersion $13~\kmsau$ truncated to
+$[0,80]$, independent of the mass and metallicity of the system.
+
+\subsubsection{Measurement model}
+
+The measured $u_j$ is the modulus of a two-dimensional velocity difference
+with approximately isotropic Gaussian errors, so its conditional density
+given the true amplitude $v$ is the Rice distribution \citep{Rice1945},
+\begin{equation}
+ R(u\mid v,\sigma)=\frac{u}{\sigma^2}
+ \exp\!\left[-\frac{u^2+v^2}{2\sigma^2}\right]
+ I_0\!\left(\frac{uv}{\sigma^2}\right).
+ \label{eq:rice}
+\end{equation}
+For a mass scale $s=\sqrt{M_{\rm tot}/\msun}$ the two component likelihoods
+are
+\begin{align}
+ L_{{\rm N},j}(s)&=\int_0^{80s}R(u_j\mid v,\sigma_{u,j})\,
+ p_{\rm N}\!\left(\frac{v}{s}\right)\frac{\dd v}{s},
+ \label{eq:LN}\\
+ L_{{\rm O},j}&=\int_0^{80}R(u_j\mid v,\sigma_{u,j})\,p_{\rm O}(v)\dd v,
+ \label{eq:LO}
+\end{align}
+and the mixture is
+$L_j(s)=(1-f_{\rm out})L_{{\rm N},j}(s)+f_{\rm out}L_{{\rm O},j}$ with
+$f_{\rm out}\sim{\rm Beta}(3,12)$.
+
+\subsubsection{Metallicity marginalisation}
+
+At metallicity node $Z_q$ the component masses and mass scale are
+$M_{jkq}=\msun10^{g(x_{jk},Z_q)}$ and
+$s_{jq}=[(M_{j1q}+M_{j2q})/\msun]^{1/2}$.  The Stage-2 likelihood of system
+$j$ is
+\begin{equation}
+ \mathcal L_j^{\rm dyn}=\sum_{q=1}^{81}\overline P_{jq}\,L_j(s_{jq}),
+ \label{eq:dyn-final}
+\end{equation}
+which propagates the metallicity uncertainty of each system into its mass.
+Neither the population distribution nor the quadrature weights are applied a
+second time, because both are contained in $\overline P_{jq}$.
+
+\subsection{Metallicity bins and velocity-distribution shape}
+\label{sec:bins}
+
+The shape parameters $(B,u_c,C)$ strongly affect the inferred mass scale
+(Sect.~\ref{sec:fixedshape}), and they need not be the same for binaries of
+different metallicity, since the wide-binary fraction and separation
+distribution depend on metallicity \citep{Hwang2021}.  We therefore fit four
+metallicity bins independently, each with its own MLR surface, shape
+parameters, and outlier fraction.  Systems are assigned by the median of
+their metallicity posterior to the bins $[-1.0,-0.5)$, $[-0.5,0.0)$,
+$[0.0,0.3)$, and $[0.3,0.6]$, which contain 186, 9\,618, 4\,687, and 385
+systems.  Within a bin every system retains its full 81-node posterior in
+Eq.~(\ref{eq:dyn-final}).  The MLR of each bin is reported at the bin
+midpoint.
+
+The shape parameters receive uniform priors in $\log B$, $\log u_c$, and
+$\log C$ within the box $B\in[0.7,3.3]\times10^{-3}$, $u_c\in[24,44]$, and
+$C\in[2.5,13.5]$.  To make sampling tractable, Eq.~(\ref{eq:LN}) is
+precomputed for every system on a logarithmic grid of mass scales
+$s\in[0.25,2.5]$ at $3\times3\times3$ nodes spanning this box.  At a general
+point, the normal-component likelihood is the probability mixture of the 27
+node likelihoods with trilinear weights in the logarithmic shape coordinates.
+This mixture is itself a normalised distribution in $u$, although it is not
+identical to Eq.~(\ref{eq:good}) evaluated at the interpolated parameters.
+
+\subsection{Priors and posterior sampling}
+\label{sec:inference}
+
+The MLR is parametrised by 35 unconstrained coordinates
+(Appendix~\ref{app:monotone}), to which the three shape parameters are added
+(Table~\ref{tab:priors}).  Each bin was sampled with NUTS
+\citep{HoffmanGelman2014NUTS} using four chains of 1\,500 warm-up and 2\,000
+retained draws.  Each bin was sampled twice with independent seeds and
+jittered initial values.  All Stage-2 runs completed without divergent
+transitions.  Convergence diagnostics are listed in
+Table~\ref{tab:diagnostics}.
+
+\begin{table}
+\caption{Stage-2 parameters and priors.}
+\label{tab:priors}
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Parameter & Prior \\
+\midrule
+$c_0=\Theta_{11}$ & $\Normal(\Pi_{11},0.10)$ dex \\
+$a_h,\ b_i,\ r_{ih}$ & $\Normal(0,1)$ \\
+$\log\lambda_x$ & $\Normal(\log0.186,0.7)$ \\
+$\log\lambda_Z$ & $\Normal(\log0.131,0.7)$ \\
+$\log B$ & $\mathcal U(\log0.0007,\log0.0033)$ \\
+$\log u_c$ & $\mathcal U(\log24,\log44)$ \\
+$\log C$ & $\mathcal U(\log2.5,\log13.5)$ \\
+$f_{\rm out}$ & Beta$(3,12)$ \\
+\midrule
+$\tau_D$; $\tau_x,\tau_Z,\tau_{xZ}$ & 0.10; 0.05 dex (fixed) \\
+Solar anchor & $g(4.67,0)=0\pm0.0043$ dex \\
+\bottomrule
+\end{tabular}
+\tablefoot{$\lambda_x$ and $\lambda_Z$ set the scale of the monotone
+increments (Appendix~\ref{app:monotone}); their reference values are the mean
+PARSEC coefficient increments.}
+\end{table}

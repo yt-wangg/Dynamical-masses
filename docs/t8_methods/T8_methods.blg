@@ -1,46 +1,47 @@
-This is BibTeX, Version 0.99d (TeX Live 2023)
+This is BibTeX, Version 0.99d (TeX Live 2020)
 Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
 The top-level auxiliary file: T8_methods.aux
-The style file: plainnat.bst
+The style file: aa.bst
 Database file #1: T8_methods.bib
-You've used 9 entries,
-            2773 wiz_defined-function locations,
-            672 strings with 6870 characters,
-and the built_in function-call counts, 4286 in all, are:
-= -- 395
-> -- 236
-< -- 6
-+ -- 81
-- -- 72
-* -- 373
-:= -- 683
-add.period$ -- 37
-call.type$ -- 9
-change.case$ -- 48
-chr.to.int$ -- 9
-cite$ -- 18
-duplicate$ -- 185
-empty$ -- 344
-format.name$ -- 85
-if$ -- 882
+Reallocated wiz_functions (elt_size=4) to 6000 items from 3000.
+You've used 21 entries,
+            3039 wiz_defined-function locations,
+            825 strings with 9204 characters,
+and the built_in function-call counts, 10512 in all, are:
+= -- 873
+> -- 849
+< -- 11
++ -- 296
+- -- 261
+* -- 882
+:= -- 1954
+add.period$ -- 21
+call.type$ -- 21
+change.case$ -- 170
+chr.to.int$ -- 27
+cite$ -- 21
+duplicate$ -- 389
+empty$ -- 559
+format.name$ -- 316
+if$ -- 2073
 int.to.chr$ -- 1
 int.to.str$ -- 1
-missing$ -- 10
-newline$ -- 63
-num.names$ -- 36
-pop$ -- 74
+missing$ -- 21
+newline$ -- 67
+num.names$ -- 84
+pop$ -- 167
 preamble$ -- 1
-purify$ -- 39
+purify$ -- 168
 quote$ -- 0
-skip$ -- 136
+skip$ -- 343
 stack$ -- 0
-substring$ -- 170
-swap$ -- 11
+substring$ -- 448
+swap$ -- 4
 text.length$ -- 1
 text.prefix$ -- 0
 top$ -- 0
-type$ -- 94
+type$ -- 186
 warning$ -- 0
-while$ -- 40
+while$ -- 84
 width$ -- 0
-write$ -- 146
+write$ -- 213

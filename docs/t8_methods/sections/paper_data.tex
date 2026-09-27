@@ -1,0 +1,55 @@
+\section{Data}
+\label{sec:data}
+
+\subsection{Wide-binary sample}
+
+The parent sample is the \gaia\ EDR3 wide-binary catalogue of
+\citet{ElBadry2021MillionBinaries}, restricted to pairs classified as two
+main-sequence stars (MSMS).  We retain systems with parallax
+$\varpi_1>1$~mas (distance below 1~kpc), projected separation
+$r_\perp<10^4$~AU, a proper-motion difference measured at more than
+$3\sigma$, and a low chance-alignment probability as defined in that
+catalogue (all selected systems have $\mathcal R\le0.07$;
+\unsure{state the adopted threshold}).  All components have astrometric
+fidelities $\ge0.69$ from the classifier of \citet{Rybizki2022}
+\unsure{(state the adopted threshold)}.  Each component was
+classified as a single star by a model comparison of single-star and
+unresolved-binary fits to its XP spectrum
+\unsure{(Li et al., in prep.; confirm reference and the $\Delta$BIC
+threshold)}, which removes the most luminous unresolved companions that would
+bias the photometric mass.  Extinctions were taken from the 3D dust map of
+\citet{Edenhofer2024} \unsure{(confirm)}; the selected systems have $A_G<0.1$~mag.  The
+dereddened colours $C_{jk}=(G_{\rm BP}-G_{\rm RP})_{0,jk}$ and absolute
+magnitudes $x_{jk}=M_{G,jk}$ follow from the \gaia\ photometry
+\citep{Riello2021GaiaEDR3Photometry}, these extinctions, and the parallax of
+the \unsure{primary}.  Systems with a non-finite or non-positive velocity
+statistic, metallicity uncertainty, or colour uncertainty are removed.  The
+final sample contains 14\,876 binaries (29\,752 stars) with
+$2.6\lesssim M_G\lesssim13.9$ and median projected separation 1\,900~AU.
+
+\subsection{Velocity statistic}
+
+For each system we form the mass-scaled velocity statistic of
+\citet{Hwang2024DynamicalMasses},
+\begin{equation}
+ u_j=\Delta v_{\perp,j}\sqrt{r_{\perp,j}}
+    =4.74\,\frac{\Delta\mu_j}{\varpi_j}\sqrt{r_{\perp,j}/{\rm AU}}
+    \ \ \kmsau,
+ \label{eq:u}
+\end{equation}
+where $\Delta\mu_j$ is the magnitude of the proper-motion difference in
+mas~yr$^{-1}$ and $\varpi_j$ is the parallax in mas.  Its uncertainty is
+$\sigma_{u,j}=u_j/(\Delta\mu/\sigma_{\Delta\mu})_j$, with
+$(\Delta\mu/\sigma_{\Delta\mu})_j$ the significance of the proper-motion
+difference.  The sample has median $u=22~\kmsau$ and median
+$\sigma_u=2.5~\kmsau$.
+
+\subsection{XP metallicities}
+
+Per-star metallicities $\widehat z_{jk}$ and their reported uncertainties
+$\sigma_{z,jk}$ are inferred from the \gaia\ XP spectra with the J-CaPS
+forward model \citep{Li2026JCaPS}.  We use the raw per-star values, not any
+product that already enforces equal metallicity within a binary; such a
+product would count the equal-composition assumption of our likelihood twice.
+The median reported uncertainty is 0.05~dex, and the raw values span
+$-1.0\le\widehat z\le0.58$ with 90\% of stars between $-0.57$ and $+0.20$.

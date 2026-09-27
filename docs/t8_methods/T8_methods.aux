@@ -1,11 +1,15 @@
 \relax 
 \providecommand\hyper@newdestlabel[2]{}
+\bbl@cs{beforestart}
 \providecommand\HyperFirstAtBeginDocument{\AtBeginDocument}
 \HyperFirstAtBeginDocument{\ifx\hyper@anchor\@undefined
+\global\let\oldcontentsline\contentsline
+\gdef\contentsline#1#2#3#4{\oldcontentsline{#1}{#2}{#3}}
 \global\let\oldnewlabel\newlabel
 \gdef\newlabel#1#2{\newlabelxx{#1}#2}
 \gdef\newlabelxx#1#2#3#4#5#6{\oldnewlabel{#1}{{#2}{#3}}}
 \AtEndDocument{\ifx\hyper@anchor\@undefined
+\let\contentsline\oldcontentsline
 \let\newlabel\oldnewlabel
 \fi}
 \fi}
@@ -13,90 +17,140 @@
 \gdef\HyperFirstAtBeginDocument#1{#1}
 \providecommand\HyField@AuxAddToFields[1]{}
 \providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{Delfosse2000,Torres2010,Mann2019}
+\citation{Mann2019}
 \citation{Bressan2012PARSEC}
-\citation{GaiaCollaboration2023DR3}
-\citation{Riello2021GaiaEDR3Photometry}
+\citation{Hwang2024DynamicalMasses}
 \citation{ElBadry2021MillionBinaries}
-\citation{LiuBayarriBerger2009Modularization,Plummer2015Cuts}
-\@writefile{toc}{\contentsline {section}{\numberline {1}Scientific objective and modular architecture}{1}{section.1}\protected@file@percent }
-\newlabel{sec:overview}{{1}{1}{Scientific objective and modular architecture}{section.1}{}}
-\newlabel{sec:overview@cref}{{[section][1][]1}{[1][1][]1}}
-\@writefile{toc}{\contentsline {section}{\numberline {2}Observables, latent quantities, and conventions}{1}{section.2}\protected@file@percent }
-\newlabel{sec:notation}{{2}{1}{Observables, latent quantities, and conventions}{section.2}{}}
-\newlabel{sec:notation@cref}{{[section][2][]2}{[1][1][]1}}
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Scientific workflow. Stage\nobreakspace  {}1a estimates the relative JCAPS calibration from within-binary differences. Conditional on those fixed estimates, Stage\nobreakspace  {}1b returns a posterior probability mass over each shared system metallicity. Stage\nobreakspace  {}2 propagates this uncertainty into the dynamical MLR fit but does not update either Stage\nobreakspace  {}1 module. This one-way flow implements the modular cut.}}{2}{figure.1}\protected@file@percent }
-\newlabel{fig:workflow}{{1}{2}{Scientific workflow. Stage~1a estimates the relative JCAPS calibration from within-binary differences. Conditional on those fixed estimates, Stage~1b returns a posterior probability mass over each shared system metallicity. Stage~2 propagates this uncertainty into the dynamical MLR fit but does not update either Stage~1 module. This one-way flow implements the modular cut}{figure.1}{}}
-\newlabel{fig:workflow@cref}{{[figure][1][]1}{[1][1][]2}}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Principal observables and latent or derived quantities.}}{2}{table.1}\protected@file@percent }
-\newlabel{tab:notation}{{1}{2}{Principal observables and latent or derived quantities}{table.1}{}}
-\newlabel{tab:notation@cref}{{[table][1][]1}{[1][1][]2}}
+\citation{Chae2023,Banik2024}
+\citation{GaiaCollaboration2023DR3,Li2026JCaPS}
+\babel@aux{english}{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\newlabel{sec:intro}{{1}{1}{Introduction}{section.1}{}}
+\citation{ElBadry2021MillionBinaries}
+\citation{Rybizki2022}
+\citation{Edenhofer2024}
+\citation{Riello2021GaiaEDR3Photometry}
+\citation{Hwang2024DynamicalMasses}
 \citation{Li2026JCaPS}
-\citation{Bressan2012PARSEC}
-\@writefile{toc}{\contentsline {section}{\numberline {3}Stage 1: relative and absolute metallicity calibration}{3}{section.3}\protected@file@percent }
-\newlabel{sec:stage1}{{3}{3}{Stage 1: relative and absolute metallicity calibration}{section.3}{}}
-\newlabel{sec:stage1@cref}{{[section][3][]3}{[1][3][]3}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Stage 1a: Relative JCAPS calibration}{3}{subsection.3.1}\protected@file@percent }
-\newlabel{eq:spec-model}{{1}{3}{Stage 1a: Relative JCAPS calibration}{equation.3.1}{}}
-\newlabel{eq:spec-model@cref}{{[equation][1][]1}{[1][3][]3}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Stage 1b: Absolute calibration and system metallicity posteriors}{3}{subsection.3.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.1}CMD likelihood}{3}{subsubsection.3.2.1}\protected@file@percent }
-\newlabel{eq:cmd}{{3}{3}{CMD likelihood}{equation.3.3}{}}
-\newlabel{eq:cmd@cref}{{[equation][3][]3}{[1][3][]3}}
-\newlabel{eq:warm-mask}{{4}{3}{CMD likelihood}{equation.3.4}{}}
-\newlabel{eq:warm-mask@cref}{{[equation][4][]4}{[1][3][]3}}
-\citation{deBoor2001Splines}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.2}System posterior and the cut object}{4}{subsubsection.3.2.2}\protected@file@percent }
-\newlabel{eq:zpost-cont}{{5}{4}{System posterior and the cut object}{equation.3.5}{}}
-\newlabel{eq:zpost-cont@cref}{{[equation][5][]5}{[1][4][]4}}
-\@writefile{toc}{\contentsline {section}{\numberline {4}Stage 2: a PARSEC-relative hard-monotone MLR}{4}{section.4}\protected@file@percent }
-\newlabel{sec:mlr}{{4}{4}{Stage 2: a PARSEC-relative hard-monotone MLR}{section.4}{}}
-\newlabel{sec:mlr@cref}{{[section][4][]4}{[1][4][]4}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Baseline projection and scientific correction}{4}{subsection.4.1}\protected@file@percent }
-\newlabel{eq:g-total}{{9}{4}{Baseline projection and scientific correction}{equation.4.9}{}}
-\newlabel{eq:g-total@cref}{{[equation][9][]9}{[1][4][]4}}
-\newlabel{eq:delta-parsec}{{10}{4}{Baseline projection and scientific correction}{equation.4.10}{}}
-\newlabel{eq:delta-parsec@cref}{{[equation][10][]10}{[1][4][]4}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Hard monotonicity of the total mass surface}{5}{subsection.4.2}\protected@file@percent }
-\newlabel{eq:coefficient-order}{{13}{5}{Hard monotonicity of the total mass surface}{equation.4.13}{}}
-\newlabel{eq:coefficient-order@cref}{{[equation][13][]13}{[1][4][]5}}
-\@writefile{toc}{\contentsline {section}{\numberline {5}Wide-binary dynamical likelihood}{5}{section.5}\protected@file@percent }
-\newlabel{sec:dynamics}{{5}{5}{Wide-binary dynamical likelihood}{section.5}{}}
-\newlabel{sec:dynamics@cref}{{[section][5][]5}{[1][5][]5}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Mass-scaled velocity statistic}{5}{subsection.5.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Metallicity marginalization}{6}{subsection.5.2}\protected@file@percent }
-\newlabel{eq:node-mass-scale}{{28}{6}{Metallicity marginalization}{equation.5.28}{}}
-\newlabel{eq:node-mass-scale@cref}{{[equation][28][]28}{[1][6][]6}}
+\citation{LiuBayarriBerger2009Modularization,Plummer2015Cuts}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Data}{2}{section.2}\protected@file@percent }
+\newlabel{sec:data}{{2}{2}{Data}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Wide-binary sample}{2}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Velocity statistic}{2}{subsection.2.2}\protected@file@percent }
+\newlabel{eq:u}{{1}{2}{Velocity statistic}{equation.2.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}XP metallicities}{2}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Method}{2}{section.3}\protected@file@percent }
+\newlabel{sec:methods}{{3}{2}{Method}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Overview and notation}{2}{subsection.3.1}\protected@file@percent }
+\newlabel{sec:overview}{{3.1}{2}{Overview and notation}{subsection.3.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Stage 1: system metallicities}{2}{subsection.3.2}\protected@file@percent }
+\newlabel{sec:stage1}{{3.2}{2}{Stage 1: system metallicities}{subsection.3.2}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.1}XP measurement model}{2}{subsubsection.3.2.1}\protected@file@percent }
+\newlabel{eq:spec-model}{{2}{2}{XP measurement model}{equation.3.2}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.2}Colour--magnitude likelihood}{2}{subsubsection.3.2.2}\protected@file@percent }
+\newlabel{eq:cmd}{{3}{2}{Colour--magnitude likelihood}{equation.3.3}{}}
 \citation{HoffmanGelman2014NUTS}
-\newlabel{eq:dyn-final}{{29}{7}{Metallicity marginalization}{equation.5.29}{}}
-\newlabel{eq:dyn-final@cref}{{[equation][29][]29}{[1][6][]7}}
-\@writefile{toc}{\contentsline {section}{\numberline {6}Parameters, priors, and posterior computation}{7}{section.6}\protected@file@percent }
-\newlabel{sec:inference}{{6}{7}{Parameters, priors, and posterior computation}{section.6}{}}
-\newlabel{sec:inference@cref}{{[section][6][]6}{[1][7][]7}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Frozen Stage-1a, Stage-1b, and Stage-2 parameter specification. Normal distributions are written as location and standard deviation.}}{7}{table.2}\protected@file@percent }
-\newlabel{tab:priors}{{2}{7}{Frozen Stage-1a, Stage-1b, and Stage-2 parameter specification. Normal distributions are written as location and standard deviation}{table.2}{}}
-\newlabel{tab:priors@cref}{{[table][2][]2}{[1][7][]7}}
-\@writefile{toc}{\contentsline {section}{\numberline {7}Information propagated, assumptions, and limitations}{7}{section.7}\protected@file@percent }
-\newlabel{sec:limitations}{{7}{7}{Information propagated, assumptions, and limitations}{section.7}{}}
-\newlabel{sec:limitations@cref}{{[section][7][]7}{[1][7][]7}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Uncertainty and information flow in the frozen model.}}{8}{table.3}\protected@file@percent }
-\newlabel{tab:uncertainties}{{3}{8}{Uncertainty and information flow in the frozen model}{table.3}{}}
-\newlabel{tab:uncertainties@cref}{{[table][3][]3}{[1][7][]8}}
-\@writefile{toc}{\contentsline {section}{\numberline {A}Constructive monotone reparameterization}{8}{appendix.A}\protected@file@percent }
-\newlabel{app:monotone}{{A}{8}{Constructive monotone reparameterization}{appendix.A}{}}
-\newlabel{app:monotone@cref}{{[appendix][1][2147483647]A}{[1][8][]8}}
-\newlabel{eq:boundaries}{{33}{8}{Constructive monotone reparameterization}{equation.A.33}{}}
-\newlabel{eq:boundaries@cref}{{[equation][33][2147483647]33}{[1][8][]8}}
-\newlabel{eq:interior}{{35}{8}{Constructive monotone reparameterization}{equation.A.35}{}}
-\newlabel{eq:interior@cref}{{[equation][35][2147483647]35}{[1][8][]8}}
-\bibstyle{plainnat}
+\citation{deBoor2001Splines}
+\citation{EilersMarx1996PSplines}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Structure of the inference. Stage~1 returns a posterior probability mass over the shared metallicity of every system. Stage~2 propagates this uncertainty into the dynamical fit of the MLR but does not feed back into Stage~1.}}{3}{figure.1}\protected@file@percent }
+\newlabel{fig:workflow}{{1}{3}{Structure of the inference. Stage~1 returns a posterior probability mass over the shared metallicity of every system. Stage~2 propagates this uncertainty into the dynamical fit of the MLR but does not feed back into Stage~1}{figure.1}{}}
+\newlabel{eq:warm-mask}{{4}{3}{Colour--magnitude likelihood}{equation.3.4}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.2.3}System posteriors}{3}{subsubsection.3.2.3}\protected@file@percent }
+\newlabel{eq:zpost}{{5}{3}{System posteriors}{equation.3.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Stage 2: a PARSEC-relative hard-monotone MLR}{3}{subsection.3.3}\protected@file@percent }
+\newlabel{sec:mlr}{{3.3}{3}{Stage 2: a PARSEC-relative hard-monotone MLR}{subsection.3.3}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.1}Spline representation}{3}{subsubsection.3.3.1}\protected@file@percent }
+\newlabel{eq:g-total}{{6}{3}{Spline representation}{equation.3.6}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.2}Hard monotonicity}{3}{subsubsection.3.3.2}\protected@file@percent }
+\newlabel{eq:coefficient-order}{{7}{3}{Hard monotonicity}{equation.3.7}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.3.3}Regularisation and solar anchor}{3}{subsubsection.3.3.3}\protected@file@percent }
+\newlabel{eq:shrink}{{8}{3}{Regularisation and solar anchor}{equation.3.8}{}}
+\citation{Hwang2024DynamicalMasses}
+\citation{Rice1945}
+\citation{Hwang2021}
+\citation{HoffmanGelman2014NUTS}
+\citation{Mann2019}
+\newlabel{eq:solar}{{9}{4}{Regularisation and solar anchor}{equation.3.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Dynamical likelihood}{4}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:dynamics}{{3.4}{4}{Dynamical likelihood}{subsection.3.4}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.4.1}Normal and outlier components}{4}{subsubsection.3.4.1}\protected@file@percent }
+\newlabel{eq:good}{{10}{4}{Normal and outlier components}{equation.3.10}{}}
+\newlabel{eq:out}{{11}{4}{Normal and outlier components}{equation.3.11}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.4.2}Measurement model}{4}{subsubsection.3.4.2}\protected@file@percent }
+\newlabel{eq:rice}{{12}{4}{Measurement model}{equation.3.12}{}}
+\newlabel{eq:LN}{{13}{4}{Measurement model}{equation.3.13}{}}
+\newlabel{eq:LO}{{14}{4}{Measurement model}{equation.3.14}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {3.4.3}Metallicity marginalisation}{4}{subsubsection.3.4.3}\protected@file@percent }
+\newlabel{eq:dyn-final}{{15}{4}{Metallicity marginalisation}{equation.3.15}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Metallicity bins and velocity-distribution shape}{4}{subsection.3.5}\protected@file@percent }
+\newlabel{sec:bins}{{3.5}{4}{Metallicity bins and velocity-distribution shape}{subsection.3.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.6}Priors and posterior sampling}{4}{subsection.3.6}\protected@file@percent }
+\newlabel{sec:inference}{{3.6}{4}{Priors and posterior sampling}{subsection.3.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Results}{4}{section.4}\protected@file@percent }
+\newlabel{sec:results}{{4}{4}{Results}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Fixed velocity-distribution shape}{4}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:fixedshape}{{4.1}{4}{Fixed velocity-distribution shape}{subsection.4.1}{}}
+\citation{Hwang2021,Hwang2022}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Stage-2 parameters and priors.}}{5}{table.1}\protected@file@percent }
+\newlabel{tab:priors}{{1}{5}{Stage-2 parameters and priors}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Joint MLR and velocity-distribution fits in metallicity bins}{5}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:binresults}{{4.2}{5}{Joint MLR and velocity-distribution fits in metallicity bins}{subsection.4.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Metallicity dependence of the MLR}{5}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:slope}{{4.3}{5}{Metallicity dependence of the MLR}{subsection.4.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Velocity-distribution shape and outlier fraction}{5}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:shape}{{4.4}{5}{Velocity-distribution shape and outlier fraction}{subsection.4.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Sampling diagnostics}{5}{subsection.4.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Discussion}{5}{section.5}\protected@file@percent }
+\newlabel{sec:discussion}{{5}{5}{Discussion}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Mass scale and velocity distribution}{5}{subsection.5.1}\protected@file@percent }
+\newlabel{sec:degeneracy}{{5.1}{5}{Mass scale and velocity distribution}{subsection.5.1}{}}
+\citation{Hwang2022}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces MLR inferred with the velocity-distribution shape fixed to its orbital-population reference, for the full sample. Top: mass as a function of $M_G$ at five metallicities; bottom: relative difference from PARSEC. Orange: outlier component defined on the observed $u$ (Eq.~\ref  {eq:out}); purple: outlier component that scales with the photometric mass. Dashed lines show PARSEC; bands are 16--84\% posterior intervals.}}{6}{figure.2}\protected@file@percent }
+\newlabel{fig:fixedshape}{{2}{6}{MLR inferred with the velocity-distribution shape fixed to its orbital-population reference, for the full sample. Top: mass as a function of $M_G$ at five metallicities; bottom: relative difference from PARSEC. Orange: outlier component defined on the observed $u$ (Eq.~\ref {eq:out}); purple: outlier component that scales with the photometric mass. Dashed lines show PARSEC; bands are 16--84\% posterior intervals}{figure.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Dynamical mass relative to PARSEC, $100\tmspace  +\thinmuskip {.1667em}(M/M_{\rm  P}-1)$, in per cent.}}{6}{table.2}\protected@file@percent }
+\newlabel{tab:residuals}{{2}{6}{Dynamical mass relative to PARSEC, $100\,(M/M_{\rm P}-1)$, in per cent}{table.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces MLR from the joint fits of the MLR and velocity-distribution shape in four independent metallicity bins, evaluated at the bin midpoints (colour). Top: posterior median mass (solid and dashed: two independent runs) and PARSEC (dotted). Bottom: relative difference from PARSEC. Bands are pointwise 16--84\% intervals.}}{6}{figure.3}\protected@file@percent }
+\newlabel{fig:bins}{{3}{6}{MLR from the joint fits of the MLR and velocity-distribution shape in four independent metallicity bins, evaluated at the bin midpoints (colour). Top: posterior median mass (solid and dashed: two independent runs) and PARSEC (dotted). Bottom: relative difference from PARSEC. Bands are pointwise 16--84\% intervals}{figure.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Metallicity sensitivity of the MLR between the outer bins.}}{6}{table.3}\protected@file@percent }
+\newlabel{tab:slope}{{3}{6}{Metallicity sensitivity of the MLR between the outer bins}{table.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Why the orbital-population shape is disfavoured}{6}{subsection.5.2}\protected@file@percent }
+\citation{Mann2019}
+\citation{Chae2023,Banik2024}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Velocity-distribution shape and outlier fraction.}}{7}{table.4}\protected@file@percent }
+\newlabel{tab:shape}{{4}{7}{Velocity-distribution shape and outlier fraction}{table.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Convergence diagnostics of the Stage-2 runs.}}{7}{table.5}\protected@file@percent }
+\newlabel{tab:diagnostics}{{5}{7}{Convergence diagnostics of the Stage-2 runs}{table.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Comparison with PARSEC}{7}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Limitations}{7}{subsection.5.4}\protected@file@percent }
+\newlabel{sec:limitations}{{5.4}{7}{Limitations}{subsection.5.4}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Conclusions}{7}{section.6}\protected@file@percent }
+\newlabel{sec:conclusions}{{6}{7}{Conclusions}{section.6}{}}
+\bibstyle{aa}
 \bibdata{T8_methods}
-\bibcite{Bressan2012PARSEC}{{1}{2012}{{Bressan et~al.}}{{Bressan, Marigo, Girardi, Salasnich, Dal~Cero, Rubele, and Nanni}}}
-\bibcite{deBoor2001Splines}{{2}{2001}{{de~Boor}}{{}}}
-\bibcite{ElBadry2021MillionBinaries}{{3}{2021}{{El-Badry et~al.}}{{El-Badry, Rix, and Heintz}}}
-\bibcite{GaiaCollaboration2023DR3}{{4}{2023}{{{Gaia Collaboration} et~al.}}{{{Gaia Collaboration}, Vallenari, et~al.}}}
-\bibcite{HoffmanGelman2014NUTS}{{5}{2014}{{Hoffman and Gelman}}{{}}}
-\bibcite{Li2026JCaPS}{{6}{2026}{{Li et~al.}}{{}}}
-\bibcite{LiuBayarriBerger2009Modularization}{{7}{2009}{{Liu et~al.}}{{Liu, Bayarri, and Berger}}}
-\bibcite{Plummer2015Cuts}{{8}{2015}{{Plummer}}{{}}}
-\bibcite{Riello2021GaiaEDR3Photometry}{{9}{2021}{{Riello et~al.}}{{}}}
-\gdef \@abspage@last{9}
+\bibcite{Banik2024}{{1}{2024}{{Banik {et~al.}}}{{Banik, Pittordis, Sutherland, Famaey, Ibata, Mieske, \& Zhao}}}
+\bibcite{Bressan2012PARSEC}{{2}{2012}{{Bressan {et~al.}}}{{Bressan, Marigo, Girardi, Salasnich, Dal~Cero, Rubele, \& Nanni}}}
+\bibcite{Chae2023}{{3}{2023}{{Chae}}{{}}}
+\bibcite{deBoor2001Splines}{{4}{2001}{{de~Boor}}{{}}}
+\bibcite{Delfosse2000}{{5}{2000}{{Delfosse {et~al.}}}{{Delfosse, Forveille, S{\'e}gransan, Beuzit, Udry, Perrier, \& Mayor}}}
+\bibcite{Edenhofer2024}{{6}{2024}{{Edenhofer {et~al.}}}{{Edenhofer, Zucker, Frank, Saydjari, Speagle, Finkbeiner, \& En{\ss }lin}}}
+\bibcite{EilersMarx1996PSplines}{{7}{1996}{{Eilers \& Marx}}{{}}}
+\bibcite{ElBadry2021MillionBinaries}{{8}{2021}{{El-Badry {et~al.}}}{{El-Badry, Rix, \& Heintz}}}
+\bibcite{GaiaCollaboration2023DR3}{{9}{2023}{{{Gaia Collaboration} {et~al.}}}{{{Gaia Collaboration}, Vallenari, {et~al.}}}}
+\bibcite{HoffmanGelman2014NUTS}{{10}{2014}{{Hoffman \& Gelman}}{{}}}
+\bibcite{Hwang2024DynamicalMasses}{{11}{2024}{{Hwang {et~al.}}}{{Hwang, Ting, Cheng, \& Speagle}}}
+\bibcite{Hwang2021}{{12}{2021}{{Hwang {et~al.}}}{{Hwang, Ting, Schlaufman, Zakamska, \& Wyse}}}
+\bibcite{Hwang2022}{{13}{2022}{{Hwang {et~al.}}}{{Hwang, Ting, \& Zakamska}}}
+\bibcite{Li2026JCaPS}{{14}{2026}{{Li {et~al.}}}{{}}}
+\bibcite{LiuBayarriBerger2009Modularization}{{15}{2009}{{Liu {et~al.}}}{{Liu, Bayarri, \& Berger}}}
+\bibcite{Mann2019}{{16}{2019}{{Mann {et~al.}}}{{Mann, Dupuy, Kraus, Gaidos, Ansdell, Ireland, Rizzuto, Hung, Dittmann, Factor, Feiden, Martinez, Ru{\'i}z-Rodr{\'i}guez, \& Thao}}}
+\bibcite{Plummer2015Cuts}{{17}{2015}{{Plummer}}{{}}}
+\bibcite{Rice1945}{{18}{1945}{{Rice}}{{}}}
+\bibcite{Riello2021GaiaEDR3Photometry}{{19}{2021}{{Riello {et~al.}}}{{}}}
+\bibcite{Rybizki2022}{{20}{2022}{{Rybizki {et~al.}}}{{Rybizki, Green, Rix, El-Badry, Demleitner, Zari, Udalski, Smart, \& Gould}}}
+\bibcite{Torres2010}{{21}{2010}{{Torres {et~al.}}}{{Torres, Andersen, \& Gim{\'e}nez}}}
+\@writefile{toc}{\contentsline {section}{\numberline {A}Constructive monotone reparametrisation}{9}{appendix.A}\protected@file@percent }
+\newlabel{app:monotone}{{A}{9}{Constructive monotone reparametrisation}{appendix.A}{}}
+\newlabel{eq:boundaries}{{A.3}{9}{Constructive monotone reparametrisation}{equation.A.3}{}}
+\newlabel{eq:interior}{{A.5}{9}{Constructive monotone reparametrisation}{equation.A.5}{}}
+\newlabel{LastPage}{{9}{9}{}{}{}}

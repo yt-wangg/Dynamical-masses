@@ -1,0 +1,119 @@
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Mass scale and velocity distribution}
+\label{sec:degeneracy}
+
+The dynamical likelihood constrains the total mass only through the ratio of
+the observed velocity scale to the intrinsic scale of $p_{\rm N}(\tilde u)$.
+A uniform rescaling $\tilde u\to\alpha\tilde u$ of the intrinsic distribution
+is exactly compensated by $M_{\rm tot}\to M_{\rm tot}/\alpha^2$.  Without
+external information, the absolute mass scale and the velocity distribution
+are therefore degenerate; in our model the degeneracy is broken only by the
+solar anchor (Eq.~\ref{eq:solar}), the PARSEC-relative shrinkage
+(Eq.~\ref{eq:shrink}), and the functional form of Eq.~(\ref{eq:good}).
+The comparison between Sects.~\ref{sec:fixedshape} and \ref{sec:binresults}
+shows this directly: changing the shape from the orbital-population
+reference to the posterior shape moves the MLR by up to 30\% at $M_G\approx8$.
+
+The same degeneracy acts on the metallicity sensitivity of
+Sect.~\ref{sec:slope}.  Each bin has its own shape parameters, so a change
+of the mass scale in one bin can be compensated by its shape independently
+of the other bins.  The fitted shapes move in the corresponding direction:
+the metal-poor bin, which lies below PARSEC, has $u_c=39.6$, whereas the
+metal-rich bin, which lies above PARSEC, has $u_c=27.8$
+(Table~\ref{tab:shape}).  Under uniform priors on the logarithmic shape
+parameters, the data prefer this combination, and the PARSEC-relative
+shrinkage of Eq.~(\ref{eq:shrink}) pulls each bin towards PARSEC, so that the
+regularisation biases the measured sensitivity towards the PARSEC value
+rather than away from it.  A genuine metallicity dependence of the intrinsic
+velocity distribution, for example through the separation or eccentricity
+distributions \citep{Hwang2021,Hwang2022}, would nevertheless be traded
+against the MLR of each bin, in either direction.  The measured
+$\dd\ln M/\dd\mh$ is therefore the metallicity sensitivity under the
+assumption that the shape family of Eq.~(\ref{eq:good}) describes each bin;
+it is not independent of that assumption.
+
+\subsection{Why the orbital-population shape is disfavoured}
+
+The posterior shapes of the near-solar bins have a lower cut-off $u_c$ and
+a broader Gaussian core (smaller $B$) than the orbital-population reference.
+Several effects can produce such a difference.  The reference assumes an
+eccentricity distribution and a separation range that need not match the
+selected sample; wide binaries in \gaia\ have a separation-dependent
+eccentricity distribution \citep{Hwang2022}.  Projection effects and the
+selection on the significance of $\Delta\mu$ remove low-velocity systems,
+which reshapes the observed distribution relative to the intrinsic one.
+Finally, unresolved companions in hierarchical triples raise $u$ beyond the
+Keplerian value for the photometric mass; if their distribution in $u$
+differs from the truncated normal of Eq.~(\ref{eq:out}), they distort the
+fitted normal component.  The lower $f_{\rm out}$ of the metal-rich bin is consistent with a
+metallicity-dependent triple or contamination fraction, but $f_{\rm out}$ is a mixture weight between two fixed shapes and should not
+be read as a physical triple fraction.
+
+\subsection{Comparison with PARSEC}
+
+The sign of the metallicity dependence agrees with PARSEC, and at the
+metallicity of most of the sample the dynamical MLR agrees with PARSEC to
+within $\approx7$\% for $M_G\lesssim9$.  Two differences stand out.  First,
+the dynamical metallicity sensitivity is $1.4$--$1.8$ times the PARSEC
+value.  Second, the faintest stars ($M_G\approx13$, $M\approx0.1$--$0.2~\msun$)
+are 10--20\% less massive than PARSEC at $\mh<0.3$.  This regime contains few
+systems (93 systems contribute to the neighbourhood of $M_G=13$ in the full
+sample), so the MLR there is constrained largely by the spline
+regularisation and the monotonicity of brighter stars, and PARSEC colours and luminosities of fully convective
+stars carry larger systematic uncertainties.  The faint-end deficit should
+therefore be regarded as tentative.  A direct comparison with empirical MLRs
+of nearby M dwarfs \citep{Mann2019}, which requires a transformation between
+the $K_s$ and $G$ bands, is deferred to future work.
+
+For the wide-binary tests of gravity \citep{Chae2023,Banik2024}, which
+predict Newtonian velocities from photometric masses, a metallicity dependence
+of the MLR that exceeds the model prediction implies that a
+metallicity-independent MLR misestimates $\sqrt{M_{\rm tot}}$ by several per
+cent for the metal-poor and metal-rich tails of a sample.
+
+\subsection{Limitations}
+\label{sec:limitations}
+
+The results are conditional on the modelling choices listed below.
+
+\begin{itemize}
+\item \emph{Shape prior range.}  In the two most populous bins the posterior
+of $B$, and in the $[-0.5,0)$ bin also that of $C$, lies against the lower
+edge of the explored range.  The 27-node likelihood table cannot represent
+shapes outside this range, so the reported MLR for these bins is the best fit
+within the range rather than an unconstrained optimum, and the true
+posterior may extend to smaller $B$.  Extending the range, or replacing the
+table by direct quadrature of Eq.~(\ref{eq:LN}), is required before the
+absolute masses of these bins can be quoted without qualification.
+\item \emph{Shape interpolation.}  The normal-component likelihood at a
+general shape is a mixture of node likelihoods, not Eq.~(\ref{eq:good}) at
+the interpolated parameters.  Its accuracy relative to direct quadrature,
+and the sensitivity of the fits to single-precision arithmetic, have not been
+tested for the full bins.
+\item \emph{Initialisation.}  The two runs per bin were intended to start
+from different shape configurations, but the initial values were passed to
+the sampler in unconstrained coordinates without the required transformation.
+The runs therefore test reproducibility under different seeds rather than
+robustness to widely separated starting points.
+\item \emph{Mixing in the $[0.0,0.3)$ bin.}  The two runs in this bin have
+minimum ESS of 213 and 137 and $\widehat R$ up to 1.026; their intervals are
+provisional.
+\item \emph{Stage-1 calibration.}  The Stage-1b posterior used here
+contains three divergent transitions.  The Stage-1a parameters $b_G$,
+$s_z$, and $\nu$ are held at point estimates, and the cross-system
+covariance induced by the shared Stage-1b parameters is not propagated.
+\item \emph{Modular cut.}  The dynamics cannot update the metallicity
+calibration, and the Stage-2 uncertainties do not include uncertainty in
+$M_G$, extinction, age, or the PARSEC model family.
+\item \emph{Metallicity bins.}  Systems are assigned to bins by their
+posterior median, so systems near a boundary contribute to the bin they are
+assigned to while retaining their full metallicity posterior.  Each bin
+constrains a full $(M_G,\mh)$ surface, which we evaluate only at the bin
+midpoint; the metal-poor and metal-rich bins contain 186 and 385 systems.
+\item \emph{PARSEC dependence.}  The MLR is a regularised correction to
+PARSEC, anchored at the solar point.  Residuals relative to PARSEC are
+therefore not independent measurements of PARSEC errors; they are shrunk
+towards zero where the data are weak.
+\end{itemize}

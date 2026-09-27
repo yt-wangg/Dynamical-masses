@@ -1,0 +1,54 @@
+\section{Constructive monotone reparametrisation}
+\label{app:monotone}
+
+The total coefficient grid $\Theta$ is generated from unconstrained raw
+variables rather than by rejecting proposals that violate inequalities.  Define
+$\softplus(t)=\log(1+e^t)$ and
+$\sigmoid(t)=(1+e^{-t})^{-1}$.  With positive scales
+$\lambda_x=e^{\log\lambda_x}$ and $\lambda_Z=e^{\log\lambda_Z}$, construct the
+first row and column as
+\begin{align}
+ \Theta_{11}&=c_0,\\
+ \Theta_{1h}&=\Theta_{1,h-1}+\lambda_Z\softplus(a_h),
+ &&h=2,\ldots,K_Z,\\
+ \Theta_{i1}&=\Theta_{i-1,1}-\lambda_x\softplus(b_i),
+ &&i=2,\ldots,K_x.
+ \label{eq:boundaries}
+\end{align}
+The first row therefore increases with $Z$, whereas the first column decreases
+with $x$.  Interior points are visited in increasing $i+h$.  For each point,
+define
+\begin{equation}
+ L_{ih}=\Theta_{i,h-1},\qquad U_{ih}=\Theta_{i-1,h},
+\end{equation}
+and set
+\begin{equation}
+ \Theta_{ih}=L_{ih}+(U_{ih}-L_{ih})\sigmoid(r_{ih}),
+ \qquad i,h\ge2.
+ \label{eq:interior}
+\end{equation}
+If all previously constructed points obey the two monotone orders, then
+\begin{equation}
+ L_{ih}=\Theta_{i,h-1}\le\Theta_{i-1,h-1}\le
+ \Theta_{i-1,h}=U_{ih}.
+\end{equation}
+Thus Eq.~(\ref{eq:interior}) lies inside a non-empty interval and simultaneously
+satisfies
+$\Theta_{i,h-1}\le\Theta_{ih}\le\Theta_{i-1,h}$.  Induction over $i+h$
+therefore proves the coefficient inequalities in Eq.~(\ref{eq:coefficient-order})
+for the complete grid.  Finally, $D=\Theta-\Pi$ is computed deterministically.
+
+For completeness, the derivative identity for a degree-$d_x$ B-spline surface
+has the form
+\begin{equation}
+ \frac{\partial g}{\partial x}=
+ \sum_{i=1}^{K_x-1}\sum_{h=1}^{K_Z}
+ \rho_{x,i}(\Theta_{i+1,h}-\Theta_{ih})
+ \widetilde B_i(x)C_h(Z),\qquad \rho_{x,i}>0,
+\end{equation}
+where $\widetilde B_i$ is a non-negative degree-$(d_x-1)$ basis function.
+The corresponding $Z$ derivative contains
+$\rho_{Z,h}(\Theta_{i,h+1}-\Theta_{ih})B_i\widetilde C_h$ with
+$\rho_{Z,h}>0$.  The coefficient orders therefore establish the derivative
+signs everywhere in the spline domain, including the appropriate one-sided
+limits at its boundaries.

@@ -1,24 +1,23 @@
-\documentclass[11pt]{article}
+%                                                   A&A manuscript
+% Dynamical calibration of a metallicity-dependent MLR from Gaia wide binaries
+%-----------------------------------------------------------------------
+\documentclass{aa}
 
-\usepackage[a4paper,margin=25mm]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
-\usepackage{lmodern}
-\usepackage{microtype}
-\usepackage{amsmath,amssymb,bm}
-\usepackage{booktabs,tabularx,array}
-\usepackage{placeins}
-\usepackage{siunitx}
+\usepackage{txfonts}
+\usepackage{natbib}
+\bibpunct{(}{)}{;}{a}{}{,}
+\usepackage{amsmath,bm}
 \usepackage{graphicx}
+\usepackage{booktabs,tabularx,array,multirow}
 \usepackage{xcolor}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc}
-\usepackage[round,authoryear]{natbib}
 \usepackage{xurl}
-\usepackage[colorlinks=true,allcolors=blue!55!black,
-  pdftitle={Dynamical Calibration of a Metallicity-Dependent Mass--Luminosity Relation from Gaia Wide Binaries}]{hyperref}
-\usepackage[nameinlink,noabbrev]{cleveref}
+\usepackage[colorlinks=true,citecolor=magenta,linkcolor=red,urlcolor=magenta]{hyperref}
 
+\newcommand{\gaia}{\textit{Gaia}}
 \newcommand{\mh}{[\mathrm{M}/\mathrm{H}]}
 \newcommand{\msun}{M_{\odot}}
 \newcommand{\Normal}{\mathcal{N}}
@@ -27,19 +26,97 @@
 \newcommand{\softplus}{\operatorname{softplus}}
 \newcommand{\sigmoid}{\operatorname{sigmoid}}
 \newcommand{\dd}{\,\mathrm{d}}
-\newcommand{\kmsau}{\mathrm{km}\,\mathrm{s}^{-1}\sqrt{\mathrm{AU}}}
+\newcommand{\kmsau}{\mathrm{km}\,\mathrm{s}^{-1}\,\mathrm{AU}^{1/2}}
+% Draft marker for facts that still need confirmation by the authors.
+\newcommand{\unsure}[1]{\textcolor{red}{#1}}
 
-\title{Dynamical Calibration of a Metallicity-Dependent Mass--Luminosity Relation\\
-from Gaia Wide Binaries}
-\author{}
-\date{Frozen model configuration: 13 September 2026}
+\renewcommand{\arraystretch}{1.25}
 
 \begin{document}
+
+\title{Dynamical calibration of a metallicity-dependent mass--luminosity
+relation from \gaia\ wide binaries}
+
+\titlerunning{Metallicity-dependent MLR from wide binaries}
+
+\author{Yuting Wang\inst{1} \and Jiadong Li\inst{1}
+\unsure{\and et al.}}
+
+\authorrunning{Y. Wang et al.}
+
+\institute{Max-Planck-Institut f\"ur Astronomie, K\"onigstuhl 17,
+D-69117 Heidelberg, Germany\\
+\email{yuwang@mpia.de}
+}
+
+\date{Received ...; accepted ...}
+
+\abstract
+{The mass--luminosity relation (MLR) of low-mass main-sequence stars links
+observed luminosities to stellar masses throughout Galactic and exoplanet
+astronomy, yet its metallicity dependence is calibrated almost entirely by
+stellar-evolution models.  Wide binaries resolved by \gaia\ carry dynamical
+information on the sum of their component masses through their projected
+relative velocities, and their components share a common birth composition.}
+{We aim to measure, directly from the orbital motions of \gaia\ wide binaries,
+how the main-sequence MLR in the \gaia\ $G$ band depends on metallicity, and
+to quantify the departures of the inferred relation from the PARSEC models.}
+{We analyse 14\,876 main-sequence--main-sequence wide binaries within 1~kpc.
+A modular Bayesian model first combines per-star metallicities inferred from
+\gaia\ XP spectra with the PARSEC colour--magnitude relation to obtain a
+posterior for the shared metallicity of each system.  A second module models
+the stellar mass as a hard-monotone tensor-product B-spline surface in
+absolute magnitude and metallicity, expressed relative to the PARSEC
+prediction, and confronts it with the mass-scaled projected-velocity statistic
+$u=\Delta v_\perp\sqrt{r_\perp}$ through a Rice-convolved likelihood with an
+outlier component.  The shape of the orbital-velocity distribution is sampled
+jointly with the MLR in four independent metallicity bins.}
+{The inferred MLR depends significantly on metallicity.  Relative to PARSEC,
+stars in the most metal-rich bin ($\mh=0.3$--$0.6$) are $8$--$14$\% more
+massive at $5\le M_G\le13$, while those in the most metal-poor bin
+($\mh=-1.0$--$-0.5$) are $3$--$6$\% less massive for $M_G\lesssim11$ and
+$\approx20$\% less massive at $M_G=13$.  Near-solar bins agree with PARSEC to
+within $\approx7$\% for $M_G\lesssim9$ but fall $10$--$18$\% below it at
+$M_G=13$.  The metallicity sensitivity $\dd\ln M/\dd\mh$ rises from
+$0.27\pm0.04$ at $M_G=5$ to $0.75\pm0.09$ at $M_G=13$, 1.4--1.8 times the
+PARSEC value.  When the velocity-distribution shape is instead fixed to its
+orbital-population prediction, the inferred masses exceed PARSEC by
+$\approx30$\% at $M_G\approx8$; the absolute mass scale is therefore
+controlled by the assumed velocity distribution.}
+{Within the adopted family of velocity distributions, wide-binary dynamics
+favour a metallicity dependence of the main-sequence MLR with the sign
+predicted by stellar models, metal-rich stars being more massive at fixed
+$M_G$, but with a larger amplitude than PARSEC.  Both the absolute mass scale
+and the metallicity sensitivity are degenerate with the
+intrinsic velocity distribution of wide binaries, whose posterior lies at the
+edge of the explored range; an independent constraint on that distribution is
+the main requirement for a model-independent dynamical calibration.}
+
+\keywords{binaries: visual -- stars: fundamental parameters -- stars: low-mass
+-- stars: abundances -- methods: statistical -- astrometry}
+
 \maketitle
 
-\input{sections/methods_sci}
+\input{sections/paper_intro}
+\input{sections/paper_data}
+\input{sections/paper_methods}
+\input{sections/paper_results}
+\input{sections/paper_discussion}
+\input{sections/paper_conclusions}
 
-\bibliographystyle{plainnat}
+\begin{acknowledgements}
+\unsure{Acknowledgements to be added.}  This work has made use of data from the
+European Space Agency (ESA) mission \gaia\
+(\url{https://www.cosmos.esa.int/gaia}), processed by the \gaia\ Data
+Processing and Analysis Consortium (DPAC,
+\url{https://www.cosmos.esa.int/web/gaia/dpac/consortium}).
+\end{acknowledgements}
+
+\bibliographystyle{aa}
 \bibliography{T8_methods}
+
+\begin{appendix}
+\input{sections/paper_appendix}
+\end{appendix}
 
 \end{document}

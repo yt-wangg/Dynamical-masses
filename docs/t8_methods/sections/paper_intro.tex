@@ -1,0 +1,63 @@
+\section{Introduction}
+\label{sec:intro}
+
+The mass of a main-sequence star is the quantity that most directly sets its
+luminosity and evolution, but it can be measured only for stars whose orbits
+can be characterised.  Empirical mass--luminosity relations (MLRs) of low-mass
+stars are therefore anchored to a few hundred eclipsing and astrometric
+binaries with precise dynamical masses
+\citep{Delfosse2000,Torres2010,Mann2019}.  These samples are dominated by
+stars of near-solar composition.  \citet{Mann2019} found no significant
+metallicity dependence of the $M_{K_s}$--mass relation, where models predict
+the dependence to be weak; in optical bands such as \gaia\ $G$ the predicted
+dependence is much stronger, and it is in practice supplied by
+stellar-evolution models such as PARSEC \citep{Bressan2012PARSEC}.  At fixed absolute magnitude, a metal-rich star is
+expected to be more massive than a metal-poor one, because higher opacity
+lowers the luminosity at fixed mass.  The amplitude of this effect, which
+reaches tens of per cent across the metallicity range of the Galactic disc,
+has not been measured dynamically for large samples.
+
+Wide binaries offer a statistical route to such a measurement.  With projected
+separations of $10^2$--$10^4$~AU, their orbital periods greatly exceed the
+\gaia\ baseline, so individual orbits cannot be solved.  The projected
+relative velocity $\Delta v_\perp$ and projected separation $r_\perp$ of a
+bound pair are, however, related to the total mass by Kepler's third law.
+For a population with a known distribution of eccentricities, phases, and
+orientations, the combination $u=\Delta v_\perp\sqrt{r_\perp}$ scales as
+$\sqrt{M_{\rm tot}}$ times a dimensionless variable whose distribution is fixed
+by orbital geometry.  \citet{Hwang2024DynamicalMasses} used this statistic to
+derive dynamical masses across the Hertzsprung--Russell diagram from the
+catalogue of \citet{ElBadry2021MillionBinaries}.  The same statistic underlies
+tests of gravity in the low-acceleration regime with wide binaries
+\citep{Chae2023,Banik2024}, which rely on an assumed MLR to predict the
+Newtonian velocity scale.
+
+The components of a wide binary formed together and share their birth
+composition.  Metallicities of the individual stars can now be inferred for
+millions of \gaia\ sources from the low-resolution BP/RP (XP) spectra
+\citep{GaiaCollaboration2023DR3,Li2026JCaPS}.  Each binary thus supplies two
+noisy estimates of a single metallicity and one dynamical constraint on the sum
+of two masses.  Combined over a large sample, these data constrain the MLR as a
+function of both luminosity and metallicity.
+
+Turning this into a measurement requires care at three points.  First, the XP
+metallicities have magnitude-dependent systematics and heavy-tailed errors,
+which must be calibrated before they are used to assign binaries to
+metallicities.  Second, the mass enters the likelihood only through the scale
+of a broad velocity distribution, so the result depends on the assumed shape of
+that distribution and on the treatment of contaminants such as chance
+alignments and hierarchical triples.  Third, a flexible MLR must remain
+physically ordered: brighter stars must be more massive at fixed composition.
+
+In this paper we present a modular Bayesian framework that addresses these
+points and apply it to 14\,876 main-sequence wide binaries within 1~kpc.  A
+first module infers a posterior for the shared metallicity of each system from
+the component XP metallicities and the PARSEC colour--magnitude relation.  A
+second module represents the MLR as a hard-monotone B-spline correction to the
+PARSEC mass surface and fits it to the wide-binary velocities while
+marginalising over each system's metallicity posterior.  We describe the
+sample in Sect.~\ref{sec:data}, the model in Sect.~\ref{sec:methods}, and the
+results in Sect.~\ref{sec:results}.  Section~\ref{sec:discussion} discusses
+the degeneracy between the mass scale and the velocity distribution and the
+limitations of the present analysis, and Sect.~\ref{sec:conclusions}
+summarises our conclusions.
