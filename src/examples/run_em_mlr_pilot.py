@@ -57,6 +57,7 @@ SHAPE_STARTS = {
 PHYSICAL_SHAPE_LOG_CENTER = SHAPE_STARTS["default"].copy()
 DEFAULT_SHAPE_PRIOR_SIGMA = np.log([2.0, 1.3, 2.0])
 SHAPE_NAMES = ("log_b", "log_uc", "log_c")
+DEFAULT_DIRECT_MIN_B = 0.7e-3
 OUTLIER_MU = 40.0
 OUTLIER_SIGMA = 13.0
 OUTLIER_MAX = 80.0
@@ -71,6 +72,14 @@ REPRESENTATIVE_MG = np.array([5.0, 7.0, 9.0, 11.0, 13.0])
 # The five solar-metallicity points above remain the presentation grid.
 CONVERGENCE_MG = np.array([3.5, 6.0, 8.5, 11.0, 13.5])
 CONVERGENCE_MH = np.array([-1.0, -0.5, 0.0, 0.3, 0.6])
+
+
+def effective_shape_axes(args):
+    """Return the shape box, widening only direct-mode B's lower bound."""
+    axes = {name: values.copy() for name, values in SHAPE_AXES.items()}
+    if args.shape_evaluation == "direct":
+        axes["log_b"][0] = np.log(float(args.direct_min_b))
+    return axes
 
 
 def parse_args():
@@ -109,6 +118,8 @@ def parse_args():
                         help="Gauss-Legendre order per direct Rice integration interval.")
     parser.add_argument("--direct-chunk", type=int, default=16,
                         help="System chunk size for direct JAX Rice integration.")
+    parser.add_argument("--direct-min-b", type=float, default=DEFAULT_DIRECT_MIN_B,
+                        help="Optional direct-mode lower bound for B; default preserves the formal 0.0007 bound.")
     parser.add_argument("--objective-rtol", type=float, default=1e-7,
                         help="Relative full-cycle log-posterior improvement threshold.")
     parser.add_argument("--shape-tol", type=float, default=1e-3,
@@ -786,9 +797,23 @@ def load_resume_checkpoint(initial_map_states, current_positions, current_rows,
     if (args.shape_evaluation == "direct"
             and direct.get("nodes_per_interval") != int(args.direct_nodes)):
         raise ValueError("Resume direct-quadrature order does not match the source run.")
+    current_shape_axes = effective_shape_axes(args)
     source_box = settings.get("shape_box", {})
-    if any(not np.array_equal(np.asarray(source_box.get(name)), SHAPE_AXES[name])
-           for name in SHAPE_NAMES):
+    source_box_matches = all(
+        np.array_equal(np.asarray(source_box.get(name)), current_shape_axes[name])
+        for name in SHAPE_NAMES
+    )
+    # A direct continuation may intentionally widen only the B lower bound.  An
+    # old checkpoint with the formal lower bound is otherwise fully compatible.
+    source_box_old_b_only = (
+        args.shape_evaluation == "direct"
+        and np.array_equal(np.asarray(source_box.get("log_uc")), current_shape_axes["log_uc"])
+        and np.array_equal(np.asarray(source_box.get("log_c")), current_shape_axes["log_c"])
+        and np.array_equal(np.asarray(source_box.get("log_b")), SHAPE_AXES["log_b"])
+        and current_shape_axes["log_b"][0] <= SHAPE_AXES["log_b"][0]
+        and np.array_equal(current_shape_axes["log_b"][1:], SHAPE_AXES["log_b"][1:])
+    )
+    if not (source_box_matches or source_box_old_b_only):
         raise ValueError("Resume shape box does not match the source run.")
     source_sigmas = np.asarray(
         settings.get("shape_prior", {}).get("sigma_log_b_log_uc_log_c"),
@@ -850,7 +875,8 @@ def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args,
     print(f"EM-like run {name}: start, N={mlr.u.size}, log-posterior={initial['log_posterior']:.6g}", flush=True)
     mlr_indices = np.arange(MLR_DIM, dtype=np.int64)
     shape_indices = np.arange(F_INDEX, FULL_DIM, dtype=np.int64)
-    shape_bounds = [(float(SHAPE_AXES[n][0]), float(SHAPE_AXES[n][-1])) for n in SHAPE_NAMES]
+    shape_axes = effective_shape_axes(args)
+    shape_bounds = [(float(shape_axes[n][0]), float(shape_axes[n][-1])) for n in SHAPE_NAMES]
     shape_bounds = [(1e-5, 1.0 - 1e-5)] + shape_bounds
     previous_target = float(initial["log_posterior"])
     previous_masses = convergence_masses(mlr, current)
@@ -900,7 +926,7 @@ def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args,
             current_convergence_masses / cycle_start_masses - 1.0)))
         f_abs_change = abs(float(current[F_INDEX]) - cycle_start_f)
         shape_bounds = [(1e-5, 1.0 - 1e-5)] + [
-            (float(SHAPE_AXES[n][0]), float(SHAPE_AXES[n][-1])) for n in SHAPE_NAMES
+            (float(shape_axes[n][0]), float(shape_axes[n][-1])) for n in SHAPE_NAMES
         ]
         projected = projected_gradient_metrics(objective, current, shape_bounds)
         cycle_metrics_finite = bool(
@@ -1005,6 +1031,7 @@ def parsec_masses(mlr):
 def write_outputs(args, mlr, results, baseline_vector, validation, selection_meta,
                   stack_meta, resume_metadata=None):
     args.output.mkdir(parents=True, exist_ok=True)
+    shape_axes = effective_shape_axes(args)
     serializable = {
         "settings": {
             "algorithm": "alternating conditional MAP",
@@ -1040,7 +1067,8 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
                     "when gradient >= 0, and at its upper bound only when gradient <= 0."
                 ),
             },
-            "shape_box": {k: v.tolist() for k, v in SHAPE_AXES.items()},
+            "shape_box": {k: v.tolist() for k, v in shape_axes.items()},
+            "direct_min_b": float(args.direct_min_b),
             "shape_prior": {
                 "type": "Gaussian in log parameters within the hard shape box",
                 "center_B_uc_C": np.exp(PHYSICAL_SHAPE_LOG_CENTER).tolist(),
@@ -1199,6 +1227,13 @@ def main():
         raise ValueError("Shape-prior log sigmas must be finite and strictly positive.")
     if args.direct_nodes < 4 or args.direct_chunk < 1:
         raise ValueError("Direct quadrature requires --direct-nodes >= 4 and --direct-chunk >= 1.")
+    if not np.isfinite(args.direct_min_b) or args.direct_min_b <= 0:
+        raise ValueError("--direct-min-b must be finite and strictly positive.")
+    if args.direct_min_b > DEFAULT_DIRECT_MIN_B:
+        raise ValueError(
+            f"--direct-min-b may only lower the direct-mode bound from {DEFAULT_DIRECT_MIN_B:g}.")
+    if args.shape_evaluation != "direct" and args.direct_min_b != DEFAULT_DIRECT_MIN_B:
+        raise ValueError("--direct-min-b is supported only in direct mode.")
     if args.optimizer_ftol < 0 or args.optimizer_gtol <= 0 or args.optimizer_maxls < 1:
         raise ValueError("Optimizer tolerances must be nonnegative/positive and maxls >= 1.")
     if args.shape_evaluation == "direct":

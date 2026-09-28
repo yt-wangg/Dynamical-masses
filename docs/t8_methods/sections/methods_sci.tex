@@ -1,33 +1,14 @@
 \section{Scientific objective and modular architecture}
 \label{sec:overview}
 
-The aim is to infer the stellar mass $M$ as a function of Gaia absolute
-$G$-band magnitude $x\equiv M_G$ and metallicity $Z\equiv\mh$, while retaining
-the astrophysical mass scale supplied by the PARSEC stellar-evolution models
-\citep{Bressan2012PARSEC}.  Wide binaries are useful because their components
-are assumed to share a birth composition, whereas their relative motion
-constrains the sum of their masses.  The data therefore connect two otherwise
-separate calibration problems: the metallicity assigned to each system and the
-mass--luminosity relation (MLR).
-
-The Gaia astrometry and broad-band photometry used here belong to the third
-Gaia data-release framework \citep{GaiaCollaboration2023DR3}; the relevant
-$G$, $G_{\rm BP}$, and $G_{\rm RP}$ photometric processing and validation are
-described by \citet{Riello2021GaiaEDR3Photometry}.  Large Gaia wide-binary
-catalogues and their principal selection and astrometric-validation issues are
-described by \citet{ElBadry2021MillionBinaries}.
-
-We use modular inference
-\citep{LiuBayarriBerger2009Modularization,Plummer2015Cuts}.  Stage~1a uses
+We use modular inference. Stage~1a uses
 within-binary metallicity differences to estimate the relative JCAPS
 calibration.  Conditional on that estimate, Stage~1b combines the component
-JCAPS measurements with the PARSEC colour--magnitude diagram (CMD) and a
+JCAPS measurements with anchor stars' colour--magnitude diagram (CMD) and a
 hierarchical population distribution to infer a probability distribution for
 the shared metallicity of every binary.  Stage~2 treats these distributions as
 fixed inputs, predicts the two component masses at every metallicity, and
-evaluates the wide-binary dynamical likelihood.  The modular inference deliberately prevents
-the dynamical data from recalibrating the JCAPS zero point, CMD scatter, or
-sample metallicity distribution.  The architecture is summarized in
+evaluates the wide-binary dynamical likelihood. The architecture is summarized in
 \cref{fig:workflow}.
 
 \begin{figure*}[t]
@@ -536,6 +517,11 @@ where $\mathbb{E}[Z_{j}]$ is the expected value of the metallicity posterior inf
 % $f_{\rm outlier}$ is an effective likelihood weight and cannot be interpreted as
 % the physical fraction of outlier binaries.
 
+\clearpage
+\begin{center}
+  {\Huge\bfseries Appendix}
+\end{center}
+\vspace{1.5em}
 \appendix
 
 \section{Parameters, priors, and posterior computation}
