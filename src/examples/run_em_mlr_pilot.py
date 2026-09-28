@@ -93,6 +93,12 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=20260919)
     parser.add_argument("--max-iterations", type=int, default=10)
     parser.add_argument("--block-maxiter", type=int, default=80)
+    parser.add_argument("--optimizer-ftol", type=float, default=1e-10,
+                        help="L-BFGS-B relative objective tolerance for each block.")
+    parser.add_argument("--optimizer-gtol", type=float, default=1e-6,
+                        help="L-BFGS-B projected-gradient tolerance for each block.")
+    parser.add_argument("--optimizer-maxls", type=int, default=30,
+                        help="Maximum L-BFGS-B line-search steps for each block.")
     parser.add_argument("--tol", type=float, default=2e-4,
                         help="Deprecated absolute tolerance retained for CLI compatibility.")
     parser.add_argument(
@@ -600,9 +606,16 @@ def initial_vector(initial_mlr_path, shape_name):
     return params_to_vector(params, f, SHAPE_STARTS[shape_name]), f
 
 
-def optimize_block(objective, current, indices, bounds, maxiter, label=None):
+def optimize_block(objective, current, indices, bounds, maxiter, label=None,
+                   ftol=1e-10, gtol=1e-6, maxls=30):
     current = np.asarray(current, dtype=np.float64)
     start = current[indices].copy()
+    # L-BFGS-B's ftol test is relative to the objective magnitude.  The joint
+    # negative log posterior is O(1e4--1e5), so an unshifted objective can
+    # trigger ``REL_REDUCTION_OF_F_<=_FACTR*EPSMCH`` while its gradient is
+    # still material.  Subtracting the fixed block-start value preserves all
+    # gradients and minimizers but makes the stopping test numerically useful.
+    reference_value = float(objective(current)[0])
     # Optimize dimensionless displacements.  The raw T8 recursion mixes c0,
     # softplus logits, and log-scales, so scaling improves the numerical line
     # search while leaving the target in the original constrained coordinates.
@@ -623,7 +636,7 @@ def optimize_block(objective, current, indices, bounds, maxiter, label=None):
                 f"elapsed={time.monotonic() - started:.1f}s, objective={value:.9g}",
                 flush=True,
             )
-        return value, grad[indices] * scales
+        return value - reference_value, grad[indices] * scales
 
     displacement_bounds = None
     if bounds is not None:
@@ -632,8 +645,8 @@ def optimize_block(objective, current, indices, bounds, maxiter, label=None):
             for j, (lo, hi) in enumerate(bounds)
         ]
     result = minimize(fun, x0, jac=True, method="L-BFGS-B", bounds=displacement_bounds,
-                      options={"maxiter": int(maxiter), "ftol": 1e-10,
-                               "gtol": 1e-6, "maxls": 30})
+                      options={"maxiter": int(maxiter), "ftol": float(ftol),
+                               "gtol": float(gtol), "maxls": int(maxls)})
     candidate = current.copy()
     candidate[indices] = start + scales * result.x
     return candidate, result
@@ -854,6 +867,7 @@ def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args,
         candidate, result_mlr = optimize_block(
             objective, current, mlr_indices, None, args.block_maxiter,
             label=f"EM-like run {name} iteration {iteration} MLR",
+            ftol=args.optimizer_ftol, gtol=args.optimizer_gtol, maxls=args.optimizer_maxls,
         )
         candidate_target = float(logpost(candidate))
         if np.isfinite(candidate_target) and candidate_target >= previous_target - 1e-6:
@@ -866,6 +880,7 @@ def run_trajectory(mlr, objective, logpost, loglike, start_vector, name, args,
         candidate, result_shape = optimize_block(
             objective, current, shape_indices, shape_bounds, args.block_maxiter,
             label=f"EM-like run {name} iteration {iteration} shape",
+            ftol=args.optimizer_ftol, gtol=args.optimizer_gtol, maxls=args.optimizer_maxls,
         )
         candidate_target = float(logpost(candidate))
         if np.isfinite(candidate_target) and candidate_target >= previous_target - 1e-6:
@@ -1002,6 +1017,14 @@ def write_outputs(args, mlr, results, baseline_vector, validation, selection_met
                 else "27-node shape stack (linear trilinear interpolation only in linear_stack mode)"
             ),
             "direct_quadrature": {"nodes_per_interval": int(args.direct_nodes), "system_chunk": int(args.direct_chunk)},
+            "optimizer": {
+                "method": "L-BFGS-B",
+                "ftol": float(args.optimizer_ftol),
+                "gtol": float(args.optimizer_gtol),
+                "maxls": int(args.optimizer_maxls),
+                "block_maxiter": int(args.block_maxiter),
+                "objective_shift": "subtract fixed value at each block start; gradients unchanged",
+            },
             "convergence": {
                 "objective_relative_tolerance": float(args.objective_rtol),
                 "shape_log_max_change_tolerance": float(args.shape_tol),
@@ -1176,6 +1199,8 @@ def main():
         raise ValueError("Shape-prior log sigmas must be finite and strictly positive.")
     if args.direct_nodes < 4 or args.direct_chunk < 1:
         raise ValueError("Direct quadrature requires --direct-nodes >= 4 and --direct-chunk >= 1.")
+    if args.optimizer_ftol < 0 or args.optimizer_gtol <= 0 or args.optimizer_maxls < 1:
+        raise ValueError("Optimizer tolerances must be nonnegative/positive and maxls >= 1.")
     if args.shape_evaluation == "direct":
         if args.dynamics_lookup is None and args.shape_stack is None:
             raise ValueError("Direct mode requires --dynamics-lookup or the legacy --shape-stack.")

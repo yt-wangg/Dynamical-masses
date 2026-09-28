@@ -150,7 +150,9 @@ on $Z_j$, the two component measurements are independent.
 
 \subsubsection{CMD likelihood}
 
-In this section, we can make use of any set of anchor points whose metallicties are robust and cover a wide enough range. Here's an example when we directly use the PARSEC model points of warm main-sequence stars.  The PARSEC surface supplies predicted colour $C_{\rm P}(x,Z)$ and effective temperature $T_{\rm eff,P}(x,Z)$ \citep{Bressan2012PARSEC}.  The repository
+In principle, we can make use of any set of anchor points whose metallicties are robust and cover a wide enough range to get the absolute calibration. 
+
+Here's an example when we directly use the PARSEC model points of warm main-sequence stars.  The PARSEC surface supplies predicted colour $C_{\rm P}(x,Z)$ and effective temperature $T_{\rm eff,P}(x,Z)$ \citep{Bressan2012PARSEC}.  The repository
 records the age, metallicity, and magnitude coverage of the local PARSEC table,
 but not enough provenance to identify a more specific PARSEC release or Gaia
 passband realization; we therefore make no more specific version claim.  The
@@ -210,6 +212,12 @@ $\bm\psi=(b_{\mathrm{G}},s_z,\delta_z,s_C)$.  The unnormalized metallicity densi
 \end{equation}
 The global parameters are inferred from the product of the system-level marginal evidences, rather than from separately normalized system posteriors.
 
+The normalized system posterior is
+\begin{equation}
+ p_j(Z\mid\mathcal{D})=\dfrac{\widetilde p_j(Z,\bm\psi\mid\mathcal{D})}
+ {\int{\widetilde p_j(Z,\bm\psi\mid\mathcal{D})\,dZ}}.
+ \label{eq:zpost}
+\end{equation}   
 
 \section{Stage 2: a PARSEC-relative hard-monotone MLR}
 \label{sec:mlr}
@@ -418,8 +426,15 @@ where the outlier fraction $f_{\mathrm{outlier}}$ is a free parameter, and $G_{\
 The mass-luminosity relation can thus be constrained by substituting $m_{\mathrm{tot}}$ with
 
 \begin{align}
-    m_{\mathrm{tot}} = \mathcal{M}^{-1}(M_{\mathrm{G},1},Z;\Theta) + \mathcal{M}^{-1}(M_{\mathrm{G},2},Z;\Theta)
+    m_{\mathrm{tot},j} = \mathcal{M}^{-1}(M_{\mathrm{G},j1},\mathbb{E}[Z_{j}];\Theta) + \mathcal{M}^{-1}(M_{\mathrm{G},j2},\mathbb{E}[Z_{j}];\Theta),
 \end{align}
+where $\mathbb{E}[Z_{j}]$ is the expected value of the metallicity posterior inferred from Stage 1b.
+
+\begin{align}
+    \mathbb{E}[Z_{j}] = \int Z \cdot \, p_j(Z \mid \mathcal{D})\, dZ
+\end{align}
+
+
 
 % At metallicity node $Z_q$, the component and total masses predicted by the MLR
 % are
@@ -521,29 +536,7 @@ The mass-luminosity relation can thus be constrained by substituting $m_{\mathrm
 % $f_{\rm outlier}$ is an effective likelihood weight and cannot be interpreted as
 % the physical fraction of outlier binaries.
 
-\subsection{Metallicity marginalization}
-
-At metallicity node $Z_q$, the component masses, total mass, and dynamical
-mass scale are
-\begin{equation}
- m_{jkq}=\mathcal{M}^{-1}(M_{{\rm G},jk},Z_q;\Theta),\qquad
- M_{{\rm tot},jq}=m_{j1q}+m_{j2q},\qquad
- s_{jq}=\sqrt{M_{{\rm tot},jq}/\msun}.
- \label{eq:node-mass-scale}
-\end{equation}
-
-For one system, the final Stage-2 likelihood is
-\begin{equation}
- \mathcal L_j^{\rm dyn}(\bm\theta_M)=
- \sum_{q=1}^{81}\overline P_{jq}
- \mathcal L_j^{\rm mix}\!\left[s_{jq}(\bm\theta_M)\right].
- \label{eq:dyn-final}
-\end{equation}
-This sum propagates the system's Stage-1b metallicity uncertainty into its mass
-and dynamics.  It is not a second use of the spectroscopic or CMD data.
-Population-distribution factors and additional quadrature weights must not be
-inserted in \cref{eq:dyn-final}, because both are already present in the
-probability masses $\overline P_{jq}$.
+\appendix
 
 \section{Parameters, priors, and posterior computation}
 \label{sec:inference}
@@ -644,7 +637,7 @@ information that the dynamics could provide about metallicity calibration.  A
 fully joint analysis would be a different model,
 not merely a more accurate implementation of the present one.
 
-\appendix
+
 \section{Constructive monotone reparameterization}
 \label{app:monotone}
 
