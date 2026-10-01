@@ -1221,7 +1221,15 @@ def run_mlr(
         dynamics_lookup=dynamics_lookup,
         dynamics_shape_stack=dynamics_shape_stack,
         raw_u_outlier_log_likelihood=raw_bad,
+        selection_cut=args.selection_cut,
     )
+    mlr_model_metadata["selection_truncation"] = {
+        "cut_on_u_over_sigma_u": args.selection_cut,
+        "likelihood": (
+            "L_j / P(u_obs > cut*sigma_j | m, mixture)" if args.selection_cut is not None
+            else "untruncated"
+        ),
+    }
     print("Running stage-two dynamical MLR correction...")
     sampler = mlr.run_mcmc(
         num_warmup=args.warmup,
@@ -1558,6 +1566,13 @@ def parse_args():
             "Rice-convolved TN(40,13,[0,80]) in observed u. scaled_tilde_u "
             "reproduces the legacy 7bc861a behavior where the outlier is defined "
             "in u/sqrt(Mtot) and therefore depends on inferred mass."
+        ),
+    )
+    parser.add_argument(
+        "--selection-cut", type=float, default=None,
+        help=(
+            "Divide each system's dynamics likelihood by the probability of passing the "
+            "sample cut u_obs/sigma_u > CUT (the catalog uses 3). Default: off."
         ),
     )
     parser.add_argument("--outlier-sensitivity", action="store_true",

@@ -118,6 +118,64 @@ def rice_outlier_normalization(*, support_max=RICE_GOOD_SUPPORT, mu=RICE_OUTLIER
     return float(ndtr((float(support_max) - float(mu)) / float(sigma)) - ndtr(-float(mu) / float(sigma)))
 
 
+def selection_pass_log_tables(
+    u_sigma,
+    sqrt_mtot_grid,
+    *,
+    cut,
+    support_max=RICE_GOOD_SUPPORT,
+    outlier_mu=RICE_OUTLIER_MU,
+    outlier_sigma=RICE_OUTLIER_SIGMA,
+    n_x=4096,
+    n_quad=2048,
+    floor=1e-30,
+):
+    """Log probability that a system passes the ``u_obs/sigma_u > cut`` selection.
+
+    The sample keeps only systems with ``u_obs > cut * sigma_u``.  For a latent
+    velocity ``v`` the pass probability is the Rice survival function
+    ``Q1(v/sigma, cut)``; averaging it over each mixture component gives
+
+        Z_good(s, sigma) = int p0(w) Q1(s*w/sigma, cut) dw,
+        Z_bad(sigma)     = int q(v)  Q1(v/sigma, cut) dv   (raw-u outlier).
+
+    ``Z_good`` depends on ``s/sigma`` only, so it is tabulated once in
+    ``x = s/sigma`` and interpolated.  Uses the current good-shape constants
+    (call ``set_good_shape_constants`` first for shape overrides).
+
+    Returns ``(log_pass_good[n, L], log_pass_bad[n])``.
+    """
+    from scipy.stats import ncx2
+
+    sigma = np.asarray(u_sigma, dtype=np.float64)
+    grid = np.asarray(sqrt_mtot_grid, dtype=np.float64)
+    cut = float(cut)
+    if cut <= 0 or np.any(sigma <= 0):
+        raise ValueError("cut and u_sigma must be strictly positive.")
+
+    def survival(x):
+        return ncx2.sf(cut**2, 2, np.square(x))
+
+    w = np.linspace(0.0, float(support_max), int(n_quad))
+    good = w * np.exp(-RICE_GOOD_B * w**2 - np.exp((w - RICE_GOOD_UC) / RICE_GOOD_C))
+    good = good / np.trapezoid(good, w)
+    x_lo = float(grid[0] / sigma.max()) * 0.5
+    x_hi = float(grid[-1] / sigma.min()) * 2.0
+    log_x = np.linspace(np.log(x_lo), np.log(x_hi), int(n_x))
+    z_tab = np.array([np.trapezoid(good * survival(np.exp(lx) * w), w) for lx in log_x])
+    log_z_tab = np.log(np.maximum(z_tab, floor))
+    log_x_query = np.log(grid[None, :] / sigma[:, None])
+    log_pass_good = np.interp(log_x_query, log_x, log_z_tab)
+
+    v = np.linspace(0.0, float(support_max), int(n_quad))
+    bad = np.exp(-0.5 * ((v - outlier_mu) / outlier_sigma) ** 2)
+    bad = bad / np.trapezoid(bad, v)
+    log_pass_bad = np.log(np.maximum(
+        np.trapezoid(bad[None, :] * survival(v[None, :] / sigma[:, None]), v, axis=1), floor
+    ))
+    return log_pass_good, log_pass_bad
+
+
 def raw_u_outlier_log_likelihood(
     u,
     u_sigma,
@@ -2609,11 +2667,17 @@ class MonotoneTensorSplineMLR:
 
     def set_data(self, *, row_indices, u, u_sigma, absg, metallicity_grid,
                  dynamics_lookup=None, dynamics_shape_stack=None,
-                 raw_u_outlier_log_likelihood=None):
+                 raw_u_outlier_log_likelihood=None, selection_cut=None):
         metallicity_grid.validate()
         posterior_model = str(metallicity_grid.metadata.get("model", ""))
         if not (posterior_model.startswith("t8") or "_t8_" in posterior_model):
             raise ValueError("The MLR stage requires a T8 metallicity posterior; rebuild calibration.")
+        if selection_cut is not None and (
+            dynamics_lookup is None or raw_u_outlier_log_likelihood is None
+        ):
+            raise ValueError(
+                "selection_cut requires a fixed dynamics lookup and the raw-u outlier model."
+            )
         if (dynamics_lookup is None) == (dynamics_shape_stack is None):
             raise ValueError(
                 "Provide exactly one dynamics source: a fixed lookup or a shape stack."
@@ -2656,6 +2720,15 @@ class MonotoneTensorSplineMLR:
             self.sqrt_mtot_grid = np.asarray(dynamics_lookup.sqrt_mtot_grid, dtype=np.float64)
             self.log_good_lookup = np.asarray(dynamics_lookup.log_good, dtype=np.float32)
             self.log_bad_lookup = np.asarray(dynamics_lookup.log_bad, dtype=np.float32)
+        # Truncation normalization for the sample's u_obs/sigma_u > cut selection:
+        # each system's likelihood is divided by P(pass | m, mixture).
+        self.selection_cut = None if selection_cut is None else float(selection_cut)
+        if self.selection_cut is None:
+            self.log_pass_good = self.log_pass_bad = None
+        else:
+            self.log_pass_good, self.log_pass_bad = selection_pass_log_tables(
+                self.u_sigma, self.sqrt_mtot_grid, cut=self.selection_cut
+            )
         self.z_grid = np.asarray(metallicity_grid.z_grid, dtype=np.float64)
         self.z_probabilities = np.asarray(metallicity_grid.probabilities, dtype=np.float64)
         if self.z_probabilities.shape != (n, self.z_grid.size):
@@ -2692,6 +2765,11 @@ class MonotoneTensorSplineMLR:
 
         def interp(values, table):
             return lookup_interpolate(values, sqrt_grid, table)
+
+        log_pass_good_table = (
+            None if self.selection_cut is None
+            else jnp.asarray(self.log_pass_good, dtype=jnp.float32)
+        )
 
         if self.dynamics_shape_stack is not None:
             # Static prior bounds as python floats: numpyro re-traces the model
@@ -2967,6 +3045,12 @@ class MonotoneTensorSplineMLR:
                         self.raw_u_outlier_log_likelihood, dtype=log_good.dtype
                     )[:, None] + jnp.zeros_like(log_good)
             log_conditional = jnp.logaddexp(jnp.log1p(-f_outlier) + log_good, jnp.log(f_outlier) + log_bad)
+            if self.selection_cut is not None:
+                log_pass = jnp.logaddexp(
+                    jnp.log1p(-f_outlier) + interp(sqrt_mtot, log_pass_good_table),
+                    jnp.log(f_outlier) + jnp.asarray(self.log_pass_bad)[:, None],
+                )
+                log_conditional = log_conditional - log_pass
             numpyro.factor("dynamics", jnp.sum(jax_logsumexp(jnp.log(jnp.maximum(z_probabilities, 1e-30)) + log_conditional, axis=1)))
             solar_g = jnp.einsum("i,h,ih->", anchor_bx, anchor_bz, theta)
             numpyro.deterministic("solar_anchor_g", solar_g)
