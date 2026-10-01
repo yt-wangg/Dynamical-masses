@@ -10,25 +10,27 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src")); sys.path.insert(0, str(ROOT / "src" / "examples"))
-import plot_observed_u_em_fixed_predictive as base  # noqa: E402
 import run_hierarchical_metallicity_test as workflow  # noqa: E402
 from binary_masses.hierarchical_metallicity import (  # noqa: E402
     DynamicsLikelihoodLookup, MetallicityPosteriorGrid, assess_rice_lookup_convergence,
     raw_u_outlier_log_likelihood,
 )
 
-OUT = ROOT / ("results/pu_selection_mlr_map_20261001" if "--smoke" not in sys.argv else "/tmp/pu_smoke")
 ap = argparse.ArgumentParser()
+ap.add_argument("--data", type=Path, required=True)
+ap.add_argument("--posterior", type=Path, required=True, help="latent_metallicity_weights_t8.npz")
+ap.add_argument("--output-dir", type=Path, default=ROOT / "results/pu_selection_mlr_map_20261001")
 ap.add_argument("--cut", type=float, default=3.0)
 ap.add_argument("--mass-points", type=int, default=1024)
 ap.add_argument("--smoke", action="store_true", help="tiny local run, output to /tmp")
 ap.add_argument("--maxiter", type=int, default=400)
 args = ap.parse_args()
+OUT = Path("/tmp/pu_smoke") if args.smoke else args.output_dir
 OUT.mkdir(parents=True, exist_ok=True)
 
-arrays = workflow.filter_data(workflow.load_real_data(base.DEFAULT_DATA), max_systems=None, seed=0,
-                              fixed_rows=np.load(base.DEFAULT_EM / "selected_subset.npz")["row_indices"])
-posterior = MetallicityPosteriorGrid.load(base.DEFAULT_POSTERIOR)
+posterior = MetallicityPosteriorGrid.load(args.posterior)
+arrays = workflow.filter_data(workflow.load_real_data(args.data), max_systems=None, seed=0,
+                              fixed_rows=posterior.row_indices)
 lookup_path = OUT / "lookup.npz"
 if lookup_path.exists():
     lookup = DynamicsLikelihoodLookup.load(lookup_path)
@@ -52,6 +54,9 @@ else:
 raw_bad = raw_u_outlier_log_likelihood(arrays["u"], arrays["u_sigma"], support_max=80.0, mu=40.0, sigma=13.0,
                                        quadrature_nodes=256)
 mass_surface, _ = workflow.build_surfaces()
+_argv, sys.argv = sys.argv, [sys.argv[0], "--stage", "mlr"]
+T8_DEFAULTS = workflow.parse_args()  # default T8 MLR settings (knots, tau, solar anchor)
+sys.argv = _argv
 
 def fit(cut):
     import jax, jax.numpy as jnp
@@ -59,7 +64,7 @@ def fit(cut):
     from scipy.optimize import minimize
     from numpyro.infer.util import initialize_model
     from numpyro.infer.initialization import init_to_value
-    mlr, _ = base.build_mlr(base.DEFAULT_FIXED)
+    mlr = workflow._make_t8_mlr(mass_surface, T8_DEFAULTS)
     mlr.set_data(row_indices=arrays["row_indices"], u=arrays["u"], u_sigma=arrays["u_sigma"], absg=arrays["absg"],
                  metallicity_grid=posterior, dynamics_lookup=lookup, raw_u_outlier_log_likelihood=raw_bad,
                  selection_cut=cut)
