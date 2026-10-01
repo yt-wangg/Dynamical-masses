@@ -42,8 +42,8 @@ def unpack(x):
 def nll(x):
     shape, f, a = unpack(x)
     if not (24 < shape[1] < 44 and 1.5 < shape[2] < 12 and 1e-5 < shape[0] < 2e-2): return 1e12
-    L, Z = d.mixture_terms(u, sig, a * m0, shape, f, grid)
-    return -float(np.sum(np.log(L / Z) if trunc else np.log(L)))
+    L, Pi = d.mixture_terms(u, sig, a * m0, shape, f, grid)
+    return -float(np.sum(np.log(L / Pi) if trunc else np.log(L)))
 
 x0 = np.array([np.log(FIXED_SHAPE[0]), np.log(FIXED_SHAPE[1]), np.log(FIXED_SHAPE[2]), -1.4, 0.0])
 res = minimize(nll, x0, method="Nelder-Mead", options=dict(maxiter=600, xatol=1e-3, fatol=1e-3, adaptive=True))

@@ -189,9 +189,9 @@ def main():
         m0 = total_mass(mlr, params, absg, z_mean) if params is not None else parsec_mass(mlr, absg, z_mean)
         ll_plain, ll_trunc = [], []
         for a in alphas:
-            L, Z = mixture_terms(u, sig, a * m0, shape, f, grid)
+            L, Pi = mixture_terms(u, sig, a * m0, shape, f, grid)
             ll_plain.append(np.sum(np.log(L)))
-            ll_trunc.append(np.sum(np.log(L / Z)))
+            ll_trunc.append(np.sum(np.log(L / Pi)))
         ll_plain, ll_trunc = np.array(ll_plain), np.array(ll_trunc)
 
         def peak(ll):
