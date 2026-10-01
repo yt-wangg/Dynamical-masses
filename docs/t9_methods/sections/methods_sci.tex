@@ -1,0 +1,77 @@
+\section{Selection-corrected dynamical likelihood}
+\label{sec:selection}
+
+\subsection{Dynamical likelihood of one pair}
+
+Write $s_{jq}=\sqrt{M_{{\rm tot},jq}/\msun}$ for the mass scale of pair $j$ at metallicity node $Z_q$, where $M_{{\rm tot},jq}$ is the sum of the two component masses predicted by the MLR. The latent relative speed is $v=s\,\widetilde u$, and the observed statistic $u_j$ follows the Rice distribution
+\begin{equation}
+ R(u_j\mid v,\sigma_{u,j})=\frac{u_j}{\sigma_{u,j}^2}
+ \exp\!\left[-\frac{u_j^2+v^2}{2\sigma_{u,j}^2}\right]
+ I_0\!\left(\frac{u_jv}{\sigma_{u,j}^2}\right),\qquad u_j\ge0,
+ \label{eq:rice}
+\end{equation}
+where $I_0$ is the zeroth-order modified Bessel function \citep{Rice1945}. The good component has the mass-scaled density $p(\widetilde u)$ of the functional form of \citet{Hwang2024DynamicalMasses}, with fixed constants $(B,u_c,C)$ and support $0<\widetilde u\le 80\,\kmsau$. The outlier component is a Gaussian of mean $40$ and standard deviation $13\,\kmsau$ truncated to $[0,80]\,\kmsau$, defined directly in the latent speed $v$ with density $q(v)$, and therefore independent of the pair mass. The mixture likelihood of pair $j$ is
+\begin{equation}
+ \mathcal L_j(s)=(1-f_{\rm outlier})\int_0^{80}p(\widetilde u)\,
+ R(u_j\mid s\widetilde u,\sigma_{u,j})\dd\widetilde u
+ +f_{\rm outlier}\int_0^{80}q(v)\,R(u_j\mid v,\sigma_{u,j})\dd v .
+ \label{eq:mix-untruncated}
+\end{equation}
+The first integral carries the Jacobian $1/s$ of the change of variables from $\widetilde u$ to $v$.
+
+\subsection{Truncation by the significance cut}
+
+The catalogue retains only pairs whose proper-motion difference is detected at more than $c=3$ times its uncertainty. Because $\sigma_{u,j}=u_j/(\Delta\mu/\sigma_{\Delta\mu})_j$, this cut is a threshold on the observed statistic,
+\begin{equation}
+ u_j>c\,\sigma_{u,j},
+ \label{eq:cut}
+\end{equation}
+with $\sigma_{u,j}$ fixed for each pair by the catalogue astrometric uncertainties, the parallax and the projected separation. Pairs with small latent speed and large $\sigma_{u,j}$ are preferentially removed, so the observed $u_j$ are not a draw from \cref{eq:mix-untruncated}. The density of $u_j$ conditional on passing the cut is
+\begin{equation}
+ \mathcal L^{\rm sel}_j(s)=\frac{\mathcal L_j(s)}{\Pi_j(s)},
+ \label{eq:truncated}
+\end{equation}
+where $\Pi_j(s)$ is the probability that a pair with mass scale $s$ satisfies \cref{eq:cut}.
+
+For a latent speed $v$, the Rice distribution gives the probability of passing the cut as the Marcum $Q$ function,
+\begin{equation}
+ \Pr(u>c\,\sigma_{u,j}\mid v)=Q_1\!\left(\frac{v}{\sigma_{u,j}},\,c\right).
+\end{equation}
+Averaging over the two mixture components,
+\begin{equation}
+ \Pi_j(s)=(1-f_{\rm outlier})\,\Pi^{\rm good}_j(s)+f_{\rm outlier}\,\Pi^{\rm out}_j,
+ \label{eq:pass}
+\end{equation}
+with
+\begin{equation}
+ \Pi^{\rm good}_j(s)=\int_0^{80}p(\widetilde u)\,
+ Q_1\!\left(\frac{s\widetilde u}{\sigma_{u,j}},\,c\right)\dd\widetilde u,
+ \qquad
+ \Pi^{\rm out}_j=\int_0^{80}q(v)\,
+ Q_1\!\left(\frac{v}{\sigma_{u,j}},\,c\right)\dd v .
+\end{equation}
+The pass probability of the outlier component does not depend on the mass, and $\Pi^{\rm good}_j$ depends on the mass and the uncertainty only through $s/\sigma_{u,j}$. It increases with $s$ and tends to one when $s\widetilde u\gg c\,\sigma_{u,j}$ over the support of $p(\widetilde u)$. Dividing by $\Pi_j$ therefore removes the probability that the untruncated model places below the cut, where no pair is observed; this probability is larger at low mass, so the correction lowers the inferred masses relative to \cref{eq:mix-untruncated}.
+
+Metallicity is marginalized with the Stage-1b weights. Selection acts on the true mass of the pair, so the factor $\Pi_j$ is evaluated at each node before the sum,
+\begin{equation}
+ \mathcal L^{\rm sel}_j(\Theta)=\sum_q \overline P_{jq}\,
+ \frac{\mathcal L_j(s_{jq})}{\Pi_j(s_{jq})}.
+ \label{eq:marginal}
+\end{equation}
+The dynamical term of the log-posterior is $\sum_j\ln\mathcal L^{\rm sel}_j$. The fraction of outliers in the selected sample is $f_{\rm outlier}\Pi^{\rm out}_j/\Pi_j$, which differs from $f_{\rm outlier}$; the parameter $f_{\rm outlier}$ is the mixing fraction before selection.
+
+\subsection{Role of the fixed velocity distribution}
+
+The function $p(\widetilde u)$ describes the distribution of the mass-scaled statistic before selection, determined by eccentricity, orbital phase and orientation. With the cut modelled in \cref{eq:truncated}, the shape is held at the fixed constants and is not adjusted to absorb the selection. Its upper edge is set by energy conservation: for a bound orbit $u^2\le v^2r<2Gm_{\rm tot}$, hence
+\begin{equation}
+ \widetilde u<\sqrt{2G\msun/\mathrm{AU}}=42.12\,\kmsau ,
+\end{equation}
+independently of the eccentricity distribution. This edge fixes the mass scale of the velocity distribution.
+
+\subsection{Numerical evaluation}
+
+The function $\Pi^{\rm good}_j$ is tabulated once as a function of $x=s/\sigma_{u,j}$ on a logarithmic grid, using trapezoidal integration over $\widetilde u$ and the survival function of the non-central $\chi^2$ distribution with two degrees of freedom, $Q_1(a,c)=\Pr[\chi^2_2(a^2)>c^2]$. Values of $\ln\Pi_j^{\rm good}$ at the mass nodes of the dynamics lookup are obtained by linear interpolation in $\ln x$. The quantity $\Pi^{\rm out}_j$ is computed once per pair. The tables reproduce Monte Carlo pass fractions of the two components to within $4\times10^{-3}$. The correction is enabled with the option \texttt{--selection-cut}, which sets $c$.
+
+\subsection{Assumptions of the selection model}
+
+Only the threshold of \cref{eq:cut} is modelled. The remaining catalogue criteria (chance-alignment probability, fidelity, parallax, photometric signal-to-noise and astrometric quality cuts) are assumed not to depend on $u_j$ at fixed mass. The uncertainty $\sigma_{u,j}$ is treated as fixed for each pair. The Stage-1b metallicity posteriors $\overline P_{jq}$ are computed from the selected sample and carry no selection correction. The pass probability is evaluated with the same shape of $p(\widetilde u)$ and outlier component as the likelihood, so any mismatch between these fixed shapes and the true population affects $\Pi_j$ as well as $\mathcal L_j$.
