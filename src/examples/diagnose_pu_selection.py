@@ -4,7 +4,7 @@ Level 1: forward-simulate the fixed-T8 and EM models, apply the sample's hard cu
          u_obs/sigma_u > 3, and compare predicted vs observed CDFs.
 Level 2: profile the global mass scale alpha (m -> alpha*m) with the shape and f
          held fixed, with and without the truncation normalization
-         Z_j(m) = P(u_obs > 3 sigma_j | m, mixture).
+         Pi_j(m) = P(u_obs > 3 sigma_j | m, mixture).
 
 Point-estimate diagnostics only; nothing is refit except a 1-D profile in alpha.
 """
@@ -73,7 +73,7 @@ def rice_pdf(u, v, sigma):
 
 
 def mixture_terms(u, sigma, mass, shape, f, grid):
-    """Return (L_j, Z_j): mixture likelihood p(u_j|m) and pass probability P(u>3 sigma|m)."""
+    """Return (L_j, Pi_j): mixture likelihood p(u_j|m) and pass probability P(u>3 sigma|m)."""
     wgrid = np.trapezoid  # alias for readability
     pg = good_density_grid(shape, grid)
     po = outlier_density_grid(grid)
@@ -82,12 +82,12 @@ def mixture_terms(u, sigma, mass, shape, f, grid):
     rice_g = rice_pdf(u[:, None], v_good, sigma[:, None])
     L_good = wgrid(pg[None, :] * rice_g, grid, axis=1)
     surv_g = marcum_q1_cut(v_good / sigma[:, None])
-    Z_good = wgrid(pg[None, :] * surv_g, grid, axis=1)
+    Pi_good = wgrid(pg[None, :] * surv_g, grid, axis=1)
     rice_o = rice_pdf(u[:, None], grid[None, :], sigma[:, None])
     L_out = wgrid(po[None, :] * rice_o, grid, axis=1)
     surv_o = marcum_q1_cut(grid[None, :] / sigma[:, None])
-    Z_out = wgrid(po[None, :] * surv_o, grid, axis=1)
-    return (1 - f) * L_good + f * L_out, (1 - f) * Z_good + f * Z_out
+    Pi_out = wgrid(po[None, :] * surv_o, grid, axis=1)
+    return (1 - f) * L_good + f * L_out, (1 - f) * Pi_good + f * Pi_out
 
 
 def ks_like(a, b):
