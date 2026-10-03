@@ -407,13 +407,10 @@ where the outlier fraction $f_{\mathrm{outlier}}$ is a free parameter, and $G_{\
 The mass-luminosity relation can thus be constrained by substituting $m_{\mathrm{tot}}$ with
 
 \begin{align}
-    m_{\mathrm{tot},j} = \mathcal{M}^{-1}(M_{\mathrm{G},j1},\mathbb{E}[Z_{j}];\Theta) + \mathcal{M}^{-1}(M_{\mathrm{G},j2},\mathbb{E}[Z_{j}];\Theta),
+    m_{\mathrm{tot},j} = \mathcal{M}^{-1}(M_{\mathrm{G},j1},Z_{j};\Theta) + \mathcal{M}^{-1}(M_{\mathrm{G},j2},Z_{j};\Theta),
 \end{align}
-where $\mathbb{E}[Z_{j}]$ is the expected value of the metallicity posterior inferred from Stage 1b.
 
-\begin{align}
-    \mathbb{E}[Z_{j}] = \int Z \cdot \, p_j(Z \mid \mathcal{D})\, dZ
-\end{align}
+$Z_j$ will be marginalized over the posterior distribution obtained from Stage 1b afterwards.
 
 
 

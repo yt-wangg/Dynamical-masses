@@ -5,38 +5,29 @@
   \providecommand{\doi}[1]{doi: #1}\else
   \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
 
-\bibitem[Bressan et~al.(2012)Bressan, Marigo, Girardi, Salasnich, Dal~Cero,
-  Rubele, and Nanni]{Bressan2012PARSEC}
-Alessandro Bressan, Paola Marigo, L{\'e}o Girardi, Bernardo Salasnich, Claudia
-  Dal~Cero, Stefano Rubele, and Ambra Nanni.
-\newblock {PARSEC}: stellar tracks and isochrones with the {PAdova} and
-  {TRieste} stellar evolution code.
-\newblock \emph{Monthly Notices of the Royal Astronomical Society},
-  427\penalty0 (1):\penalty0 127--145, 2012.
+\bibitem[Bressan et~al.(2012)Bressan, Marigo, Girardi, Salasnich, Dal~Cero, Rubele, and Nanni]{Bressan2012PARSEC}
+Alessandro Bressan, Paola Marigo, L{\'e}o Girardi, Bernardo Salasnich, Claudia Dal~Cero, Stefano Rubele, and Ambra Nanni.
+\newblock {PARSEC}: stellar tracks and isochrones with the {PAdova} and {TRieste} stellar evolution code.
+\newblock \emph{Monthly Notices of the Royal Astronomical Society}, 427\penalty0 (1):\penalty0 127--145, 2012.
 \newblock \doi{10.1111/j.1365-2966.2012.21948.x}.
 
 \bibitem[de~Boor(2001)]{deBoor2001Splines}
 Carl de~Boor.
-\newblock \emph{A Practical Guide to Splines}, volume~27 of \emph{Applied
-  Mathematical Sciences}.
+\newblock \emph{A Practical Guide to Splines}, volume~27 of \emph{Applied Mathematical Sciences}.
 \newblock Springer, New York, revised edition, 2001.
 \newblock ISBN 978-0-387-95366-3.
 \newblock \doi{10.1007/978-1-4612-6333-3}.
 
 \bibitem[Hoffman and Gelman(2014)]{HoffmanGelman2014NUTS}
 Matthew~D. Hoffman and Andrew Gelman.
-\newblock The {No-U-Turn} sampler: Adaptively setting path lengths in
-  {Hamiltonian Monte Carlo}.
-\newblock \emph{Journal of Machine Learning Research}, 15\penalty0
-  (47):\penalty0 1593--1623, 2014.
+\newblock The {No-U-Turn} sampler: Adaptively setting path lengths in {Hamiltonian Monte Carlo}.
+\newblock \emph{Journal of Machine Learning Research}, 15\penalty0 (47):\penalty0 1593--1623, 2014.
 \newblock URL \url{https://www.jmlr.org/papers/v15/hoffman14a.html}.
 
 \bibitem[Li et~al.(2026)]{Li2026JCaPS}
 Jiadong Li et~al.
-\newblock Variations in the {Milky Way}'s stellar mass function at
-  {$[\mathrm{Fe}/\mathrm{H}]<-1$}.
-\newblock \emph{The Astrophysical Journal Letters}, 998\penalty0 (2):\penalty0
-  L33, 2026.
+\newblock Variations in the {Milky Way}'s stellar mass function at {$[\mathrm{Fe}/\mathrm{H}]<-1$}.
+\newblock \emph{The Astrophysical Journal Letters}, 998\penalty0 (2):\penalty0 L33, 2026.
 \newblock \doi{10.3847/2041-8213/ae3d39}.
 
 \end{thebibliography}
