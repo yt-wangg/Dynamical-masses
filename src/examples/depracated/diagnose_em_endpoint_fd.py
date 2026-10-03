@@ -22,7 +22,7 @@ import numpy as np
 
 
 HERE = Path(__file__).resolve()
-REPO_ROOT = HERE.parents[2]
+REPO_ROOT = HERE.parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 

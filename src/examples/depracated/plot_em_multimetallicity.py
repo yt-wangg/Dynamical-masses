@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from run_em_mlr_pilot import vector_to_params  # noqa: E402

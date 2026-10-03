@@ -10,7 +10,7 @@ from binary_masses.hierarchical_metallicity import _bspline_basis_numpy
 
 
 def main():
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     output = root / "results/t82_joint_shape_metal_bins_formal_20260919"
     surface, _ = workflow.build_surfaces()
     mlr = workflow._make_t8_mlr(surface, workflow.parse_args())

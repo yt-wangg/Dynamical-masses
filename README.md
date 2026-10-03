@@ -29,14 +29,15 @@ important changes:
   `k = 9*i_B + 3*i_uc + i_C`;
 - NumPyro initial values are transformed correctly into unconstrained sampler
   coordinates;
-- a direct continuous Rice-quadrature path is available to validate
-  interpolation-based shape calculations.
+- the dynamics likelihood is truncated for the sample's `u_obs/sigma_u > 3`
+  cut (see below); this is the main model, with the shape of `p(u~)` held fixed.
 
 The repository also retains the experiments that motivated these changes:
-(M_G)-window mass-score diagnostics, legacy-vs-raw-`u` outlier comparisons,
-fixed good-shape sensitivity tests, joint good-shape + MLR MCMC, independent
-metallicity-bin fits, and alternating conditional-MAP / EM-style optimization
-from different starting shapes.
+(M_G)-window mass-score diagnostics, legacy-vs-raw-`u` outlier comparisons and
+fixed good-shape sensitivity tests. Variable-shape code (joint good-shape + MLR
+MCMC, metallicity-bin joint fits, alternating-MAP / EM-style optimization) is
+no longer part of the main model and lives in
+`src/examples/depracated/` and `test/depracated/`.
 
 For the scientific history and interpretation of these changes, see
 [`docs/model/POST_7BC_MODEL_IMPROVEMENTS.md`](docs/model/POST_7BC_MODEL_IMPROVEMENTS.md).
@@ -101,7 +102,7 @@ python -m py_compile \
 
 python test/test_hierarchical_metallicity.py
 python test/test_t8_1_normalization.py
-python test/test_t8_2_shape_stack.py
+python test/test_selection_truncation.py
 python test/test_raw_u_outlier.py
 ```
 
@@ -197,7 +198,9 @@ Without `--quick`, the T8 runner currently uses:
 - 1000 posterior draws;
 - 4 chains;
 - 1024 lookup mass-scale nodes;
-- 64 velocity quadrature nodes;
+- 64 velocity quadrature nodes (the full sample passes the convergence gate
+  with `--lookup-velocity-nodes 128 --lookup-sigma-extent 14`);
+- selection truncation at `u/sigma_u > 3` (`--selection-cut 3`);
 - target acceptance probability 0.9;
 - an 8 x 4 monotone tensor-spline MLR;
 - a solar anchor at (M_G=4.67), ([M/H]=0).
@@ -270,100 +273,40 @@ python -u src/examples/run_hierarchical_metallicity_test.py \
 
 Use a new output directory for every shape experiment.
 
-## Joint good-shape + MLR inference
+## Selection truncation (main model)
 
-For posterior propagation of the normal-velocity shape uncertainty, first build
-the 27-node shape stack:
+The catalogue keeps only pairs with `u_obs/sigma_u > 3`, so the observed `u`
+are truncated at a per-system threshold. The likelihood of each pair is divided
+by the probability of passing the cut,
 
-```bash
-export SHAPE_STACK_OUT=results/hierarchical_metallicity_t8_2_formal
-
-python -u src/examples/run_hierarchical_metallicity_test.py \
-  --stage lookup \
-  --data "$DATA" \
-  --output-dir "$SHAPE_STACK_OUT" \
-  --metallicity-posterior "$OUT/latent_metallicity_weights_t8.npz" \
-  --sample-dynamics-shape
+```
+L_j(m) / Pi_j(m),   Pi_j(m) = (1-f) Pi_good(m/sigma_j) + f Pi_out,
 ```
 
-This produces, among other files:
+and the metallicity marginalization is `sum_q P_jq L_jq / Pi_jq`. This is on by
+default for real data (`--selection-cut 3`); use `--no-selection-cut` for the
+untruncated likelihood and `--selection-cut C` for another threshold. Mock data
+default to no cut. With the cut modelled, the shape of `p(u~)` is kept fixed
+instead of being fitted: letting it vary absorbed the selection into the shape
+and gave masses 25--40 per cent too high at M_G ~ 6--9.
 
-- `dynamics_likelihood_shapestack_t8.npz`;
-- `shapestack_nodes_t8.json`.
-
-A joint MLR + shape fit can then be run directly with the main T8 runner:
-
-```bash
-python -u src/examples/run_hierarchical_metallicity_test.py \
-  --stage mlr \
-  --data "$DATA" \
-  --output-dir "$SHAPE_STACK_OUT" \
-  --metallicity-posterior "$OUT/latent_metallicity_weights_t8.npz" \
-  --sample-dynamics-shape \
-  --outlier-coordinate raw_u
-```
-
-For independent metallicity-bin posterior fits and controlled initialization
-tests, use:
-
-[`src/examples/run_t82_joint_shape_mcmc.py`](src/examples/run_t82_joint_shape_mcmc.py)
-
-Example using the direct continuous Rice evaluator:
+The truncation is documented in
+[`docs/t9_methods/T9_methods.pdf`](docs/t9_methods/T9_methods.pdf). A quick MAP
+comparison with and without the cut on an existing calibration:
 
 ```bash
-python src/examples/run_t82_joint_shape_mcmc.py \
-  --data "$DATA" \
-  --posterior "$OUT/latent_metallicity_weights_t8.npz" \
-  --nodes-json "$SHAPE_STACK_OUT/shapestack_nodes_t8.json" \
-  --output results/t82_bin0_parsec \
-  --bin-index 0 \
-  --start parsec \
-  --warmup 1500 \
-  --samples 2000 \
-  --chains 4 \
-  --initial-jitter 0.03 \
-  --seed 20260921
+python -u src/examples/map_mlr_selection_check.py \
+  --data "$DATA" --posterior "$OUT/latent_metallicity_weights_t8.npz" --cut 3.0
 ```
 
-Use `--bin-index 0` through `3`, and compare both `--start parsec` and
-`--start s2`.
+## Deprecated variable-shape workflows
 
-Omitting `--shape-stack-unpacked` uses direct continuous quadrature. Supplying
-a validated unpacked shape stack selects the interpolation-based path.
-
-See
-[`docs/workflows/T82_JOINT_SHAPE_PIPELINE.md`](docs/workflows/T82_JOINT_SHAPE_PIPELINE.md)
-for the full metallicity-bin workflow and limitations.
-
-## Alternating-MAP / EM-style sensitivity experiment
-
-The alternating conditional-MAP workflow repeatedly updates the MLR and the
-normal-velocity shape. It is useful for testing shape--MLR degeneracy and
-sensitivity to different starting shapes.
-
-It is not a strict EM algorithm and does not return posterior intervals.
-
-Run:
-
-```bash
-bash scripts/run_mlr.sh \
-  --data "$DATA" \
-  --baseline "$OUT" \
-  --shape-stack "$SHAPE_STACK_OUT/dynamics_likelihood_shapestack_t8.npz" \
-  --output results/em_mlr_sensitivity
-```
-
-The implementation is:
-
-`src/examples/run_em_mlr_pilot.py`
-
-By default it uses the same deterministic 2000-system subset for the default
-and S2 starts and alternates conditional MAP updates. Treat these outputs as an
-optimization/sensitivity comparison rather than the primary posterior result.
-
-See
-[`docs/workflows/EM_MLR_WORKFLOW.md`](docs/workflows/EM_MLR_WORKFLOW.md)
-for details and known limitations.
+The 27-node shape stack, `--sample-dynamics-shape`, the joint good-shape + MLR
+MCMC, the metallicity-bin joint fits and the alternating-MAP / EM-style
+experiments were removed from the library and runner. Their scripts are kept in
+`src/examples/depracated/` for reference and need the code as of git tag
+`pre-selection-truncation-main`; run them with
+`PYTHONPATH=src/examples:src` from that tag.
 
 ## Diagnostic scripts
 
@@ -374,10 +317,8 @@ Useful diagnostic and comparison entry points include:
   (M_G) window;
 - `src/examples/plot_mlr_residuals_parsec.py`:
   fixed-shape MLR residual comparisons;
-- `src/examples/plot_em_parsec.py`:
-  alternating-MAP endpoints relative to PARSEC;
-- `src/examples/plot_t82_completed_bins.py`:
-  metallicity-bin posterior summaries;
+- `src/examples/map_mlr_selection_check.py`:
+  MAP comparison of the MLR with and without the selection truncation;
 - `src/examples/compare_t8_relations_mg.py`:
   MLR comparison in absolute G magnitude;
 - `src/examples/compare_t8_relations_bprp.py`:
@@ -389,10 +330,10 @@ Useful diagnostic and comparison entry points include:
 
 For scientific results, use this hierarchy:
 
-1. standard fixed-good-shape T8 posterior with raw-`u` outlier;
-2. legacy-outlier and fixed-good-shape runs as controlled sensitivity tests;
-3. joint good-shape + MLR MCMC to propagate shape uncertainty;
-4. alternating-MAP/EM-style results as an optimization/sensitivity comparison.
+1. standard T8 posterior with raw-`u` outlier, fixed good shape and the
+   `u/sigma_u > 3` truncation;
+2. untruncated, legacy-outlier and fixed-good-shape runs as controlled
+   sensitivity tests.
 
 Agreement between different starts or methods is useful evidence of numerical
 stability, but it does not by itself establish the physical correctness of the
@@ -431,8 +372,8 @@ monotone-spline MLR pipeline.
 
 - [Post-`7bc861a` model history](docs/model/POST_7BC_MODEL_IMPROVEMENTS.md)
 - [T8 server run guide](docs/workflows/T8_SERVER_RUN.md)
-- [T8.2 joint-shape pipeline](docs/workflows/T82_JOINT_SHAPE_PIPELINE.md)
-- [Alternating-MAP / EM-style workflow](docs/workflows/EM_MLR_WORKFLOW.md)
+- [T8.2 joint-shape pipeline](docs/archive/workflows/T82_JOINT_SHAPE_PIPELINE.md)
+- [Alternating-MAP / EM-style workflow](docs/archive/workflows/EM_MLR_WORKFLOW.md)
 - [Mass-independent outlier experiment plan](docs/validation/T8_MASS_INDEPENDENT_OUTLIER_GARCHING_PLAN.md)
 
 ## License

@@ -12,7 +12,7 @@ from run_em_mlr_pilot import vector_to_params
 
 
 def main():
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     output = root / "results/em_mlr_pilot_20260919_v7"
     surface, _ = workflow.build_surfaces()
     mlr = workflow._make_t8_mlr(surface, workflow.parse_args())

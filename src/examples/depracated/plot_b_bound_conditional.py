@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 OLD = ROOT / "results/em_solar_only_full_rebuild_20260928_polish_server/summary.json"
 NEW = ROOT / "results/em_solar_only_full_rebuild_20260928_shape_only_b_profile/shape_only_profile.json"
 

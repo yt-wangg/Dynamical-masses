@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -31,8 +32,8 @@ from binary_masses.hierarchical_metallicity import (  # noqa: E402
 )
 
 Z_SLICES = (-0.6, 0.0, 0.4)
-T8_DIR = ROOT / "results" / "hierarchical_metallicity_t8_20260913"
-OUT_DIR = ROOT / "results" / "t8_mann2019_ks_20260916"
+T8_DIR = Path(os.environ.get("T8_DIR", ROOT / "results" / "hierarchical_metallicity_t8_20260913"))
+OUT_DIR = Path(os.environ.get("T8_OUT_DIR", ROOT / "results" / "t8_mann2019_ks_20260916"))
 GAIA_CSV = ROOT / "data" / "PARSEC_logAge_6to10_0p5_MH_n1to0p6_0p2.csv"
 CMD_TABLE = OUT_DIR / "parsec_cmd38_gaia_dr2_2mass_targets.dat"
 MANN_POST = WORKSPACE / "M_-M_K-" / "resources" / "Mk-M_7_trim.fits"

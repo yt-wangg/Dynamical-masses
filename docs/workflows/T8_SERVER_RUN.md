@@ -1,7 +1,7 @@
 # T8 server run guide
 
 The post-7bc core T8 model uses a mass-independent raw-u outlier likelihood.
-The [EM-style workflow](EM_MLR_WORKFLOW.md) is retained as a sensitivity and
+The [EM-style workflow](../archive/workflows/EM_MLR_WORKFLOW.md) is retained as a sensitivity and
 optimization experiment. This guide supplies the calibration and lookup inputs
 and documents the explicit fixed-shape MCMC workflow.
 

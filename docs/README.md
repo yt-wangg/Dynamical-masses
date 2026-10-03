@@ -6,8 +6,8 @@ All other Markdown documentation is organized here by purpose.
 ## Current workflows
 
 - [T8 server run guide](workflows/T8_SERVER_RUN.md) — standard metallicity calibration, Rice lookup, and MLR execution.
-- [T8.2 joint-shape pipeline](workflows/T82_JOINT_SHAPE_PIPELINE.md) — joint good-shape + MLR MCMC and metallicity-bin fits.
-- [Alternating-MAP / EM-style workflow](workflows/EM_MLR_WORKFLOW.md) — optimization/sensitivity workflow, not the primary posterior inference.
+- [T8.2 joint-shape pipeline](archive/workflows/T82_JOINT_SHAPE_PIPELINE.md) — joint good-shape + MLR MCMC and metallicity-bin fits (deprecated).
+- [Alternating-MAP / EM-style workflow](archive/workflows/EM_MLR_WORKFLOW.md) — optimization/sensitivity workflow (deprecated).
 
 ## Model and methodology
 

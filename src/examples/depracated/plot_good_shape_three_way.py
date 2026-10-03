@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_EM = DEFAULT_ROOT / "results/em_solar_only_full_rebuild_20260928_polish_server"
 DEFAULT_OUT = DEFAULT_ROOT / "results/em_good_shape_three_way_20260928"
 SUPPORT_MAX = 80.0

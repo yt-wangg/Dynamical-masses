@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import minimize
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src")); sys.path.insert(0, str(ROOT / "src" / "examples"))
 import diagnose_pu_selection as d  # noqa: E402
 import plot_observed_u_em_fixed_predictive as base  # noqa: E402

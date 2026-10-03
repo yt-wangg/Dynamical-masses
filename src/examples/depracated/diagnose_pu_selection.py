@@ -24,7 +24,7 @@ import numpy as np
 from scipy.special import ive
 from scipy.stats import ncx2
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "src" / "examples"))
 

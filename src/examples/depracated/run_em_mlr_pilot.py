@@ -34,7 +34,7 @@ from scipy.optimize import minimize
 from scipy.special import i0e, ndtr
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from binary_masses import hierarchical_metallicity as hm  # noqa: E402
