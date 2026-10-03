@@ -136,10 +136,10 @@ def selection_pass_log_tables(
     velocity ``v`` the pass probability is the Rice survival function
     ``Q1(v/sigma, cut)``; averaging it over each mixture component gives
 
-        Pi_good(s, sigma) = int p0(w) Q1(s*w/sigma, cut) dw,
-        Pi_bad(sigma)     = int q(v)  Q1(v/sigma, cut) dv   (raw-u outlier).
+        A_good(s, sigma) = int p0(w) Q1(s*w/sigma, cut) dw,
+        A_bad(sigma)     = int q(v)  Q1(v/sigma, cut) dv   (raw-u outlier).
 
-    ``Pi_good`` depends on ``s/sigma`` only, so it is tabulated once in
+    ``A_good`` depends on ``s/sigma`` only, so it is tabulated once in
     ``x = s/sigma`` and interpolated.  Uses the current good-shape constants
     (call ``set_good_shape_constants`` first for shape overrides).
 

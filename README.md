@@ -290,7 +290,7 @@ default to no cut. With the cut modelled, the shape of `p(u~)` is kept fixed
 instead of being fitted: letting it vary absorbed the selection into the shape
 and gave masses 25--40 per cent too high at M_G ~ 6--9.
 
-The truncation is documented in
+The full model, including the truncation, is described in
 [`docs/t9_methods/T9_methods.pdf`](docs/t9_methods/T9_methods.pdf). A quick MAP
 comparison with and without the cut on an existing calibration:
 
