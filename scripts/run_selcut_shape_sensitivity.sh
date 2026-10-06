@@ -15,7 +15,7 @@
 set -euo pipefail
 
 STAGE="${STAGE:-both}"            # both, lookup, or mlr
-CASE="${CASE:-all}"               # all, hwang, refit_trunc, refit_untrunc
+CASE="${CASE:-all}"               # all, default, hwang, refit_trunc, refit_untrunc
 CONDA_ENV="${CONDA_ENV:-dyn}"
 REQUIRE_GPU="${REQUIRE_GPU:-1}"
 
@@ -29,11 +29,13 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}/results/selcut_shape_sensitivity_202
 RUNNER="${RUNNER:-${PROJECT_ROOT}/src/examples/run_hierarchical_metallicity_test.py}"
 POSTERIOR="${POSTERIOR:-${BASELINE_DIR}/latent_metallicity_weights_t8.npz}"
 
-# name  B  uc  C   (baseline: B=2.544e-3 uc=35.67 C=3.100, not rerun)
-case_names=(hwang refit_trunc refit_untrunc)
-case_B=(2.24e-3 2.9e-3 1.0e-4)      # hwang: Hwang+2024; refit_trunc: handoff 3.2 Nelder-Mead point
-case_uc=(36.09 36.9 26.4)           # under the cut; refit_untrunc: untruncated refit (B->0 floored at 1e-4)
-case_C=(3.85 2.8 6.7)
+# name  B  uc  C.  "default" runs the library default shape (no override flags): B=2.2897e-3 uc=36.2925
+# C=3.5855, the (s_proj,d)-weighted fit of Validation/V20.  The earlier baseline results/t8_selcut_20261001
+# used the legacy V1 shape B=2.544e-3 uc=35.67 C=3.100 (not rerun; compare against it).
+case_names=(default hwang refit_trunc refit_untrunc)
+case_B=(default 2.24e-3 2.9e-3 1.0e-4)      # hwang: Hwang+2024; refit_trunc: handoff 3.2 Nelder-Mead point
+case_uc=(default 36.09 36.9 26.4)           # under the cut; refit_untrunc: untruncated refit (B->0 floored at 1e-4)
+case_C=(default 3.85 2.8 6.7)
 
 case_index() {
     local requested="$1" index
@@ -60,9 +62,13 @@ run_case() {
     local name="$1" B="$2" uc="$3" C="$4"
     local out="${OUTPUT_ROOT}/${name}"
     local lookup="${out}/dynamics_likelihood_lookup_t8.npz"
+    local shape_args=()
+    if [[ "${B}" != default ]]; then
+        shape_args=(--shape-sensitivity --good-shape-b "${B}" --good-shape-uc "${uc}" --good-shape-c "${C}")
+    fi
     local common=(
         --data "${DATA}" --output-dir "${out}" --metallicity-posterior "${POSTERIOR}"
-        --shape-sensitivity --good-shape-b "${B}" --good-shape-uc "${uc}" --good-shape-c "${C}"
+        ${shape_args[@]+"${shape_args[@]}"}
         --selection-cut 3
         --lookup-mass-points 1024 --lookup-velocity-nodes 128 --lookup-sigma-extent 14
         --warmup 1000 --samples 1000 --chains 4 --seed 20260819 --target-accept 0.9
