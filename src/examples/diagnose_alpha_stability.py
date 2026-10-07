@@ -9,7 +9,11 @@ on top of the posterior MLR and look for trends.
 Part A: profile log-likelihood in alpha per bin (selection-corrected, metallicity-marginalized,
         averaged over thinned posterior draws), alpha_hat and a profile 1-sigma interval.
 Part B: posterior-predictive check: simulate u_obs from the fitted model, apply u/sigma_u>cut,
-        compare quantiles of u, u/sigma_u and the tail fraction with the data in each bin.
+        compare quantiles of u, u/sigma_u and the tail fraction with the data in each bin.  Every observed system
+        carries equal weight in the prediction (each passing replicate of system j is weighted 1/n_pass_j), i.e. the
+        prediction is p(u | pass, system j) averaged over the observed systems.  Pooling all passing replicates
+        instead would weight systems by their pass probability and overstate the high-u tail (see
+        diagnose_u_predictive_compare.py, which also compares two fitted runs).
 Also reports the mean selection-pass probability A_j per bin (handoff 3.4).
 """
 import argparse, json, sys
@@ -29,6 +33,9 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--data", type=Path, required=True)
 ap.add_argument("--run-dir", type=Path, default=ROOT / "results/t8_selcut_20261001",
                 help="directory with latent_metallicity_weights_t8.npz, dynamics_likelihood_lookup_t8.npz, mlr_mcmc_t8.npz")
+ap.add_argument("--posterior", type=Path, default=None,
+                help="latent_metallicity_weights_t8.npz; default: <run-dir>/latent_metallicity_weights_t8.npz "
+                     "(runs that reused another metallicity posterior, e.g. selcut_shape_sensitivity_*/default, need this)")
 ap.add_argument("--output-dir", type=Path, default=ROOT / "results/alpha_stability_20261005")
 ap.add_argument("--cut", type=float, default=3.0)
 ap.add_argument("--n-draws", type=int, default=16)
@@ -45,7 +52,7 @@ OUT = args.output_dir; OUT.mkdir(parents=True, exist_ok=True)
 rng = np.random.default_rng(args.seed)
 
 # ---------------------------------------------------------------- data and fitted model
-posterior = MetallicityPosteriorGrid.load(args.run_dir / "latent_metallicity_weights_t8.npz")
+posterior = MetallicityPosteriorGrid.load(args.posterior or args.run_dir / "latent_metallicity_weights_t8.npz")
 lookup = DynamicsLikelihoodLookup.load(args.run_dir / "dynamics_likelihood_lookup_t8.npz")
 arrays = workflow.filter_data(workflow.load_real_data(args.data), max_systems=None, seed=0,
                               fixed_rows=posterior.row_indices)
@@ -197,23 +204,24 @@ if not args.skip_ppc:
     v_true = np.where(is_out, np.interp(ut, cdf_out, vo), np.interp(ut, cdf_good, w) * np.sqrt(m_rep))
     u_rep = np.hypot(v_true + sig[:, None] * rng.standard_normal((N, R)), sig[:, None] * rng.standard_normal((N, R)))
     keep = u_rep / sig[:, None] > args.cut
+    npass = keep.sum(axis=1)
+    wt_rep = np.where(keep, 1.0 / np.maximum(npass, 1)[:, None], 0.0)    # unit weight per observed system
+    s_rep = u_rep / sig[:, None]
     def wq(x, wt, q):
-        o = np.argsort(x); cw = np.cumsum(wt[o]); return np.interp(np.asarray(q) * cw[-1], cw, x[o])
+        o = np.argsort(x); cw = np.cumsum(wt[o]); return float(np.interp(np.asarray(q) * cw[-1], cw, x[o]))
     ppc_rows = []
-    stats_obs_all = None
     for name in ("sep_AU", "distance_pc", "M_G_primary", "FeH_posterior_mean", "sigma_u"):
         x = variables[name]
         edges = np.unique(np.quantile(x, np.linspace(0, 1, args.n_bins + 1)))
         for b in range(len(edges) - 1):
             sel = (x >= edges[b]) & ((x < edges[b + 1]) if b < len(edges) - 2 else (x <= edges[b + 1]))
             uo, so = u[sel], (u / sig)[sel]
-            up = u_rep[sel][keep[sel]]; sp = (u_rep / sig[:, None])[sel][keep[sel]]
-            wt = np.ones_like(up)
+            m = keep[sel]; up = u_rep[sel][m]; sp = s_rep[sel][m]; wt = wt_rep[sel][m]
             row = dict(variable=name, bin=b, lo=float(edges[b]), hi=float(edges[b + 1]), n=int(sel.sum()),
-                       obs_u_med=float(np.median(uo)), pred_u_med=float(np.median(up)),
-                       obs_u_p90=float(np.quantile(uo, 0.9)), pred_u_p90=float(np.quantile(up, 0.9)),
-                       obs_frac_u_gt_60=float(np.mean(uo > 60)), pred_frac_u_gt_60=float(np.mean(up > 60)),
-                       obs_s_med=float(np.median(so)), pred_s_med=float(np.median(sp)),
+                       obs_u_med=float(np.median(uo)), pred_u_med=wq(up, wt, 0.5),
+                       obs_u_p90=float(np.quantile(uo, 0.9)), pred_u_p90=wq(up, wt, 0.9),
+                       obs_frac_u_gt_60=float(np.mean(uo > 60)), pred_frac_u_gt_60=float(np.sum(wt[up > 60]) / np.sum(wt)),
+                       obs_s_med=float(np.median(so)), pred_s_med=wq(sp, wt, 0.5),
                        pred_pass_frac=float(keep[sel].mean()))
             ppc_rows.append(row)
     with open(OUT / "ppc_by_bin.csv", "w", newline="") as fh:
@@ -222,11 +230,12 @@ if not args.skip_ppc:
         print(f"PPC {r['variable']:>18s} b{r['bin']} n={r['n']:5d} u_med {r['obs_u_med']:.1f}/{r['pred_u_med']:.1f}"
               f"  p90 {r['obs_u_p90']:.1f}/{r['pred_u_p90']:.1f}  f(u>60) {r['obs_frac_u_gt_60']:.3f}/{r['pred_frac_u_gt_60']:.3f}"
               f"  u/s med {r['obs_s_med']:.2f}/{r['pred_s_med']:.2f}")
-    # overall quantile table
+    # overall quantile table (equal weight per system)
     allq = np.linspace(0.05, 0.95, 19)
+    mk = keep
     np.savez(OUT / "ppc_overall_quantiles.npz", q=allq, obs_u=np.quantile(u, allq),
-             pred_u=np.quantile(u_rep[keep], allq), obs_s=np.quantile(u / sig, allq),
-             pred_s=np.quantile((u_rep / sig[:, None])[keep], allq))
+             pred_u=np.array([wq(u_rep[mk], wt_rep[mk], x) for x in allq]), obs_s=np.quantile(u / sig, allq),
+             pred_s=np.array([wq(s_rep[mk], wt_rep[mk], x) for x in allq]))
 
 # ---------------------------------------------------------------- figure
 import matplotlib; matplotlib.use("Agg")

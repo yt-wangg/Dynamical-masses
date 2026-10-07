@@ -1,13 +1,13 @@
 # Fdb version 4
-["bibtex T9_methods"] 1791051527 "T9_methods.aux" "T9_methods.bbl" "T9_methods" 1791051530 0
+["bibtex T9_methods"] 1791293724 "T9_methods.aux" "T9_methods.bbl" "T9_methods" 1791293726 0
   "./T9_methods.bib" 1791051474 5157 a57fe22623541edc9090cbf0e1084bca ""
   "/usr/local/texlive/2023/texmf-dist/bibtex/bst/natbib/plainnat.bst" 1233624470 26816 ffe5423d2019860bad9f54bc402fac15 ""
-  "T9_methods.aux" 1791051529 10267 190e2be84a6385d2bca3a9afbcaf3331 "pdflatex"
+  "T9_methods.aux" 1791293725 10272 c29c0a5424700da074c3fff1147aeb94 "pdflatex"
   (generated)
   "T9_methods.bbl"
   "T9_methods.blg"
   (rewritten before read)
-["pdflatex"] 1791051528 "T9_methods.tex" "T9_methods.pdf" "T9_methods" 1791051530 0
+["pdflatex"] 1791293724 "T9_methods.tex" "T9_methods.pdf" "T9_methods" 1791293726 0
   "/usr/local/texlive/2023/texmf-dist/fonts/enc/dvips/lm/lm-ec.enc" 1254269338 2375 baa924870cfb487815765f9094cf3728 ""
   "/usr/local/texlive/2023/texmf-dist/fonts/enc/dvips/lm/lm-mathex.enc" 1202520719 3486 c7eadf5dcc57b3b2d11736679f6636ba ""
   "/usr/local/texlive/2023/texmf-dist/fonts/enc/dvips/lm/lm-mathit.enc" 1202520719 2405 5dcf2c1b967ee25cc46c58cd52244aed ""
@@ -232,11 +232,11 @@
   "/usr/local/texlive/2023/texmf-var/fonts/map/pdftex/updmap/pdftex.map" 1696180095 4623355 b8cad38412faebe1ce5b780a45db67bd ""
   "/usr/local/texlive/2023/texmf-var/web2c/pdftex/pdflatex.fmt" 1696179987 7883454 9caf6898a483cbef155224d63565bc5f ""
   "/usr/local/texlive/2023/texmf.cnf" 1678822455 577 1b2b1af17af2508fb20dd85783af4050 ""
-  "T9_methods.aux" 1791051529 10267 190e2be84a6385d2bca3a9afbcaf3331 "pdflatex"
-  "T9_methods.bbl" 1791051528 2360 3068ea02e55aa38eae1efdb07c7f6e58 "bibtex T9_methods"
-  "T9_methods.out" 1791051529 5204 fb91de9ec7a6113f261d297fe07bebed "pdflatex"
+  "T9_methods.aux" 1791293725 10272 c29c0a5424700da074c3fff1147aeb94 "pdflatex"
+  "T9_methods.bbl" 1791293724 2360 3068ea02e55aa38eae1efdb07c7f6e58 "bibtex T9_methods"
+  "T9_methods.out" 1791293725 5204 fb91de9ec7a6113f261d297fe07bebed "pdflatex"
   "T9_methods.tex" 1791051487 1386 c755c6c5160309cd2e06fa9ba1055df9 ""
-  "sections/methods_sci.tex" 1791051474 32362 8b2224c4a5368ffca78088262afdaeb3 ""
+  "sections/methods_sci.tex" 1791293717 34069 4a7a77fd4c684dca1bb879268dbfba49 ""
   (generated)
   "T9_methods.aux"
   "T9_methods.log"

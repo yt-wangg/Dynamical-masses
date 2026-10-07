@@ -371,7 +371,7 @@ The good component has the density of the functional form of \citet{Hwang2024Dyn
  \indicator(0<\widetilde u\le80),
  \label{eq:good}
 \end{equation}
-with $B=2.544\times10^{-3}$, $u_c=35.67$ and $C=3.100$ in the units of $\widetilde u$, and $N$ chosen so that $p$ integrates to one on $(0,80]$. The outlier component is a Gaussian of mean $40$ and standard deviation $13\,\kmsau$, truncated and normalized on $[0,80]\,\kmsau$ and defined directly in the latent speed $v$,
+with $B=2.2897\times10^{-3}$, $u_c=36.2925$ and $C=3.5855$ in the units of $\widetilde u$, and $N$ chosen so that $p$ integrates to one on $(0,80]$. These constants are a least-squares fit of \cref{eq:good} to the distribution of $\widetilde u$ from a Monte Carlo of Keplerian orbits with thermal eccentricity, uniform mean anomaly and isotropic orientation, in which each simulated pair is weighted so that its joint distribution of projected separation and distance matches the sample. Because the catalogue selection acts on the observed $(s,d)$, and $\widetilde u$ does not depend on the semi-major axis or the total mass, this weighting reproduces the angular-resolution limit without a separate $\theta$ cut. The outlier component is a Gaussian of mean $40$ and standard deviation $13\,\kmsau$, truncated and normalized on $[0,80]\,\kmsau$ and defined directly in the latent speed $v$,
 \begin{equation}
  q(v)=\frac{\phi[(v-40)/13]}
  {13\{\Phi[(80-40)/13]-\Phi(-40/13)\}}
@@ -558,11 +558,27 @@ posteriors $\overline P_{jq}$ are computed from the selected sample and carry no
 selection correction.  The pass probability $\mathcal A_j$ is evaluated with
 the same $p(\widetilde u)$ and outlier component as the likelihood, so any
 mismatch between these fixed shapes and the true population affects both
-$\mathcal L_j$ and $\mathcal A_j$.  The constants in \cref{eq:good} are fixed
-project choices whose derivation is not documented; they are not the constants
-reported by \citet{Hwang2024DynamicalMasses}, who give $A=4.95\times10^{-3}$,
-$B=2.24\times10^{-3}$, $u_0=36.09$ and $C=3.85$ for their fitted distribution.
-The outlier constants in \cref{eq:out} are likewise project choices.
+$\mathcal L_j$ and $\mathcal A_j$.  The constants in \cref{eq:good} come from the weighted simulation
+described above, which assumes a thermal eccentricity distribution at every
+separation and fits a histogram without parameter uncertainties.  They are
+close to those reported by \citet{Hwang2024DynamicalMasses}
+($A=4.95\times10^{-3}$, $B=2.24\times10^{-3}$, $u_0=36.09$, $C=3.85$); the
+mass relation obtained with the latter differs by less than $0.3\%$.
+The earlier project shape ($B=2.544\times10^{-3}$, $u_c=35.67$, $C=3.100$),
+fitted to a simulation with a hard $\theta>1.5''$ cut and a Raghavan-type
+semi-major-axis distribution that places many simulated pairs at the
+resolution limit, gives masses higher by $+2\%$ to $+8\%$ over
+$M_G=5$--$10$ at $[\mathrm{M/H}]=0$.  Re-fitting the shape to the data under the
+selection (a point estimate from a subsample) gives up to $+14\%$, and the
+shape fitted to the untruncated distribution gives $-2\%$ to $-5\%$.  We
+therefore regard the shape as a systematic uncertainty of roughly
+$-5\%$ to $+8\%$ in mass over $M_G=5$--$10$, with a much smaller effect on the
+dependence on $[\mathrm{M/H}]$.  Checks with this fixed shape show that the
+mass scale of subsamples is stable against projected separation, but it varies
+with $[\mathrm{M/H}]$ and with RUWE, and the predicted tail of the observed
+$u$ distribution at large separation is lighter than in the data, which the
+fixed outlier fraction does not follow.
+The outlier constants in \cref{eq:out} are project choices.
 
 
 \section{Constructive monotone reparameterization}
