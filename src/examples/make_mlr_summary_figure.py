@@ -56,7 +56,7 @@ Z_SLICES = (-0.6, -0.3, 0.0, 0.3)
 # viridis samples (perceptually uniform, ordered): metal-poor purple -> metal-rich green
 Z_COLORS = {-0.6: "#440154", -0.3: "#31678E", 0.0: "#22A884", 0.3: "#9BD93C"}
 N_DRAW = 512
-XLIM = (3.0, 13.5)
+XLIM = (3.5, 13.5)
 
 # Okabe-Ito categorical palette (validated: adjacent CVD dE >= 7.6, used with
 # distinct line styles / marker shapes as secondary encoding).
