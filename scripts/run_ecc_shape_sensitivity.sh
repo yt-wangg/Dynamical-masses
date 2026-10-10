@@ -57,6 +57,13 @@ command -v conda >/dev/null 2>&1 || { echo "conda is not on PATH; load the site 
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
+# Share the GPU machine: expose one GPU only (GPU=<index>, default 0; an existing CUDA_VISIBLE_DEVICES wins),
+# disable JAX's default preallocation of 75% of every visible GPU, and cap this process at MEM_FRACTION of
+# that GPU.  CASE=all runs its cases one after another in this single process.
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-${GPU:-0}}"
+export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+export XLA_PYTHON_CLIENT_MEM_FRACTION="${MEM_FRACTION:-0.45}"
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} preallocate=${XLA_PYTHON_CLIENT_PREALLOCATE} mem_fraction=${XLA_PYTHON_CLIENT_MEM_FRACTION}"
 python -c 'import jax; print("JAX devices:", jax.devices())'
 if [[ "${REQUIRE_GPU}" == "1" ]]; then
     python -c 'import jax; assert any(d.platform == "gpu" for d in jax.devices()), "No JAX GPU device is visible"'
