@@ -67,22 +67,26 @@ DEFAULT_COLOR_ANCHOR = {
 }
 DEFAULT_SOLAR_MG = float(DEFAULT_COLOR_ANCHOR["absg"])
 JCAPS_BIAS_ANCHOR_MG = DEFAULT_SOLAR_MG
-# Default good-component shape: fit to a thermal-e orbit simulation reweighted to the observed
-# (s_proj, d) distribution of the sample (Validation/V20. pu shape with s-d weighting.ipynb,
-# theta_min=1.5 arcsec; the angular-resolution cut is redundant once (s, d) is matched).
-# The previous default, fitted in V1 with a hard theta>1.5 arcsec cut on a Raghavan a-distribution, is
-# kept in LEGACY_GOOD_SHAPE_V1; reproduce it with set_good_shape_constants(**LEGACY_GOOD_SHAPE_V1).
-RICE_GOOD_A = 4.9901e-3
-RICE_GOOD_B = 2.2897e-3
-RICE_GOOD_UC = 36.2925
-RICE_GOOD_C = 3.5855
+# Default good-component shape: fit to an orbit simulation with p(e) ~ e^alpha, alpha = 1.233, reweighted
+# to the observed (s_proj, d) distribution of the sample (src/examples/fit_shape_eccentricity_grid.py, same
+# pipeline as Validation/V20).  alpha = 1.233 is the Hwang+2022 alpha(s_proj) relation evaluated for every
+# system of the sample, pooled and refitted as a single power law; the adopted systematic range is
+# alpha in [1.0, 1.5] (scripts/run_ecc_shape_sensitivity.sh).
+# Earlier defaults: LEGACY_GOOD_SHAPE_V20 (thermal e, same (s_proj, d) weighting) and LEGACY_GOOD_SHAPE_V1
+# (thermal e, hard theta>1.5 arcsec cut on a Raghavan a-distribution); reproduce either with
+# set_good_shape_constants(**LEGACY_GOOD_SHAPE_...).
+RICE_GOOD_A = 5.23153e-3
+RICE_GOOD_B = 2.5050e-3
+RICE_GOOD_UC = 37.2461
+RICE_GOOD_C = 2.4500
+LEGACY_GOOD_SHAPE_V20 = {"A": 4.9901e-3, "B": 2.2897e-3, "uc": 36.2925, "C": 3.5855}
 LEGACY_GOOD_SHAPE_V1 = {"A": 5.434e-3, "B": 2.544e-3, "uc": 35.67, "C": 3.100}
 RICE_GOOD_SUPPORT = 80.0
 RICE_OUTLIER_MU = 40.0
 RICE_OUTLIER_SIGMA = 13.0
 # Integral of the raw good basis over its support.  The T8.1 revision divides
 # the good basis by this value so each mixture component integrates to one.
-RICE_GOOD_BASIS_RAW_INTEGRAL = 0.9980406840
+RICE_GOOD_BASIS_RAW_INTEGRAL = 0.9959371561
 # The T8.1 normalization makes f a branch probability of the DEFINED mixture;
 # calling it a physical contamination fraction additionally requires the
 # contamination and selection model to match reality.

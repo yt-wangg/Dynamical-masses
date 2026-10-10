@@ -29,13 +29,14 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}/results/selcut_shape_sensitivity_202
 RUNNER="${RUNNER:-${PROJECT_ROOT}/src/examples/run_hierarchical_metallicity_test.py}"
 POSTERIOR="${POSTERIOR:-${BASELINE_DIR}/latent_metallicity_weights_t8.npz}"
 
-# name  B  uc  C.  "default" runs the library default shape (no override flags): B=2.2897e-3 uc=36.2925
-# C=3.5855, the (s_proj,d)-weighted fit of Validation/V20.  The earlier baseline results/t8_selcut_20261001
-# used the legacy V1 shape B=2.544e-3 uc=35.67 C=3.100 (not rerun; compare against it).
+# name  B  uc  C.  "default" is the V20 thermal-e shape (LEGACY_GOOD_SHAPE_V20; it was the library default when
+# these runs were made, 2026-10-05).  The library default is now the alpha=1.233 shape, so it is passed
+# explicitly here to keep this case reproducible.  The earlier baseline results/t8_selcut_20261001 used the
+# legacy V1 shape B=2.544e-3 uc=35.67 C=3.100 (not rerun; compare against it).
 case_names=(default hwang refit_trunc refit_untrunc)
-case_B=(default 2.24e-3 2.9e-3 1.0e-4)      # hwang: Hwang+2024; refit_trunc: handoff 3.2 Nelder-Mead point
-case_uc=(default 36.09 36.9 26.4)           # under the cut; refit_untrunc: untruncated refit (B->0 floored at 1e-4)
-case_C=(default 3.85 2.8 6.7)
+case_B=(2.2897e-3 2.24e-3 2.9e-3 1.0e-4)    # hwang: Hwang+2024; refit_trunc: handoff 3.2 Nelder-Mead point
+case_uc=(36.2925 36.09 36.9 26.4)           # under the cut; refit_untrunc: untruncated refit (B->0 floored at 1e-4)
+case_C=(3.5855 3.85 2.8 6.7)
 
 case_index() {
     local requested="$1" index
