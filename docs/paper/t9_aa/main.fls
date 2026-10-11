@@ -833,6 +833,11 @@ INPUT ./figs/mlr_feh_bins.pdf
 INPUT figs/mlr_feh_bins.pdf
 INPUT ./figs/mlr_feh_bins.pdf
 INPUT ./figs/mlr_feh_bins.pdf
+INPUT ./figs/mlr_surface.pdf
+INPUT ./figs/mlr_surface.pdf
+INPUT figs/mlr_surface.pdf
+INPUT ./figs/mlr_surface.pdf
+INPUT ./figs/mlr_surface.pdf
 INPUT ./figs/mlr_metallicity_slope.pdf
 INPUT ./figs/mlr_metallicity_slope.pdf
 INPUT figs/mlr_metallicity_slope.pdf

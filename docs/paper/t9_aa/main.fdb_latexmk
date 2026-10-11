@@ -1,13 +1,13 @@
 # Fdb version 4
-["bibtex main"] 1791727133 "main.aux" "main.bbl" "main" 1791727135 0
+["bibtex main"] 1791728668 "main.aux" "main.bbl" "main" 1791728669 0
   "./aa.bst" 1791377647 32103 296074362bd3e822c5209e1570c1d28f ""
-  "./refs.bib" 1791725474 13785 2e1383b8b3a254ac066a337d4abae5a1 ""
-  "main.aux" 1791727134 19917 4c2cc2f3d1d99f7cdfd2a14d93af4235 "pdflatex"
+  "./refs.bib" 1791727147 13785 2e1383b8b3a254ac066a337d4abae5a1 ""
+  "main.aux" 1791728669 20681 cc977cf8f54e02c5bed6a7e94010dc13 "pdflatex"
   (generated)
   "main.bbl"
   "main.blg"
   (rewritten before read)
-["pdflatex"] 1791727133 "main.tex" "main.pdf" "main" 1791727135 0
+["pdflatex"] 1791728668 "main.tex" "main.pdf" "main" 1791728669 0
   "/usr/local/texlive/2023/texmf-dist/fonts/enc/dvips/cm-super/cm-super-t1.enc" 1136849721 2971 def0b6c1f0b107b3b936def894055589 ""
   "/usr/local/texlive/2023/texmf-dist/fonts/enc/dvips/cm-super/cm-super-ts1.enc" 1136849721 2900 1537cc8184ad1792082cd229ecc269f4 ""
   "/usr/local/texlive/2023/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
@@ -245,14 +245,15 @@
   "/usr/local/texlive/2023/texmf-var/web2c/pdftex/pdflatex.fmt" 1696179987 7883454 9caf6898a483cbef155224d63565bc5f ""
   "/usr/local/texlive/2023/texmf.cnf" 1678822455 577 1b2b1af17af2508fb20dd85783af4050 ""
   "aa.cls" 1791377652 66101 9c25aecaec48c3ca16ec93cdac023e20 ""
-  "figs/mlr_feh_bins.pdf" 1791723988 137331 270900ebaed12ec8146fabb836824a02 ""
-  "figs/mlr_metallicity_slope.pdf" 1791726856 24674 211e0f91f4e9663b04b443309065ac18 ""
-  "figs/mlr_summary.pdf" 1791726856 82646 1970d5e0b281ebf813e024b0b368fe18 ""
+  "figs/mlr_feh_bins.pdf" 1791728652 137702 7b0944b7c4ffb1106e0b6f6c4b7a2513 ""
+  "figs/mlr_metallicity_slope.pdf" 1791728619 24657 928fbabda66404bf191ee9a2c7a38d06 ""
+  "figs/mlr_summary.pdf" 1791728619 83112 d954ee8a8e735f0a0ce8e850c0da6ef4 ""
+  "figs/mlr_surface.pdf" 1791728555 110832 ad441bfbd52ac99925f4890c29b70292 ""
   "lineno.sty" 1791377660 151723 f406be88dbdad6c97fb774bd975d0393 ""
   "linenoaa.sty" 1791377664 4221 64fc978f7ff26cff65f5a8f1adc2a33b ""
-  "main.aux" 1791727134 19917 4c2cc2f3d1d99f7cdfd2a14d93af4235 "pdflatex"
-  "main.bbl" 1791727133 5793 ccbf7ece20cbe3d9ac2f93f674aabe97 "bibtex main"
-  "main.tex" 1791727130 45342 78f6fb7cb6af9f6546ad54c5ceecb313 ""
+  "main.aux" 1791728669 20681 cc977cf8f54e02c5bed6a7e94010dc13 "pdflatex"
+  "main.bbl" 1791728668 5793 ccbf7ece20cbe3d9ac2f93f674aabe97 "bibtex main"
+  "main.tex" 1791728666 46029 562e327d7894ec2eb4f54f550332dea4 ""
   (generated)
   "main.aux"
   "main.log"
