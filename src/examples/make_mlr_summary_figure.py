@@ -7,7 +7,7 @@ ridge) and the dynamical / independent mass measurements Mann+2019 (visual
 orbits), Xiong+2023 (detached eclipsing-binary components), Chevalier+2023
 (Gaia DR3 astrometric orbits + SB2) and Serenelli+2017 (asteroseismic dwarfs).
 Panel (b): this work at [M/H]=0 and the literature relative to PARSEC [M/H]=0,
-with the p(u~) shape systematic as a band: the eccentricity power law p(e) ~ e^alpha is varied over
+with the p(u~) shape systematic as a grey band (no statistical band in this panel): the eccentricity power law p(e) ~ e^alpha is varied over
 alpha in [1.0, 1.5] around the adopted alpha = 1.233 (scripts/run_ecc_shape_sensitivity.sh).
 A separate figure shows d log10 M / d[M/H] at fixed M_G (this work vs PARSEC).
 
@@ -235,8 +235,8 @@ def main():
     a.text(0.97, 0.95, "(a)", transform=a.transAxes, ha="right", va="top", fontweight="bold")
 
     b.axhline(0, color="0.5", lw=1.0, ls="-", zorder=1.5)
-    b.fill_between(MG, sys_lo, sys_hi, color="0.75", lw=0, zorder=1,
-                   label=r"$p(\tilde u)$ systematic ($\alpha_e=1.0$–$1.5$), $[\mathrm{M/H}]=0$")
+    # p(u~) systematic: envelope of the alpha_e = 1.0 and 1.5 runs around the adopted fit (no statistical band)
+    sys_band = b.fill_between(MG, sys_lo, sys_hi, color="0.65", lw=0, zorder=2)
     sp = dict(ls="none", mec="black", mew=0.5, zorder=4)
     b.plot(mg_pts, rel_to_parsec(mg_pts, pts.mass_allocated_msun), "o", color="0.15",
            ms=3.6, **{**sp, "zorder": 4.2})
@@ -246,12 +246,12 @@ def main():
            ls="-.", zorder=6)
     b.plot(xi.MG, rel_to_parsec(xi.MG, xi.mass), "^", color=C_XIONG, ms=4.6, **{**sp, "zorder": 4.4})
     for z in (Z0,):
-        _, _, (rlo, rmed, rhi) = slices[z]
-        col = Z_COLORS[z]
-        b.fill_between(MG, rlo, rhi, color=col, alpha=.35, lw=0, zorder=2)
-        b.plot(MG, rmed, color=col, lw=1.25, zorder=2.5)
+        _, _, (_, rmed, _) = slices[z]
+        (med_line,) = b.plot(MG, rmed, color=Z_COLORS[z], lw=1.25, zorder=2.5)
     b.set(xlabel=r"$M_{\mathrm{G}}$ [mag]", ylabel="Relative to PARSEC mass\n[M/H]=0 (%)", ylim=(-38, 48))
-    b.legend(frameon=False, loc="upper left", borderaxespad=0.3, fontsize=8.5)
+    # legend key: green median line drawn on the grey systematic patch
+    b.legend([(sys_band, med_line)], [r"$p(\tilde u)$ shape systematic, $[\mathrm{M/H}]=0$"],
+             frameon=False, loc="upper left", borderaxespad=0.3, fontsize=8.5)
     b.yaxis.label.set_size(9.5)
     b.text(0.97, 0.95, "(b)", transform=b.transAxes, ha="right", va="top", fontweight="bold")
     a.set_xlim(*XLIM)
