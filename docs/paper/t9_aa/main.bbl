@@ -1,4 +1,4 @@
-\begin{thebibliography}{35}
+\begin{thebibliography}{36}
 \expandafter\ifx\csname natexlab\endcsname\relax\def\natexlab#1{#1}\fi
 
 \bibitem[{Banik {et~al.}(2024)Banik, Pittordis, Sutherland,
@@ -98,6 +98,10 @@ Hoffman, M.~D. \& Gelman, A. 2014, Journal of Machine Learning Research, 15,
   Speagle}]{Hwang2024DynamicalMasses}
 Hwang, H.-C., Ting, Y.-S., Cheng, S., \& Speagle, J.~S. 2024, Monthly Notices
   of the Royal Astronomical Society, 528, 4272
+
+\bibitem[{Hwang {et~al.}(2022)Hwang, Ting, \& Zakamska}]{Hwang2022Eccentricity}
+Hwang, H.-C., Ting, Y.-S., \& Zakamska, N.~L. 2022, Monthly Notices of the
+  Royal Astronomical Society, 512, 3383
 
 \bibitem[{Kjeldsen \& Bedding(1995)}]{Kjeldsen1995}
 Kjeldsen, H. \& Bedding, T.~R. 1995, Astronomy \& Astrophysics, 293, 87

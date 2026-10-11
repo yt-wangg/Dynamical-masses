@@ -201,7 +201,7 @@ The good component uses the functional form of \citet{Hwang2024DynamicalMasses},
  p(\widetilde u)=\frac{1}{N}\,\widetilde u\exp\!\left[-B\widetilde u^2-\exp\!\left(\frac{\widetilde u-u_c}{C}\right)\right]\\\times\indicator(0<\widetilde u\le80),
  \label{eq:good}
 \end{multline}
-with $B=2.2897\times10^{-3}$, $u_c=36.2925$ and $C=3.5855$, and $N$ normalising $p$ on $(0,80]$. The constants are fitted to a Monte Carlo of Keplerian orbits with thermal eccentricities, uniform mean anomalies and isotropic orientations, in which each simulated pair is weighted so that its joint distribution of projected separation and distance matches the sample (Appendix~\ref{app:pu}). The shape is held fixed. Its upper edge is set by energy conservation, $\widetilde u<\sqrt{2G\msun/\mathrm{AU}}=42.12\,\kmsau$ for any eccentricity distribution. The outlier component is a Gaussian of mean $40$ and standard deviation $13\,\kmsau$ in the latent speed, truncated and normalised on $[0,80]\,\kmsau$,
+with $B=2.5050\times10^{-3}$, $u_c=37.2461$ and $C=2.4500$, and $N$ normalising $p$ on $(0,80]$. The constants are fitted to a Monte Carlo of Keplerian orbits with uniform mean anomalies, isotropic orientations and eccentricities drawn from $p(e)\propto e^{\alpha_e}$, in which each simulated pair is weighted so that its joint distribution of projected separation and distance matches the sample (Appendix~\ref{app:pu}). We adopt $\alpha_e=1.23$, the separation-dependent power-law index of \citet{Hwang2022Eccentricity} evaluated at the projected separations of our pairs. That index is measured from the angle between the separation and relative-velocity vectors of Gaia wide binaries and does not involve stellar masses. The shape is held fixed, and the effect of $\alpha_e$ on the MLR is quantified in Sect.~\ref{sec:sys_pu}. Its upper edge is set by energy conservation, $\widetilde u<\sqrt{2G\msun/\mathrm{AU}}=42.12\,\kmsau$ for any eccentricity distribution. The outlier component is a Gaussian of mean $40$ and standard deviation $13\,\kmsau$ in the latent speed, truncated and normalised on $[0,80]\,\kmsau$,
 \begin{multline}
  q(v)=\frac{\phi[(v-40)/13]}{13\{\Phi[(80-40)/13]-\Phi(-40/13)\}}\\\times\indicator(0\le v\le80),
  \label{eq:out}
@@ -249,13 +249,13 @@ The free parameters of Stage~2 are the $35$ unconstrained coordinates of the mon
 \subsection{Mass--luminosity relation at solar metallicity}
 % Posterior MLR vs PARSEC at $[\mathrm{M/H}]=0$ (offset as a function of $M_G$), vs \citet{Mann2019} in $M_{K_s}$;
 % credible bands. Figure: MLR and ratio to PARSEC.
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
-\includegraphics[width=\columnwidth]{figs/mlr_summary.pdf}
-\caption{Dynamical MLR from this work. \emph{Panel (a):} mass as a function of $M_G$ at $[\mathrm{M/H}]=-0.6,-0.3,0,+0.3$ (solid lines, shaded bands: posterior credible intervals), compared with PARSEC at the same metallicities (dashed lines), \citet{Hwang2024DynamicalMasses} (dash-dotted), and literature masses: eclipsing binaries (Xiong et al. 2023), visual orbits \citep{Mann2019}, Gaia orbits plus SB2 \citep{Chevalier2023}, and asteroseismology \citep{Serenelli2017}. \emph{Panel (b):} mass relative to PARSEC at $[\mathrm{M/H}]=0$. The grey band shows the systematic uncertainty from the shape of $p(\widetilde u)$ at $[\mathrm{M/H}]=0$.}
+\includegraphics[width=0.7\textwidth]{figs/mlr_summary.pdf}
+\caption{Dynamical MLR from this work. \emph{Panel (a):} mass as a function of $M_G$ at $[\mathrm{M/H}]=-0.6,-0.3,0,+0.3$ (solid lines, shaded bands: posterior credible intervals), compared with PARSEC at the same metallicities (dashed lines), \citet{Hwang2024DynamicalMasses} (dash-dotted), and literature masses: eclipsing binaries (Xiong et al. 2023), visual orbits \citep{Mann2019}, Gaia orbits plus SB2 \citep{Chevalier2023}, and asteroseismology \citep{Serenelli2017}. \emph{Panel (b):} mass relative to PARSEC at $[\mathrm{M/H}]=0$. The solid line is the posterior median of this work, and the grey band is the systematic uncertainty from the shape of $p(\widetilde u)$, spanned by the MLRs obtained with eccentricity indices $\alpha_e=1.0$ and $1.5$ around the adopted $\alpha_e=1.23$ (Sect.~\ref{sec:sys_pu}).}
 % TODO: add the Xiong et al. (2023) reference to refs.bib and cite it.
 \label{fig:mlr_summary}
-\end{figure}
+\end{figure*}
 
 \subsection{Metallicity dependence}
 % Mass at fixed $M_G$ as a function of $[\mathrm{M/H}]$; comparison with PARSEC's metallicity trend.
@@ -281,8 +281,10 @@ The free parameters of Stage~2 are the $35$ unconstrained coordinates of the mon
 
 %==============================================================================
 \section{Systematic checks}\label{sec:systematics}
-\subsection{Shape of $p(\widetilde u)$}
-% Default weighted shape vs Hwang+24 constants, earlier shape, refits; resulting mass range and dependence on $[\mathrm{M/H}]$.
+\subsection{Shape of $p(\widetilde u)$}\label{sec:sys_pu}
+The shape of $p(\widetilde u)$ is fixed by the orbital elements of the population, and of these only the eccentricity distribution is not determined by the sample itself: the phases and orientations are random, and the dependence on the separation and distance distributions is removed by the weighting of Appendix~\ref{app:pu}. A more eccentric population spends a larger fraction of each orbit near apocentre, at large separation and low speed, so $p(\widetilde u)$ moves to lower values and the masses inferred at fixed $u$ increase. We repeat the full inference, including the per-pair likelihood tables, with the shapes for $\alpha_e=1.0$ and $1.5$ (Table~\ref{tab:pu}). The lower value is the thermal distribution. It allows for the bias of the measured index towards higher values that \citet{Hwang2022Eccentricity} attribute to their cut on the significance of the proper-motion difference, which at separations above $10^{3.5}$\,au they estimate at about $0.1$, and for the extrapolation from their sample within 200\,pc to ours within 1\,kpc. The upper value allows for unresolved companions, which randomise the measured velocity directions and bias the index towards the thermal value.
+
+At $[\mathrm{M/H}]=0$, $\alpha_e=1.0$ lowers the masses by $0.4$--$1.0\%$ and $\alpha_e=1.5$ raises them by $0.5$--$1.6\%$ over $5\le M_G\le13$, with the largest change at $M_G\approx8$ (Fig.~\ref{fig:mlr_summary}b). At $M_G=4$ both changes are below $0.3\%$. The metallicity slices $[\mathrm{M/H}]=-0.6$ and $+0.3$ change by the same amounts to within $0.6\%$, so the metallicity dependence of the MLR is not affected. At every $M_G$ the change is smaller than the half-width of the 68\% credible interval, which is $1$--$2\%$ at $5\le M_G\le10$ and rises to $5\%$ at $M_G=13$. The outlier fraction and the convergence of the sampler are the same for the three shapes.
 \subsection{Other modelling choices}
 % Outlier component, Teff threshold, metallicity anchor, priors on the correction, RUWE and separation subsamples.
 
@@ -349,7 +351,29 @@ Stage & Quantity & Prior & Role \\
 \section{Mock-data validation}\label{app:mock}
 % Recovery of an input MLR from simulated wide binaries with and without the selection cut; coverage of credible intervals.
 \section{Derivation of $p(\widetilde u)$}\label{app:pu}
-% Simulation of orbital phase, eccentricity and semi-major axis; weighting by $(s_{\rm proj},d)$; fitted constants.
+The statistic $\widetilde u$ depends only on the eccentricity, the orbital phase and the orientation of a pair. The semi-major axis and the distance enter only through the selection of the sample, which acts on the observed projected separation $s_{\rm proj}$ and the distance $d$. The distribution needed by the likelihood is therefore
+\begin{equation}
+ p(\widetilde u\mid\text{sample})=\int p(\widetilde u\mid s_{\rm proj},d)\,p_{\rm sample}(s_{\rm proj},d)\dd s_{\rm proj}\dd d .
+\end{equation}
+We simulate $4\times10^6$ Keplerian orbits with semi-major axes log-uniform between $10$ and $10^5$\,au, distances log-uniform between $5$ and $1000$\,pc, mean anomalies uniform in $[0,2\pi)$, isotropic orientations, and eccentricities drawn from $p(e)=(1+\alpha_e)e^{\alpha_e}$. Kepler's equation is solved for the true anomaly, and the projected separation and projected relative velocity give $\widetilde u$ for each orbit. Each simulated pair inside the range of the sample in $s_{\rm proj}$ and $d$ receives the weight $w=H_{\rm sample}/H_{\rm sim}$, the ratio of the normalised two-dimensional histograms of the sample and of the simulation in $24$ bins of $\log s_{\rm proj}$ and $18$ bins of $\log d$. Because the angular separation is $\theta=s_{\rm proj}/d$, the weights also reproduce the angular-resolution limit of the catalogue, and an additional cut $\theta>1.5''$ or $3''$ leaves the fitted constants unchanged. Eq.~(\ref{eq:good}) is fitted by least squares to the weighted histogram of $\widetilde u$ in $100$ bins on $[0,40]$. All values of $\alpha_e$ use the same random numbers for the phases, orientations and eccentricity quantiles, so that the differences between the shapes contain no simulation noise.
+
+\citet{Hwang2022Eccentricity} describe the power-law index as a function of $w=\log_{10}(s_{\rm proj}/\mathrm{au})$ by $\alpha(w)=1.25\tanh[(w-1.87)/0.88]+0.12$. Evaluated at the projected separations of our pairs, it ranges from $1.04$ to $1.34$ (5th to 95th percentile), because only $1\%$ of the pairs have $s_{\rm proj}<300$\,au. Drawing one eccentricity for each pair from its $p(e\mid\alpha(w))$ and fitting a single power law to the pooled values by maximum likelihood gives $\alpha_e=1.23\pm0.02$, which we adopt. A simulation with the separation-dependent index applied to each orbit gives a shape with the same median of $\widetilde u$ to within $0.02$. The fitted constants are listed in Table~\ref{tab:pu}.
+
+\begin{table}
+\caption{Constants of Eq.~(\ref{eq:good}) for three eccentricity indices.}
+\label{tab:pu}
+\centering
+\begin{tabular}{ccccc}
+\toprule
+$\alpha_e$ & $B$ & $u_c$ & $C$ & median $\widetilde u$ \\
+\midrule
+1.0 & $2.2943\times10^{-3}$ & 36.2851 & 3.5567 & 16.36 \\
+1.23 & $2.5050\times10^{-3}$ & 37.2461 & 2.4500 & 16.08 \\
+1.5 & $2.6522\times10^{-3}$ & 37.9042 & 1.7151 & 15.82 \\
+\bottomrule
+\end{tabular}
+\tablefoot{The adopted shape is $\alpha_e=1.23$. Medians in $\kmsau$.}
+\end{table}
 \section{Additional figures and tables}\label{app:extra}
 % Corner plots, convergence diagnostics, binned MLR values.
 \end{appendix}
