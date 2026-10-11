@@ -130,13 +130,13 @@ def main():
         b.plot(xm.MG, xm.rel, "^", ms=4.2, color=S.C_XIONG, mec="black", mew=0.5, zorder=4.4)
 
         a.set_yscale("log")
-        a.set(ylim=(0.085, 2.0), xlim=S.XLIM)
+        a.set(ylim=(0.085, 2.0), xlim=S.XLIM[::-1])  # inverted M_G axis
         a.set_yticks([0.1, 0.2, 0.5, 1.0])
         a.set_yticklabels(["0.1", "0.2", "0.5", "1"])
         b.set(ylim=(-38, 38))
-        a.text(0.97, 0.95, rf"${lo:+.2g}\leq[\mathrm{{M/H}}]<{hi:+.2g}$",
-               transform=a.transAxes, ha="right", va="top", fontsize=10)
-        a.legend(frameon=False, loc="lower left", fontsize=7.6, handlelength=1.8,
+        a.text(0.03, 0.95, rf"${lo:+.2g}\leq[\mathrm{{M/H}}]<{hi:+.2g}$",
+               transform=a.transAxes, ha="left", va="top", fontsize=10)
+        a.legend(frameon=False, loc="lower right", fontsize=7.6, handlelength=1.8,
                  borderaxespad=0.2, labelspacing=0.25)
         plt.setp(a.get_xticklabels(), visible=False)
         if k % 2:

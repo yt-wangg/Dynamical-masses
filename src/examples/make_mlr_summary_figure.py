@@ -230,9 +230,9 @@ def main():
     rest = [labels.index(k) for k in (r"PARSEC, same $[\mathrm{M/H}]$", r"Hwang+24", r"Xiong+23 (eclipsing binaries)", r"Mann+19 (visual orbits)", r"Chevalier+23 (Gaia orbits + SB2)", r"Serenelli+17 (asteroseismology)")]
     order = first + rest
     a.legend([handles[i] for i in order], [labels[i] for i in order], frameon=False,
-             loc="lower left", ncol=2, handlelength=2.0, columnspacing=0.8,
+             loc="lower right", ncol=2, handlelength=2.0, columnspacing=0.8,
              borderaxespad=0.3, fontsize=8.3)
-    a.text(0.97, 0.95, "(a)", transform=a.transAxes, ha="right", va="top", fontweight="bold")
+    a.text(0.03, 0.95, "(a)", transform=a.transAxes, ha="left", va="top", fontweight="bold")
 
     b.axhline(0, color="0.5", lw=1.0, ls="-", zorder=1.5)
     # p(u~) systematic: envelope of the alpha_e = 1.0 and 1.5 runs around the adopted fit (no statistical band)
@@ -251,10 +251,10 @@ def main():
     b.set(xlabel=r"$M_{\mathrm{G}}$ [mag]", ylabel="Relative to PARSEC mass\n[M/H]=0 (%)", ylim=(-38, 48))
     # legend key: green median line drawn on the grey systematic patch
     b.legend([(sys_band, med_line)], [r"$p(\tilde u)$ shape systematic, $[\mathrm{M/H}]=0$"],
-             frameon=False, loc="upper left", borderaxespad=0.3, fontsize=8.5)
+             frameon=False, loc="upper right", borderaxespad=0.3, fontsize=8.5)
     b.yaxis.label.set_size(9.5)
-    b.text(0.97, 0.95, "(b)", transform=b.transAxes, ha="right", va="top", fontweight="bold")
-    a.set_xlim(*XLIM)
+    b.text(0.03, 0.95, "(b)", transform=b.transAxes, ha="left", va="top", fontweight="bold")
+    a.set_xlim(XLIM[1], XLIM[0])  # inverted M_G axis
     fig.align_ylabels((a, b))
     fig.subplots_adjust(left=0.13, right=0.97, top=0.985, bottom=0.085)
     for ext in ("pdf", "png"):
@@ -269,8 +269,8 @@ def main():
     c.plot(mg_c, sq[1], color=C_THIS, lw=1.25, label="This work")
     c.plot(mg_c, ps, color="0.3", lw=1.6, ls="--", label="PARSEC")
     c.set(xlabel=r"$M_{\mathrm{G}}$ [mag]",
-          ylabel=r"$\Delta\log_{10}M\,/\,\Delta[\mathrm{M/H}]$", xlim=XLIM, ylim=(-0.02, 0.34))
-    c.legend(frameon=False, loc="upper left")
+          ylabel=r"$\Delta\log_{10}M\,/\,\Delta[\mathrm{M/H}]$", xlim=XLIM[::-1], ylim=(-0.02, 0.34))
+    c.legend(frameon=False, loc="upper right")
     c.text(0.97, 0.06, r"$[\mathrm{M/H}]=-0.6\rightarrow+0.4$, fixed $M_{\mathrm{G}}$",
            transform=c.transAxes, ha="right", va="bottom", fontsize=9.5)
     fig.subplots_adjust(left=0.13, right=0.97, top=0.97, bottom=0.17)
