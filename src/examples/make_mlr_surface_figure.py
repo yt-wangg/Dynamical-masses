@@ -106,7 +106,7 @@ def main():
         ax.set_xlabel(r"$M_{\mathrm{G}}$ [mag]")
         ax.text(0.04, 0.95, f"({'abc'[k]})", transform=ax.transAxes, ha="left", va="top",
                 fontweight="bold", bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1.5))
-    axes[0].set_ylabel(r"$[\mathrm{M/H}]$")
+    axes[0].set_ylabel(r"$Z$")
     fig.subplots_adjust(left=0.095, right=0.985, bottom=0.15, top=0.86)
     for ext in ("pdf", "png"):
         fig.savefig(OUT / f"mlr_surface.{ext}", dpi=250)

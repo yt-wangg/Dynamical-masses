@@ -134,7 +134,7 @@ def main():
         a.set_yticks([0.1, 0.2, 0.5, 1.0])
         a.set_yticklabels(["0.1", "0.2", "0.5", "1"])
         b.set(ylim=(-38, 38))
-        a.text(0.03, 0.95, rf"${lo:+.2g}\leq[\mathrm{{M/H}}]<{hi:+.2g}$",
+        a.text(0.03, 0.95, rf"${lo:+.2g}\leq Z<{hi:+.2g}$",
                transform=a.transAxes, ha="left", va="top", fontsize=10)
         a.legend(frameon=False, loc="lower right", fontsize=7.6, handlelength=1.8,
                  borderaxespad=0.2, labelspacing=0.25)

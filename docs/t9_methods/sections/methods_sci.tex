@@ -579,6 +579,24 @@ mass scale of subsamples is stable against projected separation, but it varies
 with $[\mathrm{M/H}]$ and with RUWE, and the predicted tail of the observed
 $u$ distribution at large separation is lighter than in the data, which the
 fixed outlier fraction does not follow.
+The weights of the simulation use only the observed $(s_{\rm proj},d)$ of the
+systems, not their $u_j$, so the $u/\sigma_u$ threshold enters the model once,
+through $\mathcal A_j$, and not again through the shape.  The single
+shape stands in for the conditional distribution $p(\widetilde u\,|\,s_j,d_j)$ of
+each system.  Assuming the separation-dependent index of
+\citet{Hwang2022Eccentricity} at the observed $s_{{\rm proj},j}$ (5--95\%
+range $1.04$--$1.34$; pooled index $1.234$, as adopted), we compared the
+selection-corrected likelihood with a separate shape for each system and with
+the single shape, on the masses of the fitted relation.  The best-fitting
+mass scale differs by $+0.2\%$ for the whole sample and by $+0.8\%$ to $-0.2\%$
+across quintiles of $s_{\rm proj}$, and $\ln\mathcal A_j$ by less than
+$0.9\%$ for every system, so the approximation is negligible compared with the
+statistical uncertainty and with the eccentricity systematic above.  Building
+the weights from the $14\,876$ systems of the likelihood rather than the full
+catalogue table changes the shape and the masses by less than $0.01\%$.  This
+approximation therefore cannot account for the trends of the data with
+separation noted above; these require a different distribution of
+eccentricities or orbital configurations at small separations, or contamination.
 The outlier constants in \cref{eq:out} are project choices.
 
 

@@ -1,4 +1,4 @@
-\begin{thebibliography}{36}
+\begin{thebibliography}{32}
 \expandafter\ifx\csname natexlab\endcsname\relax\def\natexlab#1{#1}\fi
 
 \bibitem[{Banik {et~al.}(2024)Banik, Pittordis, Sutherland,
@@ -6,19 +6,15 @@
 Banik, I., Pittordis, C., Sutherland, W., {et~al.} 2024, Monthly Notices of the
   Royal Astronomical Society, 527, 4573
 
-\bibitem[{Baraffe {et~al.}(2015)Baraffe, Homeier, Allard, \&
-  Chabrier}]{Baraffe2015}
-Baraffe, I., Homeier, D., Allard, F., \& Chabrier, G. 2015, Astronomy \&
-  Astrophysics, 577, A42
-
 \bibitem[{Benedict {et~al.}(2016)Benedict, Henry, {et~al.}}]{Benedict2016}
 Benedict, G.~F., Henry, T.~J., {et~al.} 2016, The Astronomical Journal, 152,
   141
 
-\bibitem[{Bressan {et~al.}(2012)Bressan, Marigo, Girardi, Salasnich, Dal~Cero,
-  Rubele, \& Nanni}]{Bressan2012PARSEC}
-Bressan, A., Marigo, P., Girardi, L., {et~al.} 2012, Monthly Notices of the
-  Royal Astronomical Society, 427, 127
+\bibitem[{Bradbury {et~al.}(2018)Bradbury, Frostig, Hawkins, Johnson, Leary,
+  Maclaurin, Necula, Paszke, VanderPlas, Wanderman-Milne, \&
+  Zhang}]{Bradbury2018JAX}
+Bradbury, J., Frostig, R., Hawkins, P., {et~al.} 2018, {JAX}: composable
+  transformations of {Python}+{NumPy} programs
 
 \bibitem[{Chabrier(2001)}]{Chabrier2001}
 Chabrier, G. 2001, The Astrophysical Journal, 554, 1274
@@ -27,21 +23,12 @@ Chabrier, G. 2001, The Astrophysical Journal, 554, 1274
 Chabrier, G. 2003, Publications of the Astronomical Society of the Pacific,
   115, 763
 
-\bibitem[{Chabrier \& Baraffe(2000)}]{ChabrierBaraffe2000}
-Chabrier, G. \& Baraffe, I. 2000, Annual Review of Astronomy and Astrophysics,
-  38, 337
-
 \bibitem[{Chae(2023)}]{Chae2023}
 Chae, K.-H. 2023, The Astrophysical Journal, 952, 128
 
 \bibitem[{Chaplin \& Miglio(2013)}]{ChaplinMiglio2013}
 Chaplin, W.~J. \& Miglio, A. 2013, Annual Review of Astronomy and Astrophysics,
   51, 353
-
-\bibitem[{Chen {et~al.}(2014)Chen, Girardi, Bressan, Marigo, Barbieri, \&
-  Kong}]{Chen2014}
-Chen, Y., Girardi, L., Bressan, A., {et~al.} 2014, Monthly Notices of the Royal
-  Astronomical Society, 444, 2525
 
 \bibitem[{Chevalier {et~al.}(2023)Chevalier, Babusiaux, Merle, \&
   Arenou}]{Chevalier2023}
@@ -60,16 +47,13 @@ Delfosse, X., Forveille, T., S{\'e}gransan, D., {et~al.} 2000, Astronomy \&
 \bibitem[{Dressing \& Charbonneau(2015)}]{Dressing2015}
 Dressing, C.~D. \& Charbonneau, D. 2015, The Astrophysical Journal, 807, 45
 
+\bibitem[{Eilers \& Marx(1996)}]{EilersMarx1996PSplines}
+Eilers, P. H.~C. \& Marx, B.~D. 1996, Statistical Science, 11, 89
+
 \bibitem[{El-Badry {et~al.}(2021)El-Badry, Rix, \&
   Heintz}]{ElBadry2021MillionBinaries}
 El-Badry, K., Rix, H.-W., \& Heintz, T.~M. 2021, Monthly Notices of the Royal
   Astronomical Society, 506, 2269
-
-\bibitem[{Feiden \& Chaboyer(2012)}]{FeidenChaboyer2012}
-Feiden, G.~A. \& Chaboyer, B. 2012, The Astrophysical Journal, 757, 42
-
-\bibitem[{Feiden \& Chaboyer(2014)}]{FeidenChaboyer2014}
-Feiden, G.~A. \& Chaboyer, B. 2014, The Astrophysical Journal, 789, 53
 
 \bibitem[{{Gaia Collaboration} {et~al.}(2023){Gaia Collaboration}, Arenou,
   {et~al.}}]{GaiaCollaboration2023NSS}
@@ -109,6 +93,11 @@ Kjeldsen, H. \& Bedding, T.~R. 1995, Astronomy \& Astrophysics, 293, 87
 \bibitem[{Kroupa(2001)}]{Kroupa2001}
 Kroupa, P. 2001, Monthly Notices of the Royal Astronomical Society, 322, 231
 
+\bibitem[{Li {et~al.}(2025)Li, Rix, Ting, M{\"u}ller-Horn, El-Badry, Liu,
+  Seeburger, Green, \& Zhang}]{Li2025BinaryXP}
+Li, J., Rix, H.-W., Ting, Y.-S., {et~al.} 2025, Astronomy \& Astrophysics, 704,
+  A126
+
 \bibitem[{Li {et~al.}(2026)}]{Li2026JCaPS}
 Li, J. {et~al.} 2026, The Astrophysical Journal Letters, 998, L33
 
@@ -121,6 +110,10 @@ Mann, A.~W., Dupuy, T., Kraus, A.~L., Gaidos, E., {et~al.} 2019, The
 Mann, A.~W., Feiden, G.~A., Gaidos, E., Boyajian, T., \& von Braun, K. 2015,
   The Astrophysical Journal, 804, 64
 
+\bibitem[{Phan {et~al.}(2019)Phan, Pradhan, \& Jankowiak}]{Phan2019NumPyro}
+Phan, D., Pradhan, N., \& Jankowiak, M. 2019, arXiv e-prints
+  [\eprint[arXiv]{1912.11554}]
+
 \bibitem[{Pinsonneault {et~al.}(2018)}]{Pinsonneault2018}
 Pinsonneault, M.~H. {et~al.} 2018, The Astrophysical Journal Supplement Series,
   239, 32
@@ -132,15 +125,8 @@ Rice, S.~O. 1945, Bell System Technical Journal, 24, 46
 Serenelli, A. {et~al.} 2017, The Astrophysical Journal Supplement Series, 233,
   23
 
-\bibitem[{Spada {et~al.}(2013)Spada, Demarque, Kim, \& Sills}]{Spada2013}
-Spada, F., Demarque, P., Kim, Y.-C., \& Sills, A. 2013, The Astrophysical
-  Journal, 776, 87
-
 \bibitem[{Torres {et~al.}(2010)Torres, Andersen, \& Gim{\'e}nez}]{Torres2010}
 Torres, G., Andersen, J., \& Gim{\'e}nez, A. 2010, The Astronomy and
   Astrophysics Review, 18, 67
-
-\bibitem[{Torres \& Ribas(2002)}]{TorresRibas2002}
-Torres, G. \& Ribas, I. 2002, The Astrophysical Journal, 567, 1140
 
 \end{thebibliography}

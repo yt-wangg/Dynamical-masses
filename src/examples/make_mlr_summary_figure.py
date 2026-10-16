@@ -127,6 +127,15 @@ def load_xiong_points(gaia):
     return x[np.isfinite(x.MG) & (x.MG >= XLIM[0]) & (x.MG <= XLIM[1])]
 
 
+def mann_feh():
+    """System [Fe/H] from the Mann+19 Table 1 (fixed-width MRT)."""
+    table = ROOT.parent / "Model" / "mann2019" / "Table1.mrt"
+    lines = table.read_text().splitlines()
+    start = max(i for i, l in enumerate(lines) if l.startswith("----")) + 1
+    return pd.DataFrame([{"system_id": l[2:12].strip(), "feh": float(l[80:85])}
+                         for l in lines[start:] if l.strip() and l[80:85].strip()])
+
+
 def xiong_log_l(mass, z):
     x = np.log10(mass)
     return 0.066 + 4.141 * x + 0.314 * x**2 - 0.755 * x**3 + 0.189 * x**4 - 0.245 * z
@@ -170,6 +179,9 @@ def main():
     pts = pd.read_csv(MANN_POINTS)
     pts = pts[(pts.mks_mag >= 4.5) & (pts.mks_mag <= 10.0)]
     mg_pts = np.interp(pts.mks_mag, solar_map.Ksmag.iloc[::-1], solar_map.Gmag.iloc[::-1])
+    pts_b = pts.merge(mann_feh(), on="system_id", how="left")
+    pts_b = pts_b[pts_b.feh.abs() <= 0.15]
+    mg_pts_b = np.interp(pts_b.mks_mag, solar_map.Ksmag.iloc[::-1], solar_map.Gmag.iloc[::-1])
 
     # ---- Hwang+2024 (native M_G ridge) -----------------------------------
     hw = pd.read_csv(L.HWANG_CSV)
@@ -201,57 +213,57 @@ def main():
         2, 1, figsize=(6.0, 6.6), sharex=True,
         gridspec_kw={"height_ratios": [1.9, 1.15], "hspace": 0.0})
 
-    pt = dict(ms=6.0, ls="none", mec="black", mew=0.6, elinewidth=0.8, capsize=0, zorder=4)
-    a.errorbar(mg_pts, pts.mass_allocated_msun, yerr=pts.mass_allocated_error_msun,
-               marker="o", color="0.15", ecolor="0.15", label="Mann+19 (visual orbits)",
-               **{**pt, "ms": 4.2, "zorder": 4.2})
-    a.errorbar(nss.MG, nss.mass, yerr=nss.e_mass, marker="s", color="white", ecolor="0.35",
-               label="Chevalier+23 (Gaia orbits + SB2)", **{**pt, "ms": 5.5})
-    a.errorbar(seis.MG, seis.Mass, yerr=[seis.e_Mass, seis.E_Mass], marker="D", color=C_SEIS,
-               ecolor=C_SEIS, label="Serenelli+17 (asteroseismology)", **{**pt, "ms": 5.0, "zorder": 4.6})
     a.plot(hw.M_G_ridge, hw.mass_nn, color=C_HWANG, lw=2.0, ls="-.", zorder=6,
-           label="Hwang+24")
-    a.errorbar(xi.MG, xi.mass, yerr=xi.e_mass, marker="^", color=C_XIONG, ecolor=C_XIONG,
-               label="Xiong+23 (eclipsing binaries)", **{**pt, "ms": 5.5, "zorder": 4.4})
+           label="Hwang+24 (MS ridge)")
     for z in Z_SLICES:
         (lo, med, hi), pz, _ = slices[z]
         col = Z_COLORS[z]
         a.plot(MG, pz, color=col, lw=1.0, ls="--", zorder=2.2)
         a.fill_between(MG, lo, hi, color=col, alpha=.35, lw=0, zorder=2)
         a.plot(MG, med, color=col, lw=1.25, zorder=2.5,
-               label=rf"This work, $[\mathrm{{M/H}}]={z:+.1f}$")
-    a.plot([], [], color="0.3", lw=1.2, ls="--", label=r"PARSEC, same $[\mathrm{M/H}]$")
+               label=rf"This work, $Z={z:+.1f}$")
+    a.plot([], [], color="0.3", lw=1.2, ls="--", label=r"PARSEC, same $Z$")
+    # literature markers (data are shown in panel b): legend keys only
+    ek = dict(ls="none", mec="black", mew=0.6)
+    a.plot([], [], "o", color="0.15", ms=4.2, label="Mann+19 (visual orbits)", **ek)
+    a.plot([], [], "s", color="white", ms=5.5, label="Chevalier+23 (Gaia orbits + SB2)", **ek)
+    a.plot([], [], "^", color=C_XIONG, ms=5.5, label="Xiong+23 (eclipsing binaries)", **ek)
+    a.plot([], [], "D", color=C_SEIS, ms=5.0, label="Serenelli+17 (asteroseismology)", **ek)
     a.set_yscale("log")
-    a.set(ylabel=r"Mass $[M_{\mathrm{\odot}}]$", ylim=(0.085, 2.0))
+    a.set(ylabel=r"Mass $[M_{\mathrm{\odot}}]$", ylim=(0.068, 1.6))
     a.set_yticks([0.1, 0.2, 0.5, 1.0])
     a.set_yticklabels(["0.1", "0.2", "0.5", "1"])
     handles, labels = a.get_legend_handles_labels()
     first = [i for i, l in enumerate(labels) if l.startswith("This work")]
-    rest = [labels.index(k) for k in (r"PARSEC, same $[\mathrm{M/H}]$", r"Hwang+24", r"Xiong+23 (eclipsing binaries)", r"Mann+19 (visual orbits)", r"Chevalier+23 (Gaia orbits + SB2)", r"Serenelli+17 (asteroseismology)")]
+    rest = [labels.index(k) for k in (r"PARSEC, same $Z$", "Hwang+24 (MS ridge)", "Mann+19 (visual orbits)", "Xiong+23 (eclipsing binaries)", "Chevalier+23 (Gaia orbits + SB2)", "Serenelli+17 (asteroseismology)")]
     order = first + rest
     a.legend([handles[i] for i in order], [labels[i] for i in order], frameon=False,
              loc="lower right", ncol=2, handlelength=2.0, columnspacing=0.8,
              borderaxespad=0.3, fontsize=8.3)
     a.text(0.03, 0.95, "(a)", transform=a.transAxes, ha="left", va="top", fontweight="bold")
 
+    # panel (b): near-solar literature points only (|[M/H]| <= 0.15; Chevalier+23 has no metallicity and is shown unfiltered)
+    xi_b = xi[xi.feh.abs() <= 0.15]
+    seis_b = seis[seis["[M/H]"].abs() <= 0.15]
     b.axhline(0, color="0.5", lw=1.0, ls="-", zorder=1.5)
     # p(u~) systematic: envelope of the alpha_e = 1.0 and 1.5 runs around the adopted fit (no statistical band)
     sys_band = b.fill_between(MG, sys_lo, sys_hi, color="0.65", lw=0, zorder=2)
     sp = dict(ls="none", mec="black", mew=0.5, zorder=4)
-    b.plot(mg_pts, rel_to_parsec(mg_pts, pts.mass_allocated_msun), "o", color="0.15",
+    b.plot(mg_pts_b, rel_to_parsec(mg_pts_b, pts_b.mass_allocated_msun), "o", color="0.15",
            ms=3.6, **{**sp, "zorder": 4.2})
     b.plot(nss.MG, rel_to_parsec(nss.MG, nss.mass), "s", color="white", ms=4.6, **sp)
-    b.plot(seis.MG, rel_to_parsec(seis.MG, seis.Mass), "D", color=C_SEIS, ms=4.2, **{**sp, "zorder": 4.6})
+    b.plot(seis_b.MG, rel_to_parsec(seis_b.MG, seis_b.Mass), "D", color=C_SEIS, ms=4.2, **{**sp, "zorder": 4.6})
     b.plot(hw.M_G_ridge, rel_to_parsec(hw.M_G_ridge, hw.mass_nn), color=C_HWANG, lw=2.0,
            ls="-.", zorder=6)
-    b.plot(xi.MG, rel_to_parsec(xi.MG, xi.mass), "^", color=C_XIONG, ms=4.6, **{**sp, "zorder": 4.4})
+    b.plot(xi_b.MG, rel_to_parsec(xi_b.MG, xi_b.mass), "^", color=C_XIONG, ms=4.6, **{**sp, "zorder": 4.4})
     for z in (Z0,):
         _, _, (_, rmed, _) = slices[z]
         (med_line,) = b.plot(MG, rmed, color=Z_COLORS[z], lw=1.25, zorder=2.5)
-    b.set(xlabel=r"$M_{\mathrm{G}}$ [mag]", ylabel="Relative to PARSEC mass\n[M/H]=0 (%)", ylim=(-38, 48))
+    b.set(xlabel=r"$M_{\mathrm{G}}$ [mag]", ylabel="Relative to PARSEC mass\n$Z=0$ (%)", ylim=(-38, 62))
     # legend key: green median line drawn on the grey systematic patch
-    b.legend([(sys_band, med_line)], [r"$p(\tilde u)$ shape systematic, $[\mathrm{M/H}]=0$"],
-             frameon=False, loc="upper right", borderaxespad=0.3, fontsize=8.5)
+    b.legend([(sys_band, med_line)], [r"$p(\tilde u)$ shape systematic"], frameon=False,
+             loc="upper right", borderaxespad=0.3, fontsize=8.5)
+    b.set_yticks([-20, 0, 20, 40])
     b.yaxis.label.set_size(9.5)
     b.text(0.03, 0.95, "(b)", transform=b.transAxes, ha="left", va="top", fontweight="bold")
     a.set_xlim(XLIM[1], XLIM[0])  # inverted M_G axis
@@ -269,9 +281,9 @@ def main():
     c.plot(mg_c, sq[1], color=C_THIS, lw=1.25, label="This work")
     c.plot(mg_c, ps, color="0.3", lw=1.6, ls="--", label="PARSEC")
     c.set(xlabel=r"$M_{\mathrm{G}}$ [mag]",
-          ylabel=r"$\Delta\log_{10}M\,/\,\Delta[\mathrm{M/H}]$", xlim=XLIM[::-1], ylim=(-0.02, 0.34))
+          ylabel=r"$\Delta\log_{10}M\,/\,\Delta Z$", xlim=XLIM[::-1], ylim=(-0.02, 0.34))
     c.legend(frameon=False, loc="upper right")
-    c.text(0.97, 0.06, r"$[\mathrm{M/H}]=-0.6\rightarrow+0.4$, fixed $M_{\mathrm{G}}$",
+    c.text(0.97, 0.06, r"$Z=-0.6\rightarrow+0.4$, fixed $M_{\mathrm{G}}$",
            transform=c.transAxes, ha="right", va="bottom", fontsize=9.5)
     fig.subplots_adjust(left=0.13, right=0.97, top=0.97, bottom=0.17)
     for ext in ("pdf", "png"):
@@ -298,6 +310,24 @@ def main():
                                       "parsec": float(np.interp(m, mg_c, ps))}
                           for m in (5, 7, 9, 11)},
     }
+    # binned median offsets of the near-solar literature points (relative to PARSEC Z=0 and to this work)
+    lit = {"mann": (mg_pts_b.to_numpy() if hasattr(mg_pts_b, "to_numpy") else np.asarray(mg_pts_b), pts_b.mass_allocated_msun.to_numpy()),
+           "chevalier": (nss.MG.to_numpy(), nss.mass.to_numpy()),
+           "xiong": (xi_b.MG.to_numpy(), xi_b.mass.to_numpy()),
+           "serenelli": (seis_b.MG.to_numpy(), seis_b.Mass.to_numpy())}
+    summary["literature_binned"] = {}
+    for lo_, hi_ in ((3.5, 5.5), (5.5, 8.0), (8.0, 10.5), (10.5, 13.5)):
+        row = {"this_work_vs_parsec_percent": float(np.mean(np.interp(np.linspace(lo_, hi_, 50), MG, rq[2])))}
+        for name, (mg_l, m_l) in lit.items():
+            sel = (mg_l >= lo_) & (mg_l < hi_) & np.isfinite(m_l)
+            if sel.sum() == 0:
+                continue
+            vs_p = 100 * (m_l[sel] / np.interp(mg_l[sel], MG, p0) - 1)
+            vs_t = 100 * (m_l[sel] / np.interp(mg_l[sel], MG, q[2]) - 1)
+            row[name] = {"n": int(sel.sum()), "median_vs_parsec_percent": float(np.median(vs_p)),
+                         "median_vs_this_work_percent": float(np.median(vs_t)),
+                         "scatter_vs_this_work_percent": float(1.4826 * np.median(np.abs(vs_t - np.median(vs_t))))}
+        summary["literature_binned"][f"{lo_:g}-{hi_:g}"] = row
     (OUT / "anchors.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
 
